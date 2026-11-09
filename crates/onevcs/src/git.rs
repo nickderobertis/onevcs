@@ -120,11 +120,23 @@ enum Elapse {
     Answer,
 }
 
+/// The most revisions an argument vector names before the list goes over standard
+/// input, whatever the checkout holds. Past it the read gives up its proof and
+/// in-process answer, which only ever reach git's own `--count` for a handful of
+/// names, in exchange for not depending on Linux's argument limit.
+const ARGV_LIST_LIMIT: usize = 64;
+
+/// How many `--no-merged` tips one `for-each-ref` names; see [`unpublished_heads`].
+const NO_MERGED_BATCH: usize = 128;
+
 /// What may end one bounded run early, and what it answers when its bound does.
 #[derive(Clone, Copy)]
 struct Ending<'a> {
     stop: Option<&'a dyn Fn() -> bool>,
     elapse: Elapse,
+    /// What the command reads on its standard input, for a list no argument vector
+    /// could carry; `None` closes it.
+    input: Option<&'a [u8]>,
 }
 
 /// Which of the two bounds one command runs under — `Hooks` where it runs the
@@ -242,6 +254,36 @@ fn run_unless(
     stop: Option<&dyn Fn() -> bool>,
     elapse: Elapse,
 ) -> Result<Output> {
+    run_fed(args, cwd, env, None, stop, elapse)
+}
+
+/// One git command given `input` on its standard input, for a list with no size limit
+/// that no argument vector could carry. Neither remembered nor proved: both are keyed
+/// by the arguments, which here say nothing about the list.
+pub(crate) fn run_given<'a>(
+    asked: impl Into<Asked<'a>>,
+    args: &[&str],
+    input: &[u8],
+) -> Result<Output> {
+    let asked = asked.into();
+    run_fed(
+        args,
+        Some(asked.at),
+        &asked.env(),
+        Some(input),
+        None,
+        Elapse::Refuse,
+    )
+}
+
+fn run_fed(
+    args: &[&str],
+    cwd: Option<&Path>,
+    env: &[(String, String)],
+    input: Option<&[u8]>,
+    stop: Option<&dyn Fn() -> bool>,
+    elapse: Elapse,
+) -> Result<Output> {
     // Before the memo and the proofs, so both are keyed by commits rather than names.
     let pinned = crate::native_refs::pinned(args, cwd, env);
     let spelled: Vec<&str>;
@@ -252,7 +294,8 @@ fn run_unless(
         }
         None => args,
     };
-    let reading = reads::remembered(args)
+    let reading = input.is_some()
+        || reads::remembered(args)
         || matches!(
             args,
             ["worktree", "list", ..]
@@ -274,18 +317,25 @@ fn run_unless(
     } else {
         None
     };
-    if let Some(recalled) = reads::recall(args, cwd, env) {
+    if let Some(recalled) = input.is_none().then(|| reads::recall(args, cwd, env)).flatten() {
         return Ok(recalled);
     }
     // Native answers need no process or disk proof. Their immutable bytes may be
     // retained in memory after checking this call's context and named objects;
     // answers that would read too much still go to the proofs below. Like any
     // read, the result is remembered for the rest of this read.
-    if let Some(output) = crate::recovery_cache::native(args, cwd, env) {
+    if let Some(output) = input
+        .is_none()
+        .then(|| crate::recovery_cache::native(args, cwd, env))
+        .flatten()
+    {
         reads::remember(args, cwd, env, &output);
         return Ok(output);
     }
-    let reusable = crate::recovery_cache::query(args, cwd, env);
+    let reusable = input
+        .is_none()
+        .then(|| crate::recovery_cache::query(args, cwd, env))
+        .flatten();
     if let Some(output) = reusable
         .as_ref()
         .and_then(crate::recovery_cache::Query::read)
@@ -327,7 +377,11 @@ fn run_unless(
             },
             &format!("git {}", args.join(" ")),
             |e| unstarted(&e, args, cwd),
-            Ending { stop, elapse },
+            Ending {
+                stop,
+                elapse,
+                input,
+            },
         )
     };
     let ran = if reading || matches!(args, ["worktree", "remove" | "prune", ..] | ["clean", ..]) {
@@ -352,7 +406,9 @@ fn run_unless(
     if let Some(reusable) = reusable {
         reusable.write(&output);
     }
-    reads::remember(args, cwd, env, &output);
+    if input.is_none() {
+        reads::remember(args, cwd, env, &output);
+    }
     Ok(output)
 }
 
@@ -674,12 +730,20 @@ fn bounded(
     unspawnable: impl FnOnce(std::io::Error) -> Error,
     ending: Ending<'_>,
 ) -> Result<Ran> {
-    let Ending { stop, elapse } = ending;
+    let Ending {
+        stop,
+        elapse,
+        input,
+    } = ending;
     let bound = bound_for(class)?;
     let started = Instant::now();
 
     command
-        .stdin(Stdio::null())
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     if let Some(directory) = cwd {
@@ -710,6 +774,16 @@ fn bounded(
     // exit is the lifetime signal; end of stream only lets a reader retire early —
     // and tell the wait below, which is how an ordinary command's exit is noticed
     // when it happens rather than at the next tick.
+    if let (Some(bytes), Some(mut stdin)) = (input, child.stdin.take()) {
+        // On a thread of its own, because a list larger than the pipe's buffer stops
+        // this write until git reads it, and git may be writing to the pipes the
+        // readers below drain. A list git stopped reading is its refusal to report.
+        let bytes = bytes.to_vec();
+        std::thread::spawn(move || {
+            use std::io::Write as _;
+            let _ = stdin.write_all(&bytes);
+        });
+    }
     let (ended, endings) = mpsc::channel();
     let out_reader = PipeCapture::start(
         child.stdout.take().expect("stdout was piped"),
@@ -2546,6 +2620,7 @@ pub fn message_policy(cwd: &Path, message: &str) -> Result<MessagePolicy> {
         Ending {
             stop: None,
             elapse: Elapse::Refuse,
+            input: None,
         },
     );
     let _ = std::fs::remove_file(&file);
@@ -2639,6 +2714,23 @@ fn fetching<T>(cwd: &Path, fetch: impl FnOnce() -> Result<T>) -> Result<T> {
     })
 }
 
+thread_local! {
+    static LOCAL_ONLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `read` with [`default_branch`] answering from the checkout's own refs: its
+/// `origin/HEAD`, then `origin/main` or `origin/master`. Nothing in it asks the remote,
+/// which is what a recovery read may never do.
+pub(crate) fn local_only<T>(read: impl FnOnce() -> T) -> T {
+    let before = LOCAL_ONLY.with(|flag| flag.replace(true));
+    let answer = read();
+    LOCAL_ONLY.with(|flag| flag.set(before));
+    answer
+}
+
+/// Why [`default_branch`] reading locally found no base, the row's stated reason.
+pub(crate) const NO_LOCAL_BASE: &str = "this checkout holds no origin/HEAD, origin/main or      origin/master, so there is no base to compare the branch with";
+
 /// The remote's default branch, refusing to guess when the answer is ambiguous.
 ///
 /// `<remote>/HEAD` is a cache of the answer and not the answer itself: a remote
@@ -2649,6 +2741,13 @@ fn fetching<T>(cwd: &Path, fetch: impl FnOnce() -> Result<T>) -> Result<T> {
 pub fn default_branch(cwd: &Path, remote: &str) -> Result<String> {
     if let Some(branch) = tracked_head(cwd, remote)? {
         return Ok(branch);
+    }
+    if LOCAL_ONLY.with(std::cell::Cell::get) {
+        return ["main", "master"]
+            .into_iter()
+            .find(|name| ref_exists(cwd, &format!("refs/remotes/{remote}/{name}")))
+            .map(str::to_owned)
+            .ok_or_else(|| error::invalid(NO_LOCAL_BASE));
     }
     if let Some(branch) = advertised_head(cwd, remote)? {
         return Ok(branch);
@@ -2985,7 +3084,7 @@ pub fn unpublished_heads(cwd: &Path) -> Result<BTreeSet<String>> {
         ],
         Some(cwd),
     )?;
-    let mut unreached = Vec::new();
+    let mut tips = BTreeSet::new();
     for line in listing.stdout.lines().filter(|line| !line.is_empty()) {
         let tip = ObjectId::parse(line).ok_or_else(|| {
             error::invalid(format!(
@@ -2993,19 +3092,35 @@ pub fn unpublished_heads(cwd: &Path) -> Result<BTreeSet<String>> {
                 cwd.display()
             ))
         })?;
-        unreached.push(format!("--no-merged={}", tip.as_str()));
+        tips.insert(format!("--no-merged={}", tip.as_str()));
     }
-    unreached.sort();
-    unreached.dedup();
-    let mut args: Vec<&str> = vec!["for-each-ref", "--format=%(refname:short)"];
-    args.extend(unreached.iter().map(String::as_str));
-    args.push("refs/heads");
-    Ok(checked(&args, Some(cwd))?
-        .stdout
-        .lines()
-        .filter(|line| !line.is_empty())
-        .map(str::to_owned)
-        .collect())
+    let tips: Vec<String> = tips.into_iter().collect();
+    // `--no-merged` has no standard-input form, so the tips travel in batches of a
+    // fixed size: a branch survives one batch when no tip of it reaches the branch, and
+    // what no batch rules out is what no tip reaches. One empty batch list is still the
+    // one listing of every branch.
+    let mut surviving: Option<BTreeSet<String>> = None;
+    for batch in tips.chunks(NO_MERGED_BATCH).chain(tips.is_empty().then_some(&[][..])) {
+        let mut args: Vec<&str> = vec!["for-each-ref", "--format=%(refname:short)"];
+        args.extend(batch.iter().map(String::as_str));
+        args.push("refs/heads");
+        let listed: BTreeSet<String> = checked(&args, Some(cwd))?
+            .stdout
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(str::to_owned)
+            .collect();
+        let narrowed = match surviving {
+            Some(surviving) => surviving.intersection(&listed).cloned().collect(),
+            None => listed,
+        };
+        let finished = narrowed.is_empty();
+        surviving = Some(narrowed);
+        if finished {
+            break;
+        }
+    }
+    Ok(surviving.unwrap_or_default())
 }
 
 /// How many commits `reference` holds that no `origin` remote-tracking ref has and
@@ -3053,12 +3168,25 @@ pub fn unpublished_ahead(cwd: &Path, reference: &str, carried: &[&str]) -> Resul
     );
     let immutable_query = native.is_some();
     let immutable;
+    let mut listed: Option<String> = None;
     let mut args = if let Some((mut origin, tip)) = native {
         origin.extend(held.iter().filter_map(|name| crate::git::tip(cwd, name)));
         immutable = std::iter::once(tip).chain(origin).collect::<Vec<_>>();
-        let mut args = vec!["rev-list", "--count", immutable[0].as_str(), "--not"];
-        args.extend(immutable[1..].iter().map(String::as_str));
-        args
+        if immutable.len() - 1 > ARGV_LIST_LIMIT {
+            // Too many to name on a command line whatever the checkout: every one goes
+            // over standard input, which is where `--not` can read a list of any length.
+            let mut input = format!("{}\n--not\n", immutable[0]);
+            for hidden in &immutable[1..] {
+                input.push_str(hidden);
+                input.push('\n');
+            }
+            listed = Some(input);
+            vec!["rev-list", "--count", "--stdin", "--"]
+        } else {
+            let mut args = vec!["rev-list", "--count", immutable[0].as_str(), "--not"];
+            args.extend(immutable[1..].iter().map(String::as_str));
+            args
+        }
     } else {
         vec![
             "rev-list",
@@ -3071,8 +3199,13 @@ pub fn unpublished_ahead(cwd: &Path, reference: &str, carried: &[&str]) -> Resul
     if !immutable_query {
         args.extend_from_slice(&held);
     }
-    args.push("--");
-    let counted = run(&args, Some(cwd))?;
+    if args.last() != Some(&"--") {
+        args.push("--");
+    }
+    let counted = match &listed {
+        Some(input) => run_given(cwd, &args, input.as_bytes())?,
+        None => run(&args, Some(cwd))?,
+    };
     if !counted.ok() {
         // llmlint: ignore[changed_behavior_has_e2e] the reference going away between a
         // listing and this count is a race with another process, which no journey can
@@ -3481,6 +3614,33 @@ pub fn merge_base<'a>(
     }
 }
 
+/// The commit `current` and every commit in `decided` descend to: the point a read of
+/// what a base gained since them starts from. Asked in fixed-size batches, one result
+/// feeding the next, so no argument list grows with the commits named.
+pub(crate) fn octopus_base(
+    asked: Asked<'_>,
+    current: &str,
+    decided: &BTreeSet<String>,
+    batch: usize,
+) -> Result<String> {
+    let mut common = current.to_owned();
+    let decided: Vec<&str> = decided.iter().map(String::as_str).collect();
+    for chunk in decided.chunks(batch.saturating_sub(1).max(1)) {
+        let mut args = vec!["merge-base", "--octopus", common.as_str()];
+        args.extend(chunk.iter().copied());
+        let found = run_given(asked, &args, b"")?;
+        if !found.ok() {
+            return Err(error::invalid(format!(
+                "git merge-base --octopus over {} commits failed: {}",
+                chunk.len() + 1,
+                found.diagnostic()
+            )));
+        }
+        common = found.trimmed();
+    }
+    Ok(common)
+}
+
 /// How many files git says two commits differ in.
 ///
 /// `--shortstat` is a count and a summary, in ASCII whatever a repository names its
@@ -3550,14 +3710,10 @@ pub fn known_to_carry_changes<'a>(
             "--",
         ],
     )?;
-    // Pathspecs, not names: a path is a repository's own content and one beginning
-    // with `:` would otherwise be read as pathspec magic rather than as the file it
-    // names.
-    let touched: Vec<String> = listed
+    let touched: BTreeSet<&str> = listed
         .stdout
         .split('\0')
         .filter(|path| !path.is_empty())
-        .map(|path| format!(":(literal){path}"))
         .collect();
     // How many paths there are is asked of git separately, in a report that is ASCII
     // whatever the repository names its files, and the two answers have to agree
@@ -3576,20 +3732,26 @@ pub fn known_to_carry_changes<'a>(
         // carries the nothing it changed.
         return Ok(true);
     }
-    let mut args = vec!["diff", "--quiet", commit, base, "--"];
-    args.extend(touched.iter().map(String::as_str));
-    let output = run_in(cwd, &args)?;
-    match output.status {
-        0 => Ok(true),
-        1 => Ok(false),
-        _ => Err(Error::Invalid {
-            reason: format!(
-                "git diff {commit} {base} over {} paths failed: {}",
-                touched.len(),
-                output.diagnostic()
-            ),
-        }),
-    }
+    // Asked without naming a path: the whole-tree listing says which paths differ, and
+    // the question is whether any of those is one the commit touched, so no list of
+    // the commit's paths has to reach git however long it is.
+    let differing = checked_in(
+        cwd,
+        &[
+            "diff",
+            "--name-only",
+            "--no-renames",
+            "-z",
+            commit,
+            base,
+            "--",
+        ],
+    )?;
+    Ok(!differing
+        .stdout
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .any(|path| touched.contains(path)))
 }
 
 /// Whether merging `commit` into `base` is a content no-op.
@@ -3737,11 +3899,29 @@ pub(crate) fn commits_with_parents<'a>(
     tip: &str,
     not: &[&str],
 ) -> Result<Vec<(String, Vec<String>)>> {
-    let mut args = vec!["rev-list", "--parents", tip, "--not"];
-    args.extend_from_slice(not);
-    args.push("--");
-    Ok(checked_in(cwd.into(), &args)?
-        .stdout
+    let asked = cwd.into();
+    let listed = if not.len() > ARGV_LIST_LIMIT {
+        let mut input = format!("{tip}\n--not\n");
+        for hidden in not {
+            input.push_str(hidden);
+            input.push('\n');
+        }
+        let given = run_given(asked, &["rev-list", "--parents", "--stdin", "--"], input.as_bytes())?;
+        if !given.ok() {
+            return Err(error::invalid(format!(
+                "git rev-list --parents {tip} over {} excluded commits failed: {}",
+                not.len(),
+                given.diagnostic()
+            )));
+        }
+        given.stdout
+    } else {
+        let mut args = vec!["rev-list", "--parents", tip, "--not"];
+        args.extend_from_slice(not);
+        args.push("--");
+        checked_in(asked, &args)?.stdout
+    };
+    Ok(listed
         .lines()
         .filter_map(|line| {
             let mut ids = line.split_whitespace().map(str::to_owned);
@@ -5512,23 +5692,25 @@ pub fn differing_among<'a>(
     if paths.is_empty() {
         return Ok(Vec::new());
     }
-    let mut args = vec![
-        "diff".to_owned(),
-        "--name-only".to_owned(),
-        "--no-renames".to_owned(),
-        "-z".to_owned(),
-        first.to_owned(),
-        second.to_owned(),
-        "--".to_owned(),
-    ];
-    // Pathspecs, not names, for the reason `known_to_carry_changes` gives.
-    args.extend(paths.iter().map(|path| format!(":(literal){path}")));
-    let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    let listed = checked_in(cwd.into(), &args)?;
+    // Whole trees compared and the asked paths looked up in the answer, for the reason
+    // `known_to_carry_changes` gives: no argument list of them to overflow.
+    let listed = checked_in(
+        cwd.into(),
+        &[
+            "diff",
+            "--name-only",
+            "--no-renames",
+            "-z",
+            first,
+            second,
+            "--",
+        ],
+    )?;
+    let asked: BTreeSet<&str> = paths.iter().map(String::as_str).collect();
     let mut differing: Vec<String> = listed
         .stdout
         .split('\0')
-        .filter(|path| !path.is_empty())
+        .filter(|path| !path.is_empty() && asked.contains(path))
         .map(str::to_owned)
         .collect();
     differing.sort();

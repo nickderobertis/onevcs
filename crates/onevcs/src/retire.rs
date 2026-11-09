@@ -956,6 +956,10 @@ pub(crate) struct Ask<'a> {
     /// Where a pass reuses the verdicts it recorded and records the ones it derives, or
     /// `None` for a classification that derives every verdict it answers.
     verdicts: Option<&'a crate::verdict::Store>,
+    /// The derivation a decision record kept for this branch, reused while it still
+    /// describes the branch: the retirement's proofs, keyed by the tip the record is,
+    /// and never the fresh checks around it.
+    recorded: Option<&'a crate::verdict::Verdict>,
     /// What becomes of a merge a session's worktree over the branch left in progress,
     /// once no live session holds it.
     merges: LeftMerges,
@@ -981,6 +985,7 @@ impl<'a> Ask<'a> {
             remote: false,
             exclude: &[],
             verdicts: None,
+            recorded: None,
             merges: LeftMerges::Leave,
         }
     }
@@ -993,6 +998,7 @@ impl<'a> Ask<'a> {
             remote: true,
             exclude: &[],
             verdicts: None,
+            recorded: None,
             merges: LeftMerges::Leave,
         }
     }
@@ -1005,6 +1011,7 @@ impl<'a> Ask<'a> {
             remote: true,
             exclude,
             verdicts: None,
+            recorded: None,
             merges: match dry_run {
                 true => LeftMerges::Leave,
                 false => LeftMerges::Abort,
@@ -1551,6 +1558,7 @@ impl<'a> Census<'a> {
             retirement,
             copies: copies.clone(),
             derivation,
+            verdict: None,
         };
         let keep = |reason| {
             classified(
@@ -1595,8 +1603,12 @@ impl<'a> Census<'a> {
             return Ok(unknown(cause.clone()));
         }
         let (verdict, derivation) = self.verdict(branch, base, base_tip, &copies, ask);
+        let kept = verdict.clone();
         if verdict.reached == crate::verdict::Reached::Early {
-            return Ok(classified(verdict.retirement, derivation));
+            return Ok(Classified {
+                verdict: Some(kept),
+                ..classified(verdict.retirement, derivation)
+            });
         }
         // Every read below that fails is a proof that did not hold, and the answer to
         // that is `unknown` — never a class a read that was not made decided.
@@ -1605,7 +1617,10 @@ impl<'a> Census<'a> {
             Ok(None) => verdict.retirement,
             Err(cause) => Retirement::unknown(self, branch, cause, &copies),
         };
-        Ok(classified(retirement, derivation))
+        Ok(Classified {
+            verdict: Some(kept),
+            ..classified(retirement, derivation)
+        })
     }
 
     /// Whether somebody is working on the branch where it is: a registered checkout
@@ -1635,6 +1650,13 @@ impl<'a> Census<'a> {
         copies: &Copies,
         ask: &Ask<'_>,
     ) -> (crate::verdict::Verdict, Derivation) {
+        if let Some(kept) = ask
+            .recorded
+            .filter(|kept| !kept.consulted)
+            .filter(|kept| self.describes(&kept.retirement, branch, base, copies))
+        {
+            return (kept.clone(), Derivation::Reused);
+        }
         let recorded = ask
             .verdicts
             .and_then(|store| Some((store, self.key(branch, base, base_tip, copies, ask)?)));
@@ -2306,6 +2328,9 @@ struct Classified {
     retirement: Retirement,
     copies: Copies,
     derivation: Derivation,
+    /// The derivation this classification reached, for a decision record to keep. The
+    /// classes decided before it (a live holder, an exclusion) carry none.
+    verdict: Option<crate::verdict::Verdict>,
 }
 
 /// What one copy's tip turned out to be.
@@ -2830,14 +2855,22 @@ fn nowhere(identity: &str, branch: &str) -> Error {
     }
 }
 
-/// The classification `recoverable` reports on each row, made from records and
-/// local refs alone.
-pub(crate) fn classify_offline(census: &Census<'_>, branch: &str) -> Option<Retirement> {
-    let ask = Ask::offline();
+/// The classification `recoverable` reports on each row, made from records and local
+/// refs alone, reusing the derivation a decision record kept, answering the
+/// class — every fresh check of it asked again — and the derivation to keep.
+pub(crate) fn classify_offline_kept(
+    census: &Census<'_>,
+    branch: &str,
+    recorded: Option<&crate::verdict::Verdict>,
+) -> Option<(Retirement, Option<crate::verdict::Verdict>)> {
+    let ask = Ask {
+        recorded,
+        ..Ask::offline()
+    };
     census
         .classify(branch, census.copies(branch, &ask), &ask)
         .ok()
-        .map(|classified| classified.retirement)
+        .map(|classified| (classified.retirement, classified.verdict))
 }
 
 /// The offline census sweep judges one identity's records against: the same read
@@ -2905,6 +2938,7 @@ pub(crate) fn retire_named(hosting: &dyn Hosting, request: &RetireRequest) -> Re
             return Err(nowhere(&identity, &request.branch));
         };
         let classified = Classified {
+            verdict: None,
             retirement: record.retirement(census.base.as_deref().unwrap_or_default()),
             copies,
             derivation: Derivation::Derived,

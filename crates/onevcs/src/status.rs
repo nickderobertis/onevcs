@@ -3546,259 +3546,336 @@ fn read_stream(directory: &Path, token: &str, notes: &mut Vec<String>) -> Record
         }
     };
     for (index, line) in raw.lines().enumerate() {
-        let read = match stream::attributed(line, token, index + 1) {
-            Ok(read) => read,
-            Err(refusal) => {
-                notes.push(format!(
-                    "{refusal}, so whatever it recorded is not in this report ({})",
-                    path.display()
-                ));
-                continue;
-            }
-        };
-        // Every check below is asked of a line whose kind has no word here too,
-        // because each of them is about the envelope rather than about what it
-        // recorded — which is why the header is what a kindless line hands back.
-        let (v, ts) = match &read {
-            Line::Known(known) => (known.envelope.v, known.envelope.ts.as_str()),
-            Line::Unknown(header) => (header.v, header.ts.as_str()),
-        };
-        // The envelope is versioned and this report orders by its timestamp, so an
-        // envelope of a shape this build does not read, or one whose stamp cannot be
-        // ordered against the rest, is a gap said out loud rather than a value acted
-        // on. Nothing safety-critical rests on either: whether the work *landed* is
-        // read off the base's content.
-        if v != stream::ENVELOPE_VERSION {
-            notes.push(format!(
-                "line {} of the event stream at {} declares envelope version {}, and this build \
-                 reads version {}, so what it recorded is not in this report",
-                index + 1,
-                path.display(),
-                v,
-                stream::ENVELOPE_VERSION,
-            ));
-            continue;
-        }
-        let Some(at) = Stamp::parse(ts) else {
-            notes.push(format!(
-                "line {} of the event stream at {} is stamped {:?}, which is not the RFC3339 \
-                 millisecond UTC the envelope declares, so what it recorded cannot be ordered \
-                 against the rest and is not in this report",
-                index + 1,
-                path.display(),
-                ts,
-            ));
-            continue;
-        };
-        // …and only here is it passed over, in silence. This read walks *every*
-        // stream under the state root to answer one question about one piece of
-        // work, so a kind it has no word for would cost a note per line across all
-        // of them — which is what a retired `gate-started` did, and the report an
-        // operator is told is the only thing that says where the work is arrived
-        // buried under hundreds of them. Nothing is missing from the answer: this
-        // match acts on seven kinds, and a kind with no word here is not one of them.
-        let Line::Known(known) = read else {
-            continue;
-        };
-        let (kind, event) = (known.kind, known.envelope);
-        if record.identity.is_none() {
-            record.identity = event.labels.extra.get("identity").and_then(text);
-        }
-        if record.branch.is_none() {
-            record.branch = event.payload.get("branch").and_then(text);
-        }
-        let field = |name: &str| event.payload.get(name).and_then(text);
-        let scope = Scope::of(
-            event.labels.extra.get("identity").and_then(text),
-            &event.payload,
-        );
-        match kind {
-            EventKind::ChangeOpened => {
-                if let (Some(url), Some(proofs)) = (field("url"), scoped(&mut record, &scope)) {
-                    proofs.opened = Some(Stamped {
-                        at,
-                        value: Opened {
-                            url,
-                            // Both are optional here because a stream written before
-                            // either was recorded is still a stream this reads: what
-                            // is missing leaves the change request unaddressable
-                            // rather than addressed by a guess.
-                            id: field("id"),
-                            base: field("base"),
-                        },
-                    });
-                }
-            }
-            // The publication record the draft amendment puts the reason in, read back:
-            // this is the *only* place it was written, because nothing of it goes into
-            // the change request's body or reaches the host beyond `--draft`.
-            EventKind::ChangeDrafted => {
-                let read = read_draft_reason(&field);
-                match read {
-                    Some(reason) => {
-                        record.draft = Some(Stamped { at, value: reason });
-                        // Written after any lift this stream recorded, whatever the
-                        // two stamps say: a stream's own order is its sequence.
-                        record.lifted = None;
-                    }
-                    // Said out loud rather than read as a change nobody drafted: the
-                    // whole point of this field is that the host cannot say *why* a
-                    // change is held back, so a record that could not be read is a gap
-                    // in the one answer there is.
-                    None => notes.push(format!(
-                        "line {} of the event stream at {} records a draft whose reason cannot \
-                         be read, so why {} is held back is not in this report",
-                        index + 1,
-                        path.display(),
-                        record.branch.as_deref().unwrap_or("this change"),
-                    )),
-                }
-            }
-            // Green checks keeping a draft for its user's review, which no
-            // `change-drafted` says: it replaces the reason the same publication
-            // recorded when it opened the draft, in the order the stream wrote them,
-            // and a later lift or draft answers it exactly as it answers that one.
-            EventKind::DraftKeptForReview => {
-                match read_kept_for_review(event.payload.get("checks")) {
-                    Some(kept) => {
-                        record.draft = Some(Stamped { at, value: kept });
-                        record.lifted = None;
-                    }
-                    None => notes.push(format!(
-                        "line {} of the event stream at {} records a draft kept for review whose \
-                     checks cannot be read, so why {} is held back is not in this report",
-                        index + 1,
-                        path.display(),
-                        record.branch.as_deref().unwrap_or("this change"),
-                    )),
-                }
-            }
-            EventKind::DraftLifted => record.lifted = Some(at),
-            // The description's own record: the body is the artifact the payload
-            // names, never inlined, so what is read back is where it can be read.
-            // The id goes through the check every artifact id meets before it names
-            // a file, for the reason the landing commit above goes through `ObjectId`:
-            // a stream is input, and this value is printed into a command.
-            EventKind::ChangeDescribed => {
-                record.described = Some(Stamped {
-                    at: at.clone(),
-                    value: DescribedReport {
-                        at,
-                        artifact: field("artifact")
-                            .filter(|id| crate::ids::is_safe_name(id))
-                            .map(ArtifactId),
-                        title: field("title"),
-                    },
-                });
-            }
-            // A branch put on its identity's origin without being published.
-            //
-            // **Which of the three outcomes this was is read from `outcome` alone**,
-            // never from which fields arrived: every payload carries all five, and the
-            // one that reached no origin carries `remote` as `null` beside the commit
-            // nothing outside this host holds. A reader inferring the outcome from a
-            // missing key would report a payload it merely failed to understand as a
-            // branch that is nowhere — so only the two words that mean the origin has
-            // it produce a record here, and a word this build does not know produces
-            // none.
-            //
-            // **Each of the three values it then takes goes through the check its own
-            // kind meets**, because a stream is a file whichever process wrote it and
-            // each of these goes somewhere a value that is not one would do harm: the
-            // branch reaches a git argument vector through [`preserved_branches`]'s
-            // caller, and the remote and the commit are both printed onto a line an
-            // operator reads. The branch's check runs `check-ref-format`, which is a
-            // subprocess — paid once per recorded preservation that reached an origin
-            // rather than once per line of every stream, since no other kind reaches
-            // it.
-            EventKind::BranchPreserved => {
-                let reached_the_origin = matches!(
-                    field("outcome").as_deref(),
-                    Some(PUSHED | ALREADY_ON_ORIGIN)
-                );
-                if reached_the_origin {
-                    if let (Some(branch), Some(remote), Some(commit)) = (
-                        field("branch").and_then(|name| Ref::try_from(name).ok()),
-                        field("remote").filter(|remote| git::is_usable_remote(remote)),
-                        field("commit").as_deref().and_then(ObjectId::parse),
-                    ) {
-                        record.on_origin = Some(Stamped {
-                            at,
-                            value: PreservedRecord {
-                                branch,
-                                on_origin: OnOrigin {
-                                    remote,
-                                    commit: commit.as_str().to_owned(),
-                                },
-                            },
-                        });
-                    }
-                }
-            }
-            // Emitted with the change request's URL only where this crate went on to
-            // ask the host to land it; the local merge train emits one without.
-            EventKind::MergeQueued => {
-                record.asked_the_host_to_land |= field("url").is_some();
-            }
-            // Both name the commit the work landed at, and either is the record the
-            // first landing tier reads: a merge this host performed, and a merge it
-            // watched the host perform.
-            EventKind::ChangeMerged | EventKind::MergeCompleted => {
-                // Through the conversion that decides what an object id is, for the
-                // reason the branch name above goes through `Ref`: what a stream
-                // records is input, and a value that is not an id would be handed to
-                // git as a revision and could not name the commit it claims to.
-                // The head the host reported merging is written beside the commit only
-                // where a host report carried one, and is held to the same conversion:
-                // it is what a retirement asks the branch's content to be contained in.
-                let landing = field("sha")
-                    .as_deref()
-                    .and_then(ObjectId::parse)
-                    .map(|commit| landed::RecordedLanding {
-                        commit,
-                        head: field("head").as_deref().and_then(ObjectId::parse),
-                        change: field("url").and_then(|url| Url::parse(&url).ok()),
-                    });
-                if let (Some(landing), Some(proofs)) = (landing, scoped(&mut record, &scope)) {
-                    proofs.landing = Some(Stamped { at, value: landing });
-                }
-            }
-            // The merge path's own verdict on a publishing push: git runs the
-            // repository's `pre-push` hook there and the answer comes back as the
-            // push's output, so `accepted` is what it ruled. A push that recorded no
-            // such field said nothing, which is not the same as saying no.
-            EventKind::Push => {
-                record.merge_path = Some(Stamped {
-                    at,
-                    value: MergePathReport {
-                        verdict: match event.payload.get("accepted").and_then(Value::as_bool) {
-                            Some(true) => Verdict::Pass,
-                            Some(false) => Verdict::Fail,
-                            None => Verdict::Unrecorded,
-                        },
-                        log: field("preserved_log").map(PathBuf::from),
-                        recorded_by: token.to_owned(),
-                    },
-                });
-            }
-            // A retry's landing superseding this branch, and the branch's own
-            // retirement: both read through the one reader of their payloads, which
-            // holds each value to the check its kind meets and records nothing for a
-            // payload it cannot read whole.
-            EventKind::BranchSuperseded => {
-                if let Some(read) = crate::retire::SupersessionRecord::read(&event.payload) {
-                    record.superseded.push(Stamped { at, value: read });
-                }
-            }
-            EventKind::BranchRetired => {
-                if let Some(read) = crate::retire::RetiredRecord::read(&event.payload, &at) {
-                    record.retired = Some(Stamped { at, value: read });
-                }
-            }
-            _ => {}
-        }
+        absorb(&mut record, token, &path, index, line, notes);
     }
     record
+}
+
+/// A stream's record before any of its lines has been read, for the decision record's
+/// incremental reader to fold kept lines into.
+pub(crate) fn unread_stream(token: &str) -> Recorded {
+    Recorded {
+        token: token.to_owned(),
+        identity: None,
+        branch: None,
+        proofs: std::collections::BTreeMap::new(),
+        draft: None,
+        lifted: None,
+        described: None,
+        on_origin: None,
+        asked_the_host_to_land: false,
+        merge_path: None,
+        superseded: Vec::new(),
+        retired: None,
+        gaps: false,
+    }
+}
+
+impl Recorded {
+    /// Mark some of this stream unreadable, as a reader that could not take it whole.
+    pub(crate) fn mark_gap(&mut self) {
+        self.gaps = true;
+    }
+
+    /// The stream this record was read from.
+    pub(crate) fn token(&self) -> &str {
+        &self.token
+    }
+
+    /// The identity this stream first named, if it named one.
+    pub(crate) fn identity(&self) -> Option<&str> {
+        self.identity.as_deref()
+    }
+
+    /// Every branch this stream's records can answer for, which is what a change to
+    /// it can change the row of.
+    pub(crate) fn branches(&self) -> Vec<String> {
+        let mut named: Vec<String> = self.branch.iter().cloned().collect();
+        named.extend(
+            self.on_origin
+                .iter()
+                .map(|stamped| stamped.value.branch.to_string()),
+        );
+        named.extend(
+            self.superseded
+                .iter()
+                .map(|stamped| stamped.value.branch().to_owned()),
+        );
+        named.extend(
+            self.retired
+                .iter()
+                .map(|stamped| stamped.value.branch().to_owned()),
+        );
+        named
+    }
+}
+
+/// Fold one line of a stream into its record, answering whether the line can matter to
+/// anything the read takes from it — which is what the decision record keeps of a stream
+/// rather than the whole file. A line the read ignores answers `false`, and leaves the
+/// record as it found it.
+pub(crate) fn absorb(
+    record: &mut Recorded,
+    token: &str,
+    path: &Path,
+    index: usize,
+    line: &str,
+    notes: &mut Vec<String>,
+) -> bool {
+    let read = match stream::attributed(line, token, index + 1) {
+        Ok(read) => read,
+        Err(refusal) => {
+            notes.push(format!(
+                "{refusal}, so whatever it recorded is not in this report ({})",
+                path.display()
+            ));
+            return true;
+        }
+    };
+    // Every check below is asked of a line whose kind has no word here too,
+    // because each of them is about the envelope rather than about what it
+    // recorded — which is why the header is what a kindless line hands back.
+    let (v, ts) = match &read {
+        Line::Known(known) => (known.envelope.v, known.envelope.ts.as_str()),
+        Line::Unknown(header) => (header.v, header.ts.as_str()),
+    };
+    // The envelope is versioned and this report orders by its timestamp, so an
+    // envelope of a shape this build does not read, or one whose stamp cannot be
+    // ordered against the rest, is a gap said out loud rather than a value acted
+    // on. Nothing safety-critical rests on either: whether the work *landed* is
+    // read off the base's content.
+    if v != stream::ENVELOPE_VERSION {
+        notes.push(format!(
+            "line {} of the event stream at {} declares envelope version {}, and this build \
+             reads version {}, so what it recorded is not in this report",
+            index + 1,
+            path.display(),
+            v,
+            stream::ENVELOPE_VERSION,
+        ));
+        return true;
+    }
+    let Some(at) = Stamp::parse(ts) else {
+        notes.push(format!(
+            "line {} of the event stream at {} is stamped {:?}, which is not the RFC3339 \
+             millisecond UTC the envelope declares, so what it recorded cannot be ordered \
+             against the rest and is not in this report",
+            index + 1,
+            path.display(),
+            ts,
+        ));
+        return true;
+    };
+    // …and only here is it passed over, in silence. This read walks *every*
+    // stream under the state root to answer one question about one piece of
+    // work, so a kind it has no word for would cost a note per line across all
+    // of them — which is what a retired `gate-started` did, and the report an
+    // operator is told is the only thing that says where the work is arrived
+    // buried under hundreds of them. Nothing is missing from the answer: this
+    // match acts on seven kinds, and a kind with no word here is not one of them.
+    let Line::Known(known) = read else {
+        return false;
+    };
+    let (kind, event) = (known.kind, known.envelope);
+    let named_nothing = (record.identity.clone(), record.branch.clone());
+    if record.identity.is_none() {
+        record.identity = event.labels.extra.get("identity").and_then(text);
+    }
+    if record.branch.is_none() {
+        record.branch = event.payload.get("branch").and_then(text);
+    }
+    let named = named_nothing != (record.identity.clone(), record.branch.clone());
+    let field = |name: &str| event.payload.get(name).and_then(text);
+    let scope = Scope::of(
+        event.labels.extra.get("identity").and_then(text),
+        &event.payload,
+    );
+    match kind {
+        EventKind::ChangeOpened => {
+            if let (Some(url), Some(proofs)) = (field("url"), scoped(record, &scope)) {
+                proofs.opened = Some(Stamped {
+                    at,
+                    value: Opened {
+                        url,
+                        // Both are optional here because a stream written before
+                        // either was recorded is still a stream this reads: what
+                        // is missing leaves the change request unaddressable
+                        // rather than addressed by a guess.
+                        id: field("id"),
+                        base: field("base"),
+                    },
+                });
+            }
+        }
+        // The publication record the draft amendment puts the reason in, read back:
+        // this is the *only* place it was written, because nothing of it goes into
+        // the change request's body or reaches the host beyond `--draft`.
+        EventKind::ChangeDrafted => {
+            let read = read_draft_reason(&field);
+            match read {
+                Some(reason) => {
+                    record.draft = Some(Stamped { at, value: reason });
+                    // Written after any lift this stream recorded, whatever the
+                    // two stamps say: a stream's own order is its sequence.
+                    record.lifted = None;
+                }
+                // Said out loud rather than read as a change nobody drafted: the
+                // whole point of this field is that the host cannot say *why* a
+                // change is held back, so a record that could not be read is a gap
+                // in the one answer there is.
+                None => notes.push(format!(
+                    "line {} of the event stream at {} records a draft whose reason cannot \
+                     be read, so why {} is held back is not in this report",
+                    index + 1,
+                    path.display(),
+                    record.branch.as_deref().unwrap_or("this change"),
+                )),
+            }
+        }
+        // Green checks keeping a draft for its user's review, which no
+        // `change-drafted` says: it replaces the reason the same publication
+        // recorded when it opened the draft, in the order the stream wrote them,
+        // and a later lift or draft answers it exactly as it answers that one.
+        EventKind::DraftKeptForReview => {
+            match read_kept_for_review(event.payload.get("checks")) {
+                Some(kept) => {
+                    record.draft = Some(Stamped { at, value: kept });
+                    record.lifted = None;
+                }
+                None => notes.push(format!(
+                    "line {} of the event stream at {} records a draft kept for review whose \
+                 checks cannot be read, so why {} is held back is not in this report",
+                    index + 1,
+                    path.display(),
+                    record.branch.as_deref().unwrap_or("this change"),
+                )),
+            }
+        }
+        EventKind::DraftLifted => record.lifted = Some(at),
+        // The description's own record: the body is the artifact the payload
+        // names, never inlined, so what is read back is where it can be read.
+        // The id goes through the check every artifact id meets before it names
+        // a file, for the reason the landing commit above goes through `ObjectId`:
+        // a stream is input, and this value is printed into a command.
+        EventKind::ChangeDescribed => {
+            record.described = Some(Stamped {
+                at: at.clone(),
+                value: DescribedReport {
+                    at,
+                    artifact: field("artifact")
+                        .filter(|id| crate::ids::is_safe_name(id))
+                        .map(ArtifactId),
+                    title: field("title"),
+                },
+            });
+        }
+        // A branch put on its identity's origin without being published.
+        //
+        // **Which of the three outcomes this was is read from `outcome` alone**,
+        // never from which fields arrived: every payload carries all five, and the
+        // one that reached no origin carries `remote` as `null` beside the commit
+        // nothing outside this host holds. A reader inferring the outcome from a
+        // missing key would report a payload it merely failed to understand as a
+        // branch that is nowhere — so only the two words that mean the origin has
+        // it produce a record here, and a word this build does not know produces
+        // none.
+        //
+        // **Each of the three values it then takes goes through the check its own
+        // kind meets**, because a stream is a file whichever process wrote it and
+        // each of these goes somewhere a value that is not one would do harm: the
+        // branch reaches a git argument vector through [`preserved_branches`]'s
+        // caller, and the remote and the commit are both printed onto a line an
+        // operator reads. The branch's check runs `check-ref-format`, which is a
+        // subprocess — paid once per recorded preservation that reached an origin
+        // rather than once per line of every stream, since no other kind reaches
+        // it.
+        EventKind::BranchPreserved => {
+            let reached_the_origin = matches!(
+                field("outcome").as_deref(),
+                Some(PUSHED | ALREADY_ON_ORIGIN)
+            );
+            if reached_the_origin {
+                if let (Some(branch), Some(remote), Some(commit)) = (
+                    field("branch").and_then(|name| Ref::try_from(name).ok()),
+                    field("remote").filter(|remote| git::is_usable_remote(remote)),
+                    field("commit").as_deref().and_then(ObjectId::parse),
+                ) {
+                    record.on_origin = Some(Stamped {
+                        at,
+                        value: PreservedRecord {
+                            branch,
+                            on_origin: OnOrigin {
+                                remote,
+                                commit: commit.as_str().to_owned(),
+                            },
+                        },
+                    });
+                }
+            }
+        }
+        // Emitted with the change request's URL only where this crate went on to
+        // ask the host to land it; the local merge train emits one without.
+        EventKind::MergeQueued => {
+            record.asked_the_host_to_land |= field("url").is_some();
+        }
+        // Both name the commit the work landed at, and either is the record the
+        // first landing tier reads: a merge this host performed, and a merge it
+        // watched the host perform.
+        EventKind::ChangeMerged | EventKind::MergeCompleted => {
+            // Through the conversion that decides what an object id is, for the
+            // reason the branch name above goes through `Ref`: what a stream
+            // records is input, and a value that is not an id would be handed to
+            // git as a revision and could not name the commit it claims to.
+            // The head the host reported merging is written beside the commit only
+            // where a host report carried one, and is held to the same conversion:
+            // it is what a retirement asks the branch's content to be contained in.
+            let landing = field("sha")
+                .as_deref()
+                .and_then(ObjectId::parse)
+                .map(|commit| landed::RecordedLanding {
+                    commit,
+                    head: field("head").as_deref().and_then(ObjectId::parse),
+                    change: field("url").and_then(|url| Url::parse(&url).ok()),
+                });
+            if let (Some(landing), Some(proofs)) = (landing, scoped(record, &scope)) {
+                proofs.landing = Some(Stamped { at, value: landing });
+            }
+        }
+        // The merge path's own verdict on a publishing push: git runs the
+        // repository's `pre-push` hook there and the answer comes back as the
+        // push's output, so `accepted` is what it ruled. A push that recorded no
+        // such field said nothing, which is not the same as saying no.
+        EventKind::Push => {
+            record.merge_path = Some(Stamped {
+                at,
+                value: MergePathReport {
+                    verdict: match event.payload.get("accepted").and_then(Value::as_bool) {
+                        Some(true) => Verdict::Pass,
+                        Some(false) => Verdict::Fail,
+                        None => Verdict::Unrecorded,
+                    },
+                    log: field("preserved_log").map(PathBuf::from),
+                    recorded_by: token.to_owned(),
+                },
+            });
+        }
+        // A retry's landing superseding this branch, and the branch's own
+        // retirement: both read through the one reader of their payloads, which
+        // holds each value to the check its kind meets and records nothing for a
+        // payload it cannot read whole.
+        EventKind::BranchSuperseded => {
+            if let Some(read) = crate::retire::SupersessionRecord::read(&event.payload) {
+                record.superseded.push(Stamped { at, value: read });
+            }
+        }
+        EventKind::BranchRetired => {
+            if let Some(read) = crate::retire::RetiredRecord::read(&event.payload, &at) {
+                record.retired = Some(Stamped { at, value: read });
+            }
+        }
+        _ => return named,
+    }
+    true
 }
 
 /// The proofs one scope of a stream holds, made where they are first written — or

@@ -3076,6 +3076,7 @@ fn the_labels_amendment_spells_exactly_the_flags_recoverable_takes_and_the_field
             detail: onevcs::Detail::Full,
             sessions: vec![SessionToken("s-1".to_owned())],
             labels: BTreeMap::from([("run".to_owned(), "r-1".to_owned())]),
+            branch: None,
         })
         .expect("a selection serializes"),
         json!({"detail": "full", "sessions": ["s-1"], "labels": {"run": "r-1"}})

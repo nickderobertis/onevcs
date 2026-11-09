@@ -371,7 +371,9 @@ mod unix {
     /// is read — and refused if it is unreadable — before anything is narrowed away.
     pub(crate) fn read(selection: &Selection) -> Result<Vec<Record>> {
         use std::os::unix::fs::MetadataExt;
-        if selection.is_empty() {
+        // A branch filter names no session, so only the whole set of records can say
+        // which of them hold it; the hints below narrow by what a session is named by.
+        if selection.sessions.is_empty() && selection.labels.is_empty() {
             return workspace::all();
         }
         let directory = crate::home::sessions_dir()?;

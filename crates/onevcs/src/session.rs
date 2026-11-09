@@ -371,12 +371,15 @@ pub struct Selection {
     /// The pairs every answered row's labels must carry.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub labels: BTreeMap<String, String>,
+    /// The one branch asked about, whichever sessions hold it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
 }
 
 impl Selection {
     /// Whether this asks anything at all.
     pub fn is_empty(&self) -> bool {
-        self.sessions.is_empty() && self.labels.is_empty()
+        self.sessions.is_empty() && self.labels.is_empty() && self.branch.is_none()
     }
 }
 

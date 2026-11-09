@@ -666,13 +666,26 @@ fn a_warm_recoverable_read_observes_a_tree_loss_and_repair() {
         !matches!(oracle.status.code(), Some(0 | 1)),
         "real Git refuses the missing tree"
     );
+    let undecided = |rows: serde_json::Value| {
+        rows.as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["tip"] == tip)
+            .map(|row| {
+                row["landed"]["state"] == "unknown"
+                    && row["stopped_because"]
+                        .as_str()
+                        .is_some_and(|said| said.contains("could not be decided"))
+            })
+            .unwrap_or(false)
+    };
     assert!(
-        read().is_err(),
+        undecided(read().expect("the damaged branch alone reads unknown")),
         "a cached diff must not conceal the missing tree"
     );
     assert!(
-        launcher_rows_afresh(world).is_err(),
-        "a fresh CLI refuses the same damaged store"
+        undecided(launcher_rows_afresh(world).expect("the CLI answers the rest of the host")),
+        "a fresh CLI reads the same damaged store the same way"
     );
 
     for copy in &copies {

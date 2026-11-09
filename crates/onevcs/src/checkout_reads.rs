@@ -346,6 +346,27 @@ thread_local! {
 /// removal marker between attempts, which a queued kernel wait could not.
 const PROBE_POLL: std::time::Duration = std::time::Duration::from_millis(20);
 
+thread_local! {
+    /// Whether this thread is making a read that takes no turn: see [`unturned`].
+    static UNTURNED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `read` taking no read turn and waiting on no probe: the decision record's read
+/// of branches it will not re-derive, which only looks at refs and records already
+/// written and so must not be held up by another process's turn. Whatever that read
+/// meets half torn down answers as absent, which sends the branch to the derivation
+/// that does take its turn.
+pub(crate) fn unturned<T>(read: impl FnOnce() -> T) -> T {
+    let before = UNTURNED.with(|flag| flag.replace(true));
+    let answer = read();
+    UNTURNED.with(|flag| flag.set(before));
+    answer
+}
+
+fn is_unturned() -> bool {
+    UNTURNED.with(std::cell::Cell::get)
+}
+
 /// Hold an identity's checkouts stable across a traversal and its git children.
 pub(crate) fn identity(identity: &str) -> Result<Turn> {
     at(workspace::identity_dir(identity)?, Mode::Shared)
@@ -353,6 +374,9 @@ pub(crate) fn identity(identity: &str) -> Result<Turn> {
 
 /// Protect a managed checkout even when its session record is no longer open.
 pub(crate) fn checkout(path: &Path) -> Result<Option<Turn>> {
+    if is_unturned() {
+        return Ok(None);
+    }
     let managed = managed(path)?;
     let turn = managed
         .as_ref()
@@ -764,6 +788,13 @@ pub(crate) fn session(token: &str) -> Result<(Turn, workspace::Record)> {
 }
 
 fn at(root: PathBuf, mode: Mode) -> Result<Turn> {
+    if is_unturned() {
+        return Ok(Rc::new(Lease {
+            guard: RefCell::new(None),
+            mode,
+            checkouts: RefCell::new(HashMap::new()),
+        }));
+    }
     HELD.with(|held| {
         if let Some(guard) = held.borrow().get(&root).and_then(Weak::upgrade) {
             if mode == Mode::Exclusive && guard.mode == Mode::Shared {

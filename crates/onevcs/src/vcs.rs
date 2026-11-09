@@ -1,7 +1,8 @@
 //! The repository side of the seam.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use crate::error::{self, Error, Result};
 use crate::event::EventKind;
@@ -468,13 +469,45 @@ struct Narrowed {
     /// session's own clone, and the execution checkout its branch is handed back to
     /// when it closes. A branch this host knows about is in one of the two.
     checkouts: BTreeSet<PathBuf>,
+    /// Whether sessions or labels selected the branches above.
+    selected_sessions: bool,
+    /// Which branch a branch filter named, where one did: every checkout of an
+    /// identity may hold it, so the checkouts above do not narrow a read by it alone.
+    only_branch: Option<String>,
 }
 
 impl Narrowed {
     /// Whether a branch is one of the ones asked about.
     fn wants(&self, identity: &str, branch: &str) -> bool {
-        self.branches
-            .contains(&(identity.to_owned(), branch.to_owned()))
+        match (&self.only_branch, self.selected_sessions) {
+            (Some(only), false) => only == branch,
+            (Some(only), true) => {
+                only == branch
+                    && self
+                        .branches
+                        .contains(&(identity.to_owned(), branch.to_owned()))
+            }
+            (None, _) => self
+                .branches
+                .contains(&(identity.to_owned(), branch.to_owned())),
+        }
+    }
+
+    /// Whether a checkout can be holding a branch this read is asked about.
+    fn looks_everywhere(&self) -> bool {
+        self.only_branch.is_some() && !self.selected_sessions
+    }
+
+    /// Whether a checkout can be holding a branch this read is asked about.
+    fn looks_in(&self, repo: &Path) -> bool {
+        self.only_branch.is_some() && !self.selected_sessions || self.checkouts.contains(repo)
+    }
+
+    /// Whether the read is confined to some identities: a branch filter alone is not,
+    /// since any identity may hold the name.
+    fn confines(&self, identity: &str) -> bool {
+        !(self.only_branch.is_some() && !self.selected_sessions)
+            && !self.identities.contains(identity)
     }
 }
 
@@ -503,8 +536,17 @@ fn narrowed(selection: &Selection, sessions: &[workspace::Record]) -> Result<Opt
         identities: BTreeSet::new(),
         branches: BTreeSet::new(),
         checkouts: BTreeSet::new(),
+        selected_sessions: !selection.sessions.is_empty() || !selection.labels.is_empty(),
+        only_branch: selection.branch.clone(),
     };
     for record in sessions {
+        if selection
+            .branch
+            .as_ref()
+            .is_some_and(|only| *only != *record.branch)
+        {
+            continue;
+        }
         let named = selection.sessions.is_empty()
             || selection
                 .sessions
@@ -584,10 +626,35 @@ fn collected(
     // this report has nowhere to say one — and costs only certainty: a branch whose
     // record could not be read falls to a lower tier and is judged from the base's own
     // history instead.
-    let streams = crate::status::recorded_streams_about(
-        narrowed.as_ref().map(|only| &only.branches),
-        &sessions,
-    )?;
+    //
+    // The decision record's read: a host read folds the streams it can reuse, and a
+    // Decision read of any scope serves recorded branches. Nothing else touches it.
+    crate::decisions::diagnostics_begin();
+    let reusing = selection.detail == crate::Detail::Decision && crate::decisions::enabled();
+    let writing =
+        reusing && selection.sessions.is_empty() && selection.labels.is_empty();
+    let branch_filter = narrowed.as_ref().is_some_and(|only| only.only_branch.is_some());
+    let (streams, answers, moved) = if reusing && narrowed.is_none() {
+        let answers = crate::decisions::host_streams()?;
+        let streams = answers.streams.clone();
+        let moved = crate::decisions::Moved {
+            branches: answers.moved.branches.clone(),
+            unreadable: answers.moved.unreadable.clone(),
+            every: answers.moved.every,
+        };
+        (streams, Some(answers), moved)
+    } else {
+        let streams = crate::status::recorded_streams_about(
+            narrowed.as_ref().map(|only| &only.branches),
+            &sessions,
+        )?;
+        let moved = if reusing {
+            crate::decisions::narrowed_moved(&streams)
+        } else {
+            crate::decisions::Moved::default()
+        };
+        (streams, None, moved)
+    };
     let wanted = match scope {
         Scope::All => None,
         Scope::Repo(repo) => Some(store::resolve(&registry, repo)?.key),
@@ -611,10 +678,7 @@ fn collected(
         // An identity none of the selected sessions belongs to holds none of the
         // branches asked about, so nothing of it is opened at all — not its
         // publication checkout, not its base, not one of its clones.
-        if narrowed
-            .as_ref()
-            .is_some_and(|only| !only.identities.contains(identity))
-        {
+        if narrowed.as_ref().is_some_and(|only| only.confines(identity)) {
             return false;
         }
         true
@@ -631,6 +695,8 @@ fn collected(
         narrowed: &narrowed,
         reporting,
         detail: selection.detail,
+        record: reusing.then_some(&moved),
+        writing,
     };
     // Each identity is scanned on its own thread, and the answers are joined in the
     // order the identities are named. That changes no verdict and no row: every
@@ -647,13 +713,24 @@ fn collected(
     let mut withheld_rows: Vec<(Option<u64>, Recoverable)> = Vec::new();
     let mut seen: Vec<(String, String)> = Vec::new();
     for scanned in concurrently(&identities, |identity| {
-        crate::recovery_cache::scope(|| git::memoized(|| scanned(identity, &scan)))
+        crate::recovery_cache::scope(|| {
+            git::memoized(|| git::local_only(|| scan_identity(identity, &scan)))
+        })
     }) {
         let scanned = scanned?;
         rows.extend(scanned.rows);
         withheld_rows.extend(scanned.withheld_rows);
         seen.extend(scanned.seen);
     }
+    if writing {
+        if let Some(answers) = answers {
+            answers.persist();
+        } else if branch_filter {
+            let tokens: Vec<String> = streams.iter().map(|r| r.token().to_owned()).collect();
+            crate::decisions::update_streams(&tokens);
+        }
+    }
+    crate::decisions::diagnostics_end();
     // A landed copy answers only where nothing holding work under that name did.
     let mut kept: Vec<(String, String)> = Vec::new();
     for (at, row) in withheld_rows {
@@ -684,6 +761,10 @@ struct Scan<'a> {
     trailers: &'a provenance::Trailers,
     narrowed: &'a Option<Narrowed>,
     reporting: Reporting,
+    /// What the streams moved, where this read may serve recorded decisions.
+    record: Option<&'a crate::decisions::Moved>,
+    /// Whether this read writes the decisions it derives.
+    writing: bool,
 }
 
 /// One identity's share of the report: the rows it answers with, the rows it
@@ -692,10 +773,344 @@ struct Scanned {
     rows: Vec<(Option<u64>, Recoverable)>,
     withheld_rows: Vec<(Option<u64>, Recoverable)>,
     seen: Vec<(String, String)>,
+    /// The branches this scan wrote a decision for.
+    recorded: BTreeSet<String>,
 }
 
-/// Scan every checkout of one identity for its preserved branches.
-fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
+/// One identity's report: recorded decisions served where they hold, without a read
+/// turn, and only the branches that moved derived under one.
+fn scan_identity(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
+    let Some(moved) = scan.record else {
+        return scanned(identity, scan, None);
+    };
+    let served = crate::checkout_reads::unturned(|| serve_recorded(identity, scan, moved))?;
+    let Served {
+        mut rows,
+        mut withheld_rows,
+        mut seen,
+        derive,
+        tips,
+    } = served;
+    let mut recorded = BTreeSet::new();
+    if !derive.is_empty() {
+        for branch in derive.iter().filter(|branch| *branch != WHOLE_IDENTITY) {
+            crate::decisions::note_derived(identity, branch);
+        }
+        let mut derived = scanned(identity, scan, Some(&derive))?;
+        rows.append(&mut derived.rows);
+        withheld_rows.append(&mut derived.withheld_rows);
+        seen.append(&mut derived.seen);
+        recorded = derived.recorded;
+        // A branch the derivation did not answer at all is one nothing unpublishes:
+        // its work reached a remote-tracking ref. Recording that keeps a read from
+        // asking again until its tip moves.
+        if scan.writing && scan.detail == crate::Detail::Decision {
+            for branch in derive.iter().filter(|branch| !recorded.contains(*branch)) {
+                let Some((repo, tip)) = tips.get(branch) else {
+                    continue;
+                };
+                record_unlisted(identity, repo, tip, branch, scan.sessions);
+            }
+        }
+    }
+    Ok(Scanned {
+        rows,
+        withheld_rows,
+        seen,
+        recorded,
+    })
+}
+
+/// What serving one identity's records answered, and what is left to derive.
+#[derive(Default)]
+struct Served {
+    rows: Vec<(Option<u64>, Recoverable)>,
+    withheld_rows: Vec<(Option<u64>, Recoverable)>,
+    seen: Vec<(String, String)>,
+    derive: BTreeSet<String>,
+    /// Each branch's first listed copy, for what the derivation has to say about it.
+    tips: BTreeMap<String, (PathBuf, String)>,
+}
+
+/// The rows the records can answer for one identity, and the branches they cannot.
+///
+/// Holds no turn and starts no process for a branch whose inputs held. A branch is sent
+/// to the derivation that takes its turn whenever anything about it moved: its record
+/// is missing or not this build's, its tip or sessions or streams changed, a copy of it
+/// disagrees with another, or the base gained something that names it.
+fn serve_recorded(
+    identity: &str,
+    scan: &Scan<'_>,
+    moved: &crate::decisions::Moved,
+) -> Result<Served> {
+    use crate::decisions::{self, Decision};
+    let Scan {
+        registry,
+        streams,
+        sessions,
+        trailers,
+        narrowed,
+        reporting,
+        ..
+    } = *scan;
+    let mut served = Served::default();
+    let records = decisions::load(identity);
+    let resolution = store::resolve(registry, identity)?;
+    let publication = resolution.publication.clone();
+    let current = git::default_branch(&publication, "origin")
+        .ok()
+        .and_then(|base| base_commit(&publication, &base));
+    let lent = git::objects_dir(&publication).ok();
+    let preserved_here = crate::status::preserved_branches(streams, identity);
+
+    let mut copies: BTreeMap<String, Vec<(PathBuf, String)>> = BTreeMap::new();
+    let mut base_of_repo: BTreeMap<PathBuf, String> = BTreeMap::new();
+    let mut origin_moved: BTreeMap<PathBuf, Option<BTreeSet<String>>> = BTreeMap::new();
+    let checkouts = workspace::checkouts_among(registry, &resolution, sessions);
+    for repo in &checkouts {
+        if narrowed.as_ref().is_some_and(|only| !only.looks_in(repo)) {
+            continue;
+        }
+        if !git::is_repo(repo) {
+            if narrowed.is_some() && !matches!(repo.try_exists(), Ok(false)) {
+                // A selected checkout that cannot be read is the derivation's refusal
+                // to make, so the whole identity goes there.
+                return Ok(Served {
+                    derive: all_wanted(identity, narrowed, &records),
+                    ..Served::default()
+                });
+            }
+            continue;
+        }
+        let Some((heads, origin)) = crate::native_refs::heads(repo)
+            .zip(crate::native_refs::remote_tips(repo, "origin"))
+        else {
+            return Ok(Served {
+                derive: all_wanted(identity, narrowed, &records),
+                ..Served::default()
+            });
+        };
+        match git::default_branch(repo, "origin") {
+            Ok(base) => {
+                base_of_repo.insert(repo.clone(), base);
+            }
+            // No base at all: every branch here is the derivation's to answer unknown.
+            Err(_) => {
+                for (branch, tip) in heads {
+                    if !origin.contains(&tip) && wanted_here(identity, &branch, narrowed) {
+                        served.derive.insert(branch);
+                    }
+                }
+                continue;
+            }
+        }
+        for (branch, tip) in heads {
+            if !wanted_here(identity, &branch, narrowed) {
+                continue;
+            }
+            if origin.contains(&tip) && !preserved_here.contains(&branch) {
+                continue;
+            }
+            if superseded_copy(sessions, repo, identity, &branch) {
+                continue;
+            }
+            served
+                .tips
+                .entry(branch.clone())
+                .or_insert_with(|| (repo.clone(), tip.clone()));
+            if !records.contains_key(&branch) {
+                served.derive.insert(branch);
+                continue;
+            }
+            copies.entry(branch).or_default().push((repo.clone(), tip));
+        }
+    }
+
+    // A branch whose copies disagree, or whose first copy is not the one recorded, is
+    // not what its record describes; nor is one whose own inputs moved.
+    let mut candidates: Vec<(&String, &Decision)> = Vec::new();
+    for (branch, seen_at) in &copies {
+        let decision = &records[branch];
+        let first = &seen_at[0];
+        let agreed = seen_at.iter().all(|(_, tip)| *tip == decision.tip);
+        let origin_fresh = {
+            let repo = &first.0;
+            let base = base_of_repo.get(repo).map(String::as_str).unwrap_or_default();
+            decisions::origin_digest(repo, base).as_deref() == Some(decision.listing.origin.as_str())
+        };
+        let held = held_by(sessions, identity, branch)?;
+        let digest = decisions::sessions_digest(sessions, identity, branch, &held);
+        let current_copy = first.0 == decision.listing.checkout && agreed;
+        let moved_stream = moved.covers(branch)
+            || (!decision.landed && moved.unreadable.contains(identity));
+        if !current_copy || digest != decision.sessions || moved_stream {
+            served.derive.insert(branch.clone());
+            continue;
+        }
+        // Nothing about this copy moved, and the last derivation found it unlisted.
+        if decision.row.is_none() {
+            continue;
+        }
+        if !origin_fresh {
+            // Something other than the base moved on the origin: ask once for this
+            // checkout which branches are still ahead of everything it has.
+            let still = origin_moved
+                .entry(first.0.clone())
+                .or_insert_with(|| git::unpublished_heads(&first.0).ok());
+            match still {
+                Some(unpublished) if unpublished.contains(branch.as_str()) => {}
+                _ => {
+                    served.derive.insert(branch.clone());
+                    continue;
+                }
+            }
+        }
+        candidates.push((branch, decision));
+    }
+
+    // The base-increment check, once per checkout and base among the unlanded records.
+    let mut groups: BTreeMap<(PathBuf, String), Vec<(&String, &Decision)>> = BTreeMap::new();
+    for (branch, decision) in &candidates {
+        if !decision.landed {
+            groups
+                .entry((decision.listing.checkout.clone(), decision.listing.base.clone()))
+                .or_default()
+                .push((*branch, *decision));
+        }
+    }
+    for ((repo, base), members) in &groups {
+        let asked = git::Asked::borrowing(
+            repo,
+            if *repo == publication { None } else { lent.as_deref() },
+        );
+        let current_base = base_commit(&publication, base).or_else(|| current.clone());
+        let compared = judged_against(asked, base, current_base.as_ref());
+        // Compared against anything but the commit this host knows, a record's base
+        // commit is not one this check can be held to.
+        let Some(compared) = git::ObjectId::parse(&compared).map(|id| id.as_str().to_owned())
+        else {
+            served.derive.extend(members.iter().map(|(b, _)| (*b).clone()));
+            continue;
+        };
+        let decided: BTreeSet<String> = members
+            .iter()
+            .filter_map(|(_, decision)| decision.decided_against.clone())
+            .collect();
+        if decided.len() == 1 && decided.contains(&compared) {
+            continue;
+        }
+        let started = Instant::now();
+        let gained = decisions::gained(asked, &compared, &decided, trailers.landed());
+        let gained = match gained {
+            Ok(gained) => gained,
+            Err(_) => {
+                decisions::note_check(identity, repo, 0, members.len(), started);
+                served.derive.extend(members.iter().map(|(b, _)| (*b).clone()));
+                continue;
+            }
+        };
+        let known: HashSet<&str> = members
+            .iter()
+            .flat_map(|(_, decision)| decision.listing.commits.iter().map(String::as_str))
+            .collect();
+        let unmatched: Vec<String> = gained
+            .trailers
+            .iter()
+            .filter(|value| !known.contains(value.as_str()))
+            .cloned()
+            .collect();
+        let every = match decisions::unmatched_trailers_reached(asked, &gained.from, &unmatched) {
+            Ok(reached) => reached,
+            Err(_) => true,
+        };
+        let mut named = 0;
+        for (branch, decision) in members {
+            if every || decisions::names(&gained, &decision.tip, &decision.listing) {
+                served.derive.insert((*branch).clone());
+                named += 1;
+            } else if scan.writing && gained.commits.len() >= decisions::REANCHOR_AFTER {
+                let mut anchored = (*decision).clone();
+                anchored.decided_against = Some(compared.clone());
+                decisions::write(&anchored);
+            }
+        }
+        decisions::note_check(identity, repo, gained.commits.len(), named, started);
+    }
+
+    // The fresh half of each retirement, for the branches that are served.
+    let census = crate::retire::Census::read(
+        registry,
+        identity,
+        sessions,
+        streams,
+        trailers,
+        crate::retire::Reach::Offline,
+        narrowed.as_ref().and_then(|only| (!only.looks_everywhere()).then_some(&only.checkouts)),
+    )?
+    .looking_once(scan.look);
+    for (branch, decision) in &candidates {
+        if served.derive.contains(*branch) {
+            continue;
+        }
+        let retirement = crate::retire::classify_offline_kept(
+            &census,
+            branch,
+            decision.listing.verdict.as_ref(),
+        )
+        .map(|(retirement, _)| retirement);
+        let Some(mut row) = decision.row.clone() else {
+            continue;
+        };
+        row.retirement = retirement;
+        let withheld = row.landed.is_landed();
+        let retirable = row
+            .retirement
+            .as_ref()
+            .is_some_and(|found| found.class == crate::retire::RetirementClass::Retirable);
+        decisions::note_served();
+        if crate::stack_base::is_stack_base(branch)
+            || (reporting == Reporting::UnpublishedOnly && (withheld || retirable))
+        {
+            continue;
+        }
+        let at = decision.listing.committed_at;
+        if withheld {
+            served.withheld_rows.push((at, row));
+        } else {
+            served.seen.push((identity.to_owned(), (*branch).clone()));
+            served.rows.push((at, row));
+        }
+    }
+    Ok(served)
+}
+
+/// Whether a filtered read wants this branch at all.
+fn wanted_here(identity: &str, branch: &str, narrowed: &Option<Narrowed>) -> bool {
+    narrowed
+        .as_ref()
+        .is_none_or(|only| only.wants(identity, branch))
+}
+
+/// Everything a read that cannot serve anything of this identity must derive.
+fn all_wanted(
+    identity: &str,
+    narrowed: &Option<Narrowed>,
+    records: &BTreeMap<String, crate::decisions::Decision>,
+) -> BTreeSet<String> {
+    records
+        .keys()
+        .filter(|branch| wanted_here(identity, branch, narrowed))
+        .cloned()
+        .chain(std::iter::once(WHOLE_IDENTITY.to_owned()))
+        .collect()
+}
+
+/// A stand-in member of a derive set meaning every branch of the identity.
+const WHOLE_IDENTITY: &str = "\0";
+
+/// Scan every checkout of one identity for its preserved branches, or, where `only` is
+/// given, the branches named in it.
+fn scanned(identity: &str, scan: &Scan<'_>, only: Option<&BTreeSet<String>>) -> Result<Scanned> {
     let Scan {
         registry,
         streams,
@@ -708,6 +1123,7 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
     let mut rows: Vec<(Option<u64>, Recoverable)> = Vec::new();
     let mut withheld_rows: Vec<(Option<u64>, Recoverable)> = Vec::new();
     let mut seen: Vec<(String, String)> = Vec::new();
+    let mut written: BTreeSet<String> = BTreeSet::new();
     // Every copy of a name this report has already put the question to, with the
     // commit that copy stands at. A branch of one identity lives in as many clones as
     // ever held it — a busy host keeps dozens — and deciding it is the expensive part
@@ -741,20 +1157,25 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
         streams,
         trailers,
         crate::retire::Reach::Offline,
-        narrowed.as_ref().map(|only| &only.checkouts),
+        narrowed
+            .as_ref()
+            .and_then(|only| (!only.looks_everywhere()).then_some(&only.checkouts)),
     )?
     .looking_once(scan.look);
-    let mut classified: BTreeMap<String, Option<crate::retire::Retirement>> = BTreeMap::new();
+    let mut classified: BTreeMap<
+        String,
+        (
+            Option<crate::retire::Retirement>,
+            Option<crate::verdict::Verdict>,
+        ),
+    > = BTreeMap::new();
     let _reads = crate::checkout_reads::identity(&resolution.key)?;
     for repo in workspace::checkouts_among(registry, &resolution, sessions) {
         // A checkout none of the selected sessions can be holding a branch in is
         // not opened: that is the difference between a filter that narrows the
         // answer and one that narrows the work, and on a host with forty retained
         // clones per identity it is the whole difference.
-        if narrowed
-            .as_ref()
-            .is_some_and(|only| !only.checkouts.contains(&repo))
-        {
+        if narrowed.as_ref().is_some_and(|only| !only.looks_in(&repo)) {
             continue;
         }
         if !git::is_repo(&repo) {
@@ -769,7 +1190,10 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
         }
         let base = match git::default_branch(&repo, "origin") {
             Ok(base) => base,
-            Err(_) => continue,
+            Err(failure) => {
+                unbased_rows(identity, &repo, scan, only, &failure.to_string(), &mut rows, &mut seen)?;
+                continue;
+            }
         };
         let asked = git::Asked::borrowing(
             &repo,
@@ -788,9 +1212,11 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
             &repo,
             &preserved_here,
             |branch| {
-                narrowed
+                only.is_none_or(|wanted| {
+                    wanted.contains(branch) || wanted.contains(WHOLE_IDENTITY)
+                }) && narrowed
                     .as_ref()
-                    .is_none_or(|only| only.wants(identity, branch))
+                    .is_none_or(|narrowed| narrowed.wants(identity, branch))
             },
             |branch| recorded_base(sessions, identity, branch).map(|base| base.to_string()),
         )?;
@@ -857,6 +1283,7 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
             // whatever they found would be replaced by it: one such branch on the
             // consuming host spent seventy-five content merges on a verdict that
             // was then discarded.
+            let mut undecided: Option<String> = None;
             let verdict = if unfollowable_chain(sessions, identity, &branch) {
                 Landed::Unknown
             } else {
@@ -867,7 +1294,11 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
                     &tip,
                     &recorded,
                     trailers,
-                )?
+                )
+                .unwrap_or_else(|failure| {
+                    undecided = Some(failure.to_string());
+                    Landed::Unknown
+                })
             };
             // Withheld unless every branch was asked for, and only where the
             // work *reached the base*: that is the row whose command must not be
@@ -876,7 +1307,8 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
             // work goes missing — and it is listed, saying so, with no line that
             // reads as "paste this".
             let withheld = verdict.is_landed();
-            if withheld && reporting == Reporting::UnpublishedOnly {
+            let writing = scan.writing;
+            if withheld && reporting == Reporting::UnpublishedOnly && !writing {
                 continue;
             }
             // A stack base is not preserved work in either report: it merges branches
@@ -888,9 +1320,13 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
             if crate::stack_base::is_stack_base(&branch) {
                 continue;
             }
-            let retirement = classified
+            let (retirement, verdict_kept) = classified
                 .entry(branch.clone())
-                .or_insert_with(|| crate::retire::classify_offline(&census, &branch))
+                .or_insert_with(|| {
+                    crate::retire::classify_offline_kept(&census, &branch, None)
+                        .map(|(found, kept)| (Some(found), kept))
+                        .unwrap_or((None, None))
+                })
                 .clone();
             // A branch that provably holds nothing beyond its base is finished work
             // exactly as a landed one is, and is left out of the default report for
@@ -898,42 +1334,78 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
             let retirable = retirement
                 .as_ref()
                 .is_some_and(|found| found.class == crate::retire::RetirementClass::Retirable);
-            if retirable && reporting == Reporting::UnpublishedOnly {
+            let skip = (withheld || retirable) && reporting == Reporting::UnpublishedOnly;
+            if skip && !writing {
                 continue;
             }
             // Marked seen only once it is a row this report is answering with, so
             // that one repository's spent copy of a name cannot answer for
             // another's: a branch published out of the checkout and re-cut in a
             // later run has both, and the first has nothing left in it.
-            if !withheld {
+            if !withheld && !skip {
                 seen.push(key);
             }
-            let row = preserved_row(
-                &Preserved {
+            let on_origin = crate::status::preserved_for(
+                streams,
+                identity,
+                &branch,
+                session_holding(sessions, identity, &branch),
+            );
+            let undecided_seen = undecided.is_some();
+            let row = match undecided {
+                Some(reason) => undecided_row(
                     identity,
-                    repo: asked,
-                    publication: &publication,
-                    base: &base,
-                    compared: &compared,
-                    branch: &branch,
-                    change_url,
-                    verdict,
-                    // Read through the same reader `onevcs status` reads it
-                    // through, so the two reports cannot come to disagree about
-                    // where one branch is.
-                    on_origin: crate::status::preserved_for(
-                        streams,
+                    asked,
+                    &publication,
+                    &base,
+                    &branch,
+                    Some(tip.clone()),
+                    &reason,
+                    on_origin.clone(),
+                    sessions,
+                ),
+                None => preserved_row(
+                    &Preserved {
                         identity,
+                        repo: asked,
+                        publication: &publication,
+                        base: &base,
+                        compared: &compared,
+                        branch: &branch,
+                        change_url,
+                        verdict,
+                        // Read through the same reader `onevcs status` reads it
+                        // through, so the two reports cannot come to disagree about
+                        // where one branch is.
+                        on_origin: on_origin.clone(),
+                        retirement,
+                    },
+                    sessions,
+                    trailers,
+                    scan.detail,
+                    Some(tip.clone()),
+                )
+                .unwrap_or_else(|failure| {
+                    undecided_row(
+                        identity,
+                        asked,
+                        &publication,
+                        &base,
                         &branch,
-                        session_holding(sessions, identity, &branch),
-                    ),
-                    retirement,
-                },
-                sessions,
-                trailers,
-                scan.detail,
-                Some(tip.clone()),
-            )?;
+                        Some(tip.clone()),
+                        &failure.to_string(),
+                        on_origin.clone(),
+                        sessions,
+                    )
+                }),
+            };
+            if writing && scan.detail == crate::Detail::Decision && !undecided_seen {
+                written.insert(branch.clone());
+                record_decision(identity, asked, &base, &compared, &tip, &branch, &row, verdict_kept, sessions, trailers);
+            }
+            if skip {
+                continue;
+            }
             if withheld {
                 withheld_rows.push(row);
             } else {
@@ -945,6 +1417,7 @@ fn scanned(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
         rows,
         withheld_rows,
         seen,
+        recorded: written,
     })
 }
 
@@ -1174,6 +1647,193 @@ fn preserved_row(
             retirement: retirement.clone(),
         },
     ))
+}
+
+/// The row of a branch nothing could be decided about, naming why.
+///
+/// Used where the comparison was refused or the checkout has no base: the branch reads
+/// `unknown` alone, every other branch keeps its answer, and nothing about the read
+/// fails. The reason is said even at Decision detail, because `unknown` with no reason
+/// is exactly what this row exists to avoid.
+#[allow(clippy::too_many_arguments)]
+fn undecided_row(
+    identity: &str,
+    repo: git::Asked<'_>,
+    publication: &Path,
+    base: &str,
+    branch: &str,
+    tip: Option<String>,
+    reason: &str,
+    on_origin: Option<OnOrigin>,
+    sessions: &[workspace::Record],
+) -> (Option<u64>, Recoverable) {
+    let answering = latest_session(sessions, identity, branch);
+    (
+        git::committed_at(repo.path(), branch),
+        Recoverable {
+            identity: identity.to_owned(),
+            branch: PreservedBranch {
+                branch: branch.to_owned(),
+                base: base.to_owned(),
+                provenance: Provenance::IncompleteStep,
+                change_url: None,
+                change_base: None,
+            },
+            checkout: repo.path().to_path_buf(),
+            tip,
+            landed: Landed::Unknown,
+            stopped_because: format!("whether this branch landed could not be decided: {reason}"),
+            recover_command: vec![
+                "onevcs".to_owned(),
+                "recover".to_owned(),
+                branch.to_owned(),
+                "--repo".to_owned(),
+                publication.display().to_string(),
+            ],
+            held_by: held_by(sessions, identity, branch).ok().flatten(),
+            net_negative: None,
+            session: answering.map(|record| SessionToken(record.token.to_string())),
+            labels: answering
+                .map(|record| record.labels.clone())
+                .unwrap_or_default(),
+            on_origin,
+            retirement: None,
+        },
+    )
+}
+
+/// Answer every branch of a checkout with no base it can be compared against.
+fn unbased_rows(
+    identity: &str,
+    repo: &Path,
+    scan: &Scan<'_>,
+    only: Option<&BTreeSet<String>>,
+    reason: &str,
+    rows: &mut Vec<(Option<u64>, Recoverable)>,
+    seen: &mut Vec<(String, String)>,
+) -> Result<()> {
+    let Some(heads) = crate::native_refs::heads(repo).or_else(|| git::heads(repo).ok()) else {
+        return Ok(());
+    };
+    let resolution = store::resolve(scan.registry, identity)?;
+    for (branch, tip) in heads {
+        let key = (identity.to_owned(), branch.clone());
+        if seen.contains(&key)
+            || !wanted_here(identity, &branch, scan.narrowed)
+            || only.is_some_and(|wanted| !wanted.contains(&branch) && !wanted.contains(WHOLE_IDENTITY))
+            || crate::stack_base::is_stack_base(&branch)
+        {
+            continue;
+        }
+        let row = undecided_row(
+            identity,
+            git::Asked::from(repo),
+            &resolution.publication,
+            "",
+            &branch,
+            Some(tip),
+            reason,
+            None,
+            scan.sessions,
+        );
+        seen.push(key);
+        rows.push(row);
+    }
+    Ok(())
+}
+
+/// Write the decision of a branch this read derived.
+#[allow(clippy::too_many_arguments)]
+fn record_decision(
+    identity: &str,
+    asked: git::Asked<'_>,
+    base: &str,
+    compared: &str,
+    tip: &str,
+    branch: &str,
+    (at, row): &(Option<u64>, Recoverable),
+    verdict: Option<crate::verdict::Verdict>,
+    sessions: &[workspace::Record],
+    trailers: &provenance::Trailers,
+) {
+    use crate::decisions::{self, Decision, Listing};
+    let landed = row.landed.is_landed();
+    let held = row.held_by.clone();
+    let mut listing = Listing {
+        checkout: asked.path().to_path_buf(),
+        base: base.to_owned(),
+        committed_at: *at,
+        origin: decisions::origin_digest(asked.path(), base).unwrap_or_default(),
+        verdict,
+        ..Listing::default()
+    };
+    let mut decided_against = None;
+    if !landed {
+        // What the increment check matches gained commits against, read while the
+        // branch's inputs are in hand. A fork it cannot read leaves nothing to match
+        // but the tip, which only an exact reach of the base can name.
+        decided_against = Some(compared.to_owned());
+        if let Ok(Some(fork)) = git::merge_base(asked, compared, branch) {
+            if let Ok(commits) = git::log_messages(asked, &fork, branch) {
+                listing.commits = commits.into_iter().map(|commit| commit.sha).collect();
+            }
+            if let Ok(paths) = git::changed_paths(asked, &fork, branch) {
+                listing.paths = decisions::paths_key(&paths);
+            }
+            if let Ok(Ok(subject)) =
+                provenance::publication_subject(asked, &fork, branch, None, trailers)
+            {
+                listing.subject = Some(subject.to_string());
+            }
+        }
+        listing.change_number = row
+            .branch
+            .change_url
+            .as_ref()
+            .and_then(|url| decisions::change_number(url.as_str()));
+    }
+    decisions::write(&Decision {
+        version: decisions::VERSION,
+        identity: identity.to_owned(),
+        branch: branch.to_owned(),
+        tip: tip.to_owned(),
+        sessions: decisions::sessions_digest(sessions, identity, branch, &held),
+        logic: decisions::LOGIC,
+        listing,
+        landed,
+        decided_against,
+        decided_at: decisions::now(),
+        row: Some(row.clone()),
+    });
+}
+
+/// Record that a copy of a branch reaches a remote-tracking ref, so nothing about it is
+/// left to count until its tip moves.
+fn record_unlisted(
+    identity: &str,
+    repo: &Path,
+    tip: &str,
+    branch: &str,
+    sessions: &[workspace::Record],
+) {
+    use crate::decisions::{self, Decision, Listing};
+    let held = held_by(sessions, identity, branch).ok().flatten();
+    decisions::write(&Decision {
+        version: decisions::VERSION,
+        identity: identity.to_owned(),
+        branch: branch.to_owned(),
+        tip: tip.to_owned(),
+        sessions: decisions::sessions_digest(sessions, identity, branch, &held),
+        logic: decisions::LOGIC,
+        listing: Listing {
+            checkout: repo.to_path_buf(),
+            ..Listing::default()
+        },
+        landed: true,
+        decided_against: None,
+        decided_at: decisions::now(),
+        row: None,
+    });
 }
 
 /// The session that answers for a branch: the newest record naming it.

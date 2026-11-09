@@ -57,6 +57,7 @@ mod branch;
 pub mod branches;
 mod change;
 mod checkout_reads;
+mod decisions;
 pub mod cli;
 mod closing;
 pub mod declaration;
