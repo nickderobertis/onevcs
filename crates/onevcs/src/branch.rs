@@ -677,6 +677,14 @@ impl Landing {
         let outcome = publish::run(&context, stream);
         if matches!(outcome, Err(_) | Ok(PublishOutcome::Failed { .. })) {
             let _ = git::copy_branch(&context.repo, &self.source, &self.branch);
+            // This stream is one per branch name across repositories, so what the
+            // push put on origin is read off origin rather than off the stream. A
+            // commit the checkout does not hold is never written.
+            if let Ok(git::RemoteTip::At(remote)) =
+                git::remote_tip_read(&self.source, "origin", &self.branch)
+            {
+                git::record_on_origin(&self.source, &self.branch, &remote);
+            }
         }
         outcome
     }

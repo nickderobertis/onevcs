@@ -99,6 +99,12 @@ pub(crate) struct Listing {
     /// read has left to ask.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verdict: Option<Verdict>,
+    /// Whether this tip is published work, which unlists it from the default report.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub covered: bool,
+    /// Where a local origin stood this branch when it was decided.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_tip: Option<String>,
 }
 // llmlint: ignore-end[invalid_states_unrepresentable]
 

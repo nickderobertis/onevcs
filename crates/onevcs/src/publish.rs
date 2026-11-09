@@ -768,7 +768,7 @@ pub fn run_for_session(
     // a tree that exists only in a run root about to be reclaimed.
     let failed = |kind: FailureKind, reason: String, armed: Option<ArmedMerge>| {
         let checkout = record.execution_checkout.clone();
-        let retained = match git::copy_branch(&record.clone, &checkout, &record.branch) {
+        let retained = match workspace::copy_back(&record, &checkout, &record.branch) {
             Ok(true) => Retention::HandedBack(checkout),
             _ => Retention::Refused(checkout),
         };

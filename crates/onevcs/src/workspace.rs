@@ -3278,7 +3278,28 @@ fn counted_processes(holders: usize) -> String {
 /// "what became of this session" still names it. Work on any *other* ref is in none
 /// of that, which is why a close refuses over that instead of reporting it.
 fn hand_back(record: &Record) -> bool {
-    git::copy_branch(&record.clone, &record.execution_checkout, &record.branch).unwrap_or(false)
+    copy_back(record, &record.execution_checkout, &record.branch).unwrap_or(false)
+}
+
+/// Copy one branch of a session's clone into `destination` ([`git::copy_branch`]),
+/// and, where the session's own stream records putting that branch on origin, write
+/// the destination's `origin/<branch>` to the commit it pushed.
+///
+/// The copy moves `refs/heads/<branch>` alone, so without the second write the
+/// destination holds a published branch with no remote-tracking ref beside it — and
+/// `onevcs recoverable`, which measures a branch against that ref, lists finished work
+/// as work nobody published until somebody fetches there. The remote-tracking ref is
+/// written whether or not the destination took the branch: what origin carries is a
+/// fact about origin, and [`git::record_on_origin`] writes only a commit the
+/// destination holds and never moves the ref back.
+pub(crate) fn copy_back(record: &Record, destination: &Path, branch: &str) -> Result<bool> {
+    let copied = git::copy_branch(&record.clone, destination, branch);
+    if let Some(head) =
+        crate::status::pushed_on(&record.token.to_string(), &record.identity, branch)
+    {
+        git::record_on_origin(destination, branch, &head);
+    }
+    copied
 }
 
 /// Everything in a session's clone that removing its worktree would strand.
@@ -3335,8 +3356,7 @@ fn stray_work(record: &Record) -> Result<Vec<Stray>> {
     Ok(found
         .into_iter()
         .map(|(branch, commits)| Stray {
-            preserved: git::copy_branch(&record.clone, &record.execution_checkout, &branch)
-                .unwrap_or(false),
+            preserved: copy_back(record, &record.execution_checkout, &branch).unwrap_or(false),
             branch,
             commits,
         })

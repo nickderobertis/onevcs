@@ -28,6 +28,7 @@
 //! file and nobody else's. A reader treats every record there as a holder, including
 //! one named by the lease digest alone, which is what a build before this wrote.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -165,36 +166,10 @@ impl Lease {
 /// somebody a branch mid-flight. A record that disappears between being listed and
 /// being read is one whose publication just finished, which is an answer.
 pub fn running(identity: &str, branch: &str) -> Result<Option<PathBuf>> {
-    let dir = branch_dir(identity, branch)?;
-    let entries = match std::fs::read_dir(&dir) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error::at("list the publications in", &dir)(error)),
-    };
-    let mut records: Vec<PathBuf> = entries
-        .map(|entry| entry.map(|entry| entry.path()))
-        .collect::<std::io::Result<_>>()
-        .map_err(error::at("list the publications in", &dir))?;
-    // Only finished documents: `atomic_write` stages each one under a dot name and
-    // renames it into place.
-    records.retain(|path| {
-        path.extension()
-            .is_some_and(|extension| extension == "json")
-            && !path
-                .file_name()
-                .is_some_and(|name| name.to_string_lossy().starts_with('.'))
-    });
-    // In a stable order, so two publications of one branch at once answer with the
-    // same one on every read.
-    records.sort();
-    for path in records {
-        let raw = match std::fs::read_to_string(&path) {
-            Ok(raw) => raw,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(error::at("read the publication record at", &path)(error)),
+    for path in records_in(&branch_dir(identity, branch)?)? {
+        let Some(record) = read_record(&path)? else {
+            continue;
         };
-        let record: Record = serde_json::from_str(&raw)
-            .map_err(error::at("read the publication record at", &path))?;
         if record.identity != identity || record.branch != branch {
             continue;
         }
@@ -204,4 +179,74 @@ pub fn running(identity: &str, branch: &str) -> Result<Option<PathBuf>> {
         }
     }
     Ok(None)
+}
+
+/// Every branch of `identity` a publication is running on right now, which a report
+/// takes as candidates so a branch mid-publication keeps its row whatever its
+/// remote-tracking ref says.
+///
+/// Definite in the way [`running`] is: a record that cannot be read is an `Err`, and
+/// the branch it would name cannot be told from its file, so the whole answer is.
+pub fn running_branches(identity: &str) -> Result<BTreeSet<String>> {
+    let root = home::publishing_dir()?;
+    let branches = match std::fs::read_dir(&root) {
+        Ok(branches) => branches,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeSet::new()),
+        Err(error) => return Err(error::at("list the publications in", &root)(error)),
+    };
+    let mut found = BTreeSet::new();
+    for branch in branches {
+        let branch = branch.map_err(error::at("list the publications in", &root))?;
+        for path in records_in(&branch.path())? {
+            let Some(record) = read_record(&path)? else {
+                continue;
+            };
+            if record.identity != identity {
+                continue;
+            }
+            let record = checked(record, &path)?;
+            if lock::is_occupied(&lease_of(&record.run_root))? {
+                found.insert(record.branch);
+            }
+        }
+    }
+    Ok(found)
+}
+
+/// The finished records under one branch's directory, in a stable order so two
+/// publications of one branch at once answer with the same one on every read.
+fn records_in(dir: &Path) -> Result<Vec<PathBuf>> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error::at("list the publications in", dir)(error)),
+    };
+    let mut records: Vec<PathBuf> = entries
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<std::io::Result<_>>()
+        .map_err(error::at("list the publications in", dir))?;
+    // Only finished documents: `atomic_write` stages each one under a dot name and
+    // renames it into place.
+    records.retain(|path| {
+        path.extension()
+            .is_some_and(|extension| extension == "json")
+            && !path
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with('.'))
+    });
+    records.sort();
+    Ok(records)
+}
+
+/// One record, or `None` for one that disappeared between being listed and being
+/// read — a publication that just finished, which is an answer.
+fn read_record(path: &Path) -> Result<Option<Record>> {
+    let raw = match std::fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error::at("read the publication record at", path)(error)),
+    };
+    serde_json::from_str(&raw)
+        .map(Some)
+        .map_err(error::at("read the publication record at", path))
 }

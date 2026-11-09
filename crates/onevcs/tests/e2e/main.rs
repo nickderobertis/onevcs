@@ -317,6 +317,13 @@ mod released;
 // compiled binary on both sides of the race.
 #[cfg(unix)]
 mod record_writes;
+// Unix only: real sessions over `world.rs`'s POSIX fixture and substituted `gh`.
+#[cfg(unix)]
+// llmlint: ignore[e2e_not_mocked,expensive_tests_stay_behind_their_own_edge] a module
+// declaration substitutes nothing; the module's own header states what `world.rs` stands
+// in for and why. All of its journeys together run in about a second of real git on the
+// onevcs-e2e edge they exercise, so no tier of their own would read narrower inputs.
+mod recoverable_published;
 // Unix only: its journeys publish through the same substituted `gh` as `host.rs`.
 // Its own header carries the reason in full.
 #[cfg(unix)]
