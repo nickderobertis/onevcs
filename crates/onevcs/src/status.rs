@@ -3736,21 +3736,19 @@ pub(crate) fn absorb(
         // `change-drafted` says: it replaces the reason the same publication
         // recorded when it opened the draft, in the order the stream wrote them,
         // and a later lift or draft answers it exactly as it answers that one.
-        EventKind::DraftKeptForReview => {
-            match read_kept_for_review(event.payload.get("checks")) {
-                Some(kept) => {
-                    record.draft = Some(Stamped { at, value: kept });
-                    record.lifted = None;
-                }
-                None => notes.push(format!(
-                    "line {} of the event stream at {} records a draft kept for review whose \
-                 checks cannot be read, so why {} is held back is not in this report",
-                    index + 1,
-                    path.display(),
-                    record.branch.as_deref().unwrap_or("this change"),
-                )),
+        EventKind::DraftKeptForReview => match read_kept_for_review(event.payload.get("checks")) {
+            Some(kept) => {
+                record.draft = Some(Stamped { at, value: kept });
+                record.lifted = None;
             }
-        }
+            None => notes.push(format!(
+                "line {} of the event stream at {} records a draft kept for review whose \
+                 checks cannot be read, so why {} is held back is not in this report",
+                index + 1,
+                path.display(),
+                record.branch.as_deref().unwrap_or("this change"),
+            )),
+        },
         EventKind::DraftLifted => record.lifted = Some(at),
         // The description's own record: the body is the artifact the payload
         // names, never inlined, so what is read back is where it can be read.

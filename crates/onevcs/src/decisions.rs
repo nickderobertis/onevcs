@@ -122,7 +122,10 @@ pub(crate) fn load(identity: &str) -> BTreeMap<String, Decision> {
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        let Some(stem) = name.strip_suffix(".json").filter(|_| name != "streams.json") else {
+        let Some(stem) = name
+            .strip_suffix(".json")
+            .filter(|_| name != "streams.json")
+        else {
             continue;
         };
         let Ok(bytes) = std::fs::read(entry.path()) else {
@@ -179,6 +182,35 @@ pub(crate) fn write(decision: &Decision) {
     let _ = home::atomic_write(&path, &text);
 }
 
+/// Write the decision of the one branch a close, publication or landing just changed,
+/// through the same read a person's would make, so the next read need not derive it.
+/// Best effort, and only where this host keeps records at all: the change it follows
+/// has already happened, and a record that could not be written costs only time.
+pub(crate) fn refresh(publication: &Path, branch: &str) {
+    let recording = home::root().is_ok_and(|root| root.join("decisions/v1").is_dir());
+    if !recording {
+        return;
+    }
+    let selection = crate::session::Selection {
+        detail: crate::session::Detail::Decision,
+        branch: Some(branch.to_owned()),
+        ..crate::session::Selection::default()
+    };
+    let _ = crate::vcs::collect_matching(
+        &crate::session::Scope::Repo(publication.display().to_string()),
+        crate::vcs::Reporting::UnpublishedOnly,
+        &selection,
+    );
+}
+
+/// Leave the directory a later read's [`refresh`] looks for, even where nothing was
+/// listed to record: an empty record is still this host keeping records.
+pub(crate) fn mark_recording() {
+    if let Ok(root) = home::root() {
+        let _ = home::ensure_dir(&root.join("decisions/v1"));
+    }
+}
+
 /// Now, as a record says when it decided: RFC 3339 in UTC.
 pub(crate) fn now() -> String {
     time::OffsetDateTime::now_utc()
@@ -207,7 +239,10 @@ pub(crate) fn origin_digest(repo: &Path, base: &str) -> Option<String> {
 /// The eight-byte, hex digest a changed path is matched by.
 pub(crate) fn path_key(path: &str) -> String {
     let digest = Sha256::digest(path.as_bytes());
-    digest[..8].iter().map(|byte| format!("{byte:02x}")).collect()
+    digest[..8]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 /// `paths` as the sorted, joined keys a record carries.
@@ -285,7 +320,15 @@ pub(crate) fn gained(
     }
     let changed = git::run_given(
         asked,
-        &["diff", "--name-only", "--no-renames", "-z", &from, current, "--"],
+        &[
+            "diff",
+            "--name-only",
+            "--no-renames",
+            "-z",
+            &from,
+            current,
+            "--",
+        ],
         b"",
     )?;
     if !changed.ok() {
@@ -345,7 +388,12 @@ pub(crate) fn unmatched_trailers_reached(
     }
     let listed = git::run_given(
         asked,
-        &["rev-list", "--stdin", "--ignore-missing", "--no-walk=unsorted"],
+        &[
+            "rev-list",
+            "--stdin",
+            "--ignore-missing",
+            "--no-walk=unsorted",
+        ],
         input.as_bytes(),
     )?;
     if !listed.ok() {
@@ -455,11 +503,7 @@ fn tail_digest(file: &std::fs::File, length: u64) -> Option<String> {
     Some(format!("{:x}", Sha256::digest(&bytes)))
 }
 
-fn fold(
-    token: &str,
-    path: &Path,
-    kept: &[(u64, String)],
-) -> Recorded {
+fn fold(token: &str, path: &Path, kept: &[(u64, String)]) -> Recorded {
     let mut record = crate::status::unread_stream(token);
     let mut notes = Vec::new();
     for (index, line) in kept {
@@ -529,7 +573,10 @@ fn advance(
     if read_exact_from(file, &mut bytes, entry.length).is_err() {
         return Step::Unreadable(unreadable_record(token));
     }
-    let complete = bytes.iter().rposition(|byte| *byte == b'\n').map_or(0, |at| at + 1);
+    let complete = bytes
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map_or(0, |at| at + 1);
     let Ok(text) = std::str::from_utf8(&bytes[..complete]) else {
         return read_whole(token, path);
     };
@@ -573,7 +620,10 @@ fn read_whole(token: &str, path: &Path) -> Step {
     let Ok(raw) = std::fs::read(path) else {
         return Step::Unreadable(unreadable_record(token));
     };
-    let complete = raw.iter().rposition(|byte| *byte == b'\n').map_or(0, |at| at + 1);
+    let complete = raw
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map_or(0, |at| at + 1);
     let mut record = crate::status::unread_stream(token);
     let mut notes = Vec::new();
     let mut kept = Vec::new();
@@ -675,9 +725,8 @@ pub(crate) fn host_streams() -> Result<StreamAnswers> {
             Step::New(record, entry) => {
                 let identity = record.identity().unwrap_or_default().to_owned();
                 let previous = answers.entries.get(&token);
-                let moved = previous.is_none_or(|(_, old)| {
-                    old.answer.fingerprint != entry.answer.fingerprint
-                });
+                let moved = previous
+                    .is_none_or(|(_, old)| old.answer.fingerprint != entry.answer.fingerprint);
                 let lines_read = !entry.answer.kept.is_empty()
                     || previous.is_some_and(|(_, old)| !old.answer.kept.is_empty());
                 if moved && lines_read {
@@ -774,7 +823,10 @@ pub(crate) fn update_streams(tokens: &[String]) {
         let path = directory.join(format!("{token}.ndjson"));
         if let Step::New(record, entry) = read_whole(token, &path) {
             let identity = record.identity().unwrap_or_default().to_owned();
-            filed.entry(identity).or_default().insert(token.clone(), entry);
+            filed
+                .entry(identity)
+                .or_default()
+                .insert(token.clone(), entry);
         }
     }
     for (identity, updates) in filed {
@@ -819,7 +871,8 @@ fn with_diagnostics(apply: impl FnOnce(&mut Diagnostics)) {
 /// Record that this read derived a branch rather than serving it.
 pub(crate) fn note_derived(identity: &str, branch: &str) {
     with_diagnostics(|held| {
-        held.derived.insert((identity.to_owned(), branch.to_owned()));
+        held.derived
+            .insert((identity.to_owned(), branch.to_owned()));
     });
 }
 
@@ -829,7 +882,13 @@ pub(crate) fn note_served() {
 }
 
 /// Record one base-increment check's outcome.
-pub(crate) fn note_check(identity: &str, repo: &Path, gained: usize, named: usize, started: Instant) {
+pub(crate) fn note_check(
+    identity: &str,
+    repo: &Path,
+    gained: usize,
+    named: usize,
+    started: Instant,
+) {
     with_diagnostics(|held| {
         held.checks.push(serde_json::json!({
             "identity": identity,
@@ -855,7 +914,11 @@ pub(crate) fn diagnostics_end() {
         "checks": held.checks,
     });
     use std::io::Write as _;
-    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
         let _ = writeln!(file, "{line}");
     }
 }

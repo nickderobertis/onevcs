@@ -214,7 +214,11 @@ fn arguments() -> Result<Arguments, String> {
                     "cold" => Mode::Cold,
                     "uncached" => Mode::Uncached,
                     "once" => Mode::Once,
-                    _ => return Err(format!("--mode {value:?} is not warm, cold, uncached or once")),
+                    _ => {
+                        return Err(format!(
+                            "--mode {value:?} is not warm, cold, uncached or once"
+                        ))
+                    }
                 })
             }
             _ => return Err(format!("unexpected argument {flag} {value}")),
@@ -257,7 +261,9 @@ fn run() -> Result<serde_json::Value, Failure> {
     let selection = Selection {
         detail: Detail::Decision,
         labels: match (&arguments.launcher, arguments.host) {
-            (Some(launcher), false) => BTreeMap::from([("launcher".to_owned(), launcher.0.clone())]),
+            (Some(launcher), false) => {
+                BTreeMap::from([("launcher".to_owned(), launcher.0.clone())])
+            }
             _ => BTreeMap::new(),
         },
         ..Selection::default()

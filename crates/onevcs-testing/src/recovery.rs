@@ -862,12 +862,30 @@ pub const HOST: HostShape = HostShape {
     loose_commits: 656,
     list_reaching_branches: 1,
     base_gains: &[
-        BaseGain { commits: 3, landing: 0 },
-        BaseGain { commits: 8, landing: 0 },
-        BaseGain { commits: 25, landing: 1 },
-        BaseGain { commits: 40, landing: 0 },
-        BaseGain { commits: 300, landing: 3 },
-        BaseGain { commits: 600, landing: 2 },
+        BaseGain {
+            commits: 3,
+            landing: 0,
+        },
+        BaseGain {
+            commits: 8,
+            landing: 0,
+        },
+        BaseGain {
+            commits: 25,
+            landing: 1,
+        },
+        BaseGain {
+            commits: 40,
+            landing: 0,
+        },
+        BaseGain {
+            commits: 300,
+            landing: 3,
+        },
+        BaseGain {
+            commits: 600,
+            landing: 2,
+        },
     ],
 };
 
@@ -920,7 +938,11 @@ pub fn build_host(root: &Path) -> Result<Fixture> {
                             return Ok::<_, Error>(parts);
                         }
                         parts.push(build_host_identity(
-                            root_ref, home_ref, launcher_ref, shares, at,
+                            root_ref,
+                            home_ref,
+                            launcher_ref,
+                            shares,
+                            at,
                         )?);
                     }
                 })
@@ -1029,8 +1051,21 @@ fn build_host_identity(
     std::fs::create_dir_all(&repo).map_err(io)?;
     std::fs::create_dir_all(origin.parent().expect("origin parent")).map_err(io)?;
     git(&repo, &["init", "-q", "-b", "main"])?;
-    git(&repo, &["init", "-q", "--bare", "-b", "main", &origin.to_string_lossy()])?;
-    git(&repo, &["remote", "add", "origin", &origin.to_string_lossy()])?;
+    git(
+        &repo,
+        &[
+            "init",
+            "-q",
+            "--bare",
+            "-b",
+            "main",
+            &origin.to_string_lossy(),
+        ],
+    )?;
+    git(
+        &repo,
+        &["remote", "add", "origin", &origin.to_string_lossy()],
+    )?;
     let key = origin.to_string_lossy().into_owned();
     let alias = format!("h{at}");
     let mut registry = Registry {
@@ -1117,7 +1152,12 @@ fn build_host_identity(
             .into_iter()
             .map(|path| (path, "x\n".to_owned()))
             .collect();
-        let mark = packed.commit(&branch, Some(&base_commit), &format!("feat: {branch}"), &files);
+        let mark = packed.commit(
+            &branch,
+            Some(&base_commit),
+            &format!("feat: {branch}"),
+            &files,
+        );
         preserved_work.push((branch, mark));
     }
     let packed_marks = if many_count > 0 {
@@ -1125,11 +1165,22 @@ fn build_host_identity(
     } else {
         BTreeMap::new()
     };
-    let mut loose = Import::new(1 + packed_marks.keys().max().copied().unwrap_or(1).max(*landed.keys().max().unwrap_or(&1)));
+    let mut loose = Import::new(
+        1 + packed_marks
+            .keys()
+            .max()
+            .copied()
+            .unwrap_or(1)
+            .max(*landed.keys().max().unwrap_or(&1)),
+    );
     let mut loose_work: Vec<(String, usize, usize)> = Vec::new();
     for n in many_count..preserved {
         let branch = host_branch(at, n);
-        let share = shares.get(at).and_then(|shares| shares.get(n)).copied().unwrap_or(0);
+        let share = shares
+            .get(at)
+            .and_then(|shares| shares.get(n))
+            .copied()
+            .unwrap_or(0);
         let first = loose.commit(
             &branch,
             Some(&base_commit),
@@ -1155,11 +1206,7 @@ fn build_host_identity(
             "-c".to_owned(),
             "fastimport.unpackLimit=2147483647".to_owned(),
         ];
-        child_args.extend(
-            ["fast-import", "--quiet"]
-                .into_iter()
-                .map(str::to_owned),
-        );
+        child_args.extend(["fast-import", "--quiet"].into_iter().map(str::to_owned));
         child_args.push(format!("--export-marks={}", marks_path.display()));
         let refs: Vec<&str> = child_args.iter().map(String::as_str).collect();
         git_input(&repo, &refs, &loose.bytes)?;
@@ -1169,9 +1216,20 @@ fn build_host_identity(
     git(&repo, &["push", "-q", "origin", "main"])?;
     git(
         &repo,
-        &["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+        &[
+            "symbolic-ref",
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/main",
+        ],
     )?;
-    git(&repo, &["update-ref", "refs/remotes/origin/main", &git(&repo, &["rev-parse", "main"])?.trim().to_owned()])?;
+    git(
+        &repo,
+        &[
+            "update-ref",
+            "refs/remotes/origin/main",
+            &git(&repo, &["rev-parse", "main"])?.trim().to_owned(),
+        ],
+    )?;
     git(&repo, &["checkout", "-q", "main"])?;
 
     // The one large checkout and any further registered checkouts of this identity.
@@ -1222,7 +1280,11 @@ fn build_host_identity(
     }
 
     // Session records and streams.
-    let session_record = |branch: &Ref, token: &Token, class: Class, labels: BTreeMap<String, String>| -> Result<(PathBuf, PathBuf)> {
+    let session_record = |branch: &Ref,
+                          token: &Token,
+                          class: Class,
+                          labels: BTreeMap<String, String>|
+     -> Result<(PathBuf, PathBuf)> {
         let run = root.join(format!("sessions/{token}"));
         let clone = run.join("clone");
         let worktree = run.join("worktree");
@@ -1244,12 +1306,20 @@ fn build_host_identity(
                 &[
                     "update-ref",
                     &format!("refs/heads/{branch}"),
-                    &git(&repo, &["rev-parse", &format!("refs/heads/{branch}")])?.trim().to_owned(),
+                    &git(&repo, &["rev-parse", &format!("refs/heads/{branch}")])?
+                        .trim()
+                        .to_owned(),
                 ],
             )?;
             git(
                 &clone,
-                &["worktree", "add", "-q", &worktree.to_string_lossy(), &**branch],
+                &[
+                    "worktree",
+                    "add",
+                    "-q",
+                    &worktree.to_string_lossy(),
+                    &**branch,
+                ],
             )?;
         }
         testing::write_session(
@@ -1282,28 +1352,47 @@ fn build_host_identity(
         }
         labels
     };
-    let closed_events = |branch: &str, landed: Option<&str>| -> Vec<(EventKind, Map<String, Value>)> {
-        let mut events = vec![(EventKind::SessionOpened, payload(json!({"branch":branch})))];
-        if let Some(sha) = landed {
-            events.push((
-                EventKind::MergeCompleted,
-                payload(json!({"branch":branch,"sha":sha})),
-            ));
-        }
-        events.push((EventKind::SessionClosed, payload(json!({"branch":branch}))));
-        events
-    };
+    let closed_events =
+        |branch: &str, landed: Option<&str>| -> Vec<(EventKind, Map<String, Value>)> {
+            let mut events = vec![(EventKind::SessionOpened, payload(json!({"branch":branch})))];
+            if let Some(sha) = landed {
+                events.push((
+                    EventKind::MergeCompleted,
+                    payload(json!({"branch":branch,"sha":sha})),
+                ));
+            }
+            events.push((EventKind::SessionClosed, payload(json!({"branch":branch}))));
+            events
+        };
     for (index, (branch, mark)) in preserved_work.iter().enumerate() {
         let tip = packed_marks[mark].clone();
         record_preserved(
-            &session_record, home, &key, branch, &tip, index, at, &plain_labels, &closed_events, &mut expected,
+            &session_record,
+            home,
+            &key,
+            branch,
+            &tip,
+            index,
+            at,
+            &plain_labels,
+            &closed_events,
+            &mut expected,
         )?;
     }
     for (n, (branch, _first, tip_mark)) in loose_work.iter().enumerate() {
         let index = n + preserved_work.len();
         let tip = loose_marks[tip_mark].clone();
         record_preserved(
-            &session_record, home, &key, branch, &tip, index, at, &plain_labels, &closed_events, &mut expected,
+            &session_record,
+            home,
+            &key,
+            branch,
+            &tip,
+            index,
+            at,
+            &plain_labels,
+            &closed_events,
+            &mut expected,
         )?;
     }
     // Other classes' branches: landed, retirable, superseded, unknown and in-part work.
@@ -1384,7 +1473,12 @@ fn build_host_identity(
 
 #[allow(clippy::too_many_arguments)]
 fn record_preserved(
-    session_record: &impl Fn(&Ref, &Token, Class, BTreeMap<String, String>) -> Result<(PathBuf, PathBuf)>,
+    session_record: &impl Fn(
+        &Ref,
+        &Token,
+        Class,
+        BTreeMap<String, String>,
+    ) -> Result<(PathBuf, PathBuf)>,
     home: &Path,
     key: &str,
     branch: &str,
@@ -1415,7 +1509,9 @@ fn record_preserved(
 }
 
 fn main_tip(repo: &Path) -> Result<String> {
-    Ok(git(repo, &["rev-parse", "refs/heads/main"])?.trim().to_owned())
+    Ok(git(repo, &["rev-parse", "refs/heads/main"])?
+        .trim()
+        .to_owned())
 }
 
 fn read_marks(marks: &Path) -> Result<BTreeMap<usize, String>> {
@@ -1551,7 +1647,12 @@ fn list_files(root: &Path) -> Result<BTreeMap<PathBuf, Vec<u8>>> {
                 pending.push(path);
             } else {
                 let bytes = std::fs::read(&path).map_err(io)?;
-                found.insert(path.strip_prefix(root).map_err(|e| invalid(e.to_string()))?.to_owned(), bytes);
+                found.insert(
+                    path.strip_prefix(root)
+                        .map_err(|e| invalid(e.to_string()))?
+                        .to_owned(),
+                    bytes,
+                );
             }
         }
     }
@@ -1626,12 +1727,22 @@ pub fn age_host(fixture: &Fixture) -> Result<AgedHost> {
             let tip = git(&repo, &["rev-parse", &format!("refs/heads/{branch}")])?
                 .trim()
                 .to_owned();
-            let landing = if n % 2 == 0 { Landing::Squash } else { Landing::Merge };
+            let landing = if n % 2 == 0 {
+                Landing::Squash
+            } else {
+                Landing::Merge
+            };
             let mark = match landing {
                 Landing::Squash => {
                     let first = git(
                         &repo,
-                        &["rev-list", "--reverse", "--first-parent", &tip, "^refs/remotes/origin/main"],
+                        &[
+                            "rev-list",
+                            "--reverse",
+                            "--first-parent",
+                            &tip,
+                            "^refs/remotes/origin/main",
+                        ],
                     )?
                     .lines()
                     .next()

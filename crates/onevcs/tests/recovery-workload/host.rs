@@ -140,7 +140,8 @@ pub(super) fn journey(root: &Path) -> HostRecord {
     let aged = age_host(&fixture).expect("the host ages");
     let uncached = read(&fixture, "once", true, None, None);
     let uncached_rows = normalized_rows(&uncached, &fixture);
-    aged.restore().expect("the uncached read's own caches are put back");
+    aged.restore()
+        .expect("the uncached read's own caches are put back");
     aged.verify().expect("the aged state stands");
     let want = must_rederive(&aged);
     let expected_rows: BTreeMap<String, String> = landed_absent(&aged);
@@ -150,10 +151,14 @@ pub(super) fn journey(root: &Path) -> HostRecord {
     let _ = std::fs::remove_file(&diagnostics);
     for index in 0..WARM_CALLS {
         aged.restore().expect("the records restore");
-        aged.verify().expect("the aged state verifies before each sample");
+        aged.verify()
+            .expect("the aged state verifies before each sample");
         let report = read(&fixture, "once", false, Some(&diagnostics), None);
         let rows = normalized_rows(&report, &fixture);
-        assert_eq!(rows, uncached_rows, "sample {index} answers the uncached rows");
+        assert_eq!(
+            rows, uncached_rows,
+            "sample {index} answers the uncached rows"
+        );
         assert_landed_absent(&report, &expected_rows);
         let note = diagnosed(&diagnostics);
         let derived: BTreeSet<(String, String)> = note["derived"]
@@ -186,7 +191,8 @@ pub(super) fn journey(root: &Path) -> HostRecord {
     let calls: [Call; WARM_CALLS] = samples.try_into().expect("ten calls");
     // A separate counting read, the same state, its git started through a counting shim.
     aged.restore().expect("the records restore for the count");
-    aged.verify().expect("the aged state verifies for the count");
+    aged.verify()
+        .expect("the aged state verifies for the count");
     let (git_executions, _count) = count_git(&fixture);
     aged.restore().expect("the records restore after the count");
     let rederived = want.len();
@@ -263,7 +269,10 @@ fn host_workload_alone() {
     let scratch = std::env::var_os("ONEPIPELINE_NODE_SCRATCH_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
-    let root = tempfile::Builder::new().prefix("host-").tempdir_in(scratch).unwrap();
+    let root = tempfile::Builder::new()
+        .prefix("host-")
+        .tempdir_in(scratch)
+        .unwrap();
     let record = journey(root.path());
     eprintln!("{}", serde_json::to_string_pretty(&record).unwrap());
 }

@@ -69,7 +69,8 @@ pub(super) struct HostCheck {
 impl HostChecks {
     pub(super) fn push(&mut self, gained: u64, seconds: f64) {
         self.by_gain.push(HostCheck { gained, seconds });
-        self.by_gain.sort_by_key(|check| std::cmp::Reverse(check.gained));
+        self.by_gain
+            .sort_by_key(|check| std::cmp::Reverse(check.gained));
     }
 }
 

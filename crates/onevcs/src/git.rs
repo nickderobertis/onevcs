@@ -336,7 +336,11 @@ fn run_fed(
     } else {
         None
     };
-    if let Some(recalled) = input.is_none().then(|| reads::recall(args, cwd, env)).flatten() {
+    if let Some(recalled) = input
+        .is_none()
+        .then(|| reads::recall(args, cwd, env))
+        .flatten()
+    {
         return Ok(recalled);
     }
     // Native answers need no process or disk proof. Their immutable bytes may be
@@ -2748,7 +2752,7 @@ pub(crate) fn local_only<T>(read: impl FnOnce() -> T) -> T {
 }
 
 /// Why [`default_branch`] reading locally found no base, the row's stated reason.
-pub(crate) const NO_LOCAL_BASE: &str = "this checkout holds no origin/HEAD, origin/main or      origin/master, so there is no base to compare the branch with";
+pub(crate) const NO_LOCAL_BASE: &str = "this checkout holds no origin/HEAD, origin/main or origin/master, so there is no base to compare the branch with";
 
 /// The remote's default branch, refusing to guess when the answer is ambiguous.
 ///
@@ -3028,6 +3032,28 @@ pub fn unpublished_branches_among(
     listed_anyway: &BTreeSet<String>,
     based_on: impl Fn(&str) -> Option<String>,
 ) -> Result<Vec<(String, String)>> {
+    unpublished_among(cwd, keep, listed_anyway, based_on, false)
+}
+
+/// [`unpublished_branches_among`] for a report that keeps answering when one branch's
+/// count cannot be made: that branch is listed, for its row to say what could not be
+/// decided, rather than failing the rest of the host's answer.
+pub(crate) fn unpublished_branches_answering(
+    cwd: &Path,
+    keep: impl Fn(&str) -> bool,
+    listed_anyway: &BTreeSet<String>,
+    based_on: impl Fn(&str) -> Option<String>,
+) -> Result<Vec<(String, String)>> {
+    unpublished_among(cwd, keep, listed_anyway, based_on, true)
+}
+
+fn unpublished_among(
+    cwd: &Path,
+    keep: impl Fn(&str) -> bool,
+    listed_anyway: &BTreeSet<String>,
+    based_on: impl Fn(&str) -> Option<String>,
+    answering: bool,
+) -> Result<Vec<(String, String)>> {
     let native = crate::native_refs::heads(cwd).zip(crate::native_refs::remote_tips(cwd, "origin"));
     let (heads, origin_tips) = if let Some((heads, origin)) = native {
         (heads, origin)
@@ -3074,6 +3100,7 @@ pub fn unpublished_branches_among(
             }
         }
         let mut found = BTreeSet::new();
+        let mut groups_failed = false;
         for (carried, tips) in &groups {
             let mut input = String::new();
             for tip in tips {
@@ -3087,6 +3114,13 @@ pub fn unpublished_branches_among(
             }
             let given = run_given(cwd, &["rev-list", "--stdin", "--"], input.as_bytes())?;
             if !given.ok() {
+                if answering {
+                    // Counted branch by branch below, so the one that cannot be read
+                    // answers alone.
+                    found.clear();
+                    groups_failed = true;
+                    break;
+                }
                 return Err(error::invalid(format!(
                     "git rev-list over {} branches in {} failed: {}",
                     tips.len(),
@@ -3101,7 +3135,7 @@ pub fn unpublished_branches_among(
                     .map(|line| (carried.clone(), line.to_owned())),
             );
         }
-        Some(found)
+        (!groups_failed).then_some(found)
     } else {
         None
     };
@@ -3128,8 +3162,11 @@ pub fn unpublished_branches_among(
             continue;
         }
         let carried: Vec<&str> = base.iter().map(String::as_str).collect();
-        if unpublished_ahead(cwd, &tip, &carried)? > 0 {
-            unpublished.push((branch, tip));
+        match unpublished_ahead(cwd, &tip, &carried) {
+            Ok(ahead) if ahead > 0 => unpublished.push((branch, tip)),
+            Ok(_) => {}
+            Err(_) if answering => unpublished.push((branch, tip)),
+            Err(refused) => return Err(refused),
         }
     }
     Ok(unpublished)
@@ -3171,7 +3208,10 @@ pub fn unpublished_heads(cwd: &Path) -> Result<BTreeSet<String>> {
     // what no batch rules out is what no tip reaches. One empty batch list is still the
     // one listing of every branch.
     let mut surviving: Option<BTreeSet<String>> = None;
-    for batch in tips.chunks(NO_MERGED_BATCH).chain(tips.is_empty().then_some(&[][..])) {
+    for batch in tips
+        .chunks(NO_MERGED_BATCH)
+        .chain(tips.is_empty().then_some(&[][..]))
+    {
         let mut args: Vec<&str> = vec!["for-each-ref", "--format=%(refname:short)"];
         args.extend(batch.iter().map(String::as_str));
         args.push("refs/heads");
@@ -3981,7 +4021,11 @@ pub(crate) fn commits_with_parents<'a>(
             input.push_str(hidden);
             input.push('\n');
         }
-        let given = run_given(asked, &["rev-list", "--parents", "--stdin", "--"], input.as_bytes())?;
+        let given = run_given(
+            asked,
+            &["rev-list", "--parents", "--stdin", "--"],
+            input.as_bytes(),
+        )?;
         if !given.ok() {
             return Err(error::invalid(format!(
                 "git rev-list --parents {tip} over {} excluded commits failed: {}",
