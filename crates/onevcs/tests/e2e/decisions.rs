@@ -952,3 +952,22 @@ fn a_host_whose_streams_directory_is_gone_or_unreadable_answers_the_uncached_rea
     assert_eq!(rows, uncached, "streams unreadable");
     assert_eq!(derived, set(&["work/a", "work/b"]));
 }
+
+#[test]
+fn a_record_that_cannot_be_written_costs_only_its_reuse() {
+    let host = Host::new();
+    host.branch("work/a");
+    let directory = host.home.join("decisions");
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let (rows, _) = host.read();
+    let uncached = host.uncached();
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(
+        rows, uncached,
+        "the read answers though nothing was recorded"
+    );
+    // Writable again, the next read records, and the one after serves it.
+    host.read();
+    assert_eq!(host.assert_matches_uncached("recorded"), set(&[]));
+}
