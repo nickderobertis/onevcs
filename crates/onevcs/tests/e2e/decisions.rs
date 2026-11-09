@@ -1025,7 +1025,7 @@ fn an_unterminated_event_alone_moves_the_branch_it_speaks_about() {
         &host.key,
         &[(
             EventKind::BranchPreserved,
-            json!({"branch": "work/a", "outcome": "already-on-origin", "remote": "origin", "commit": tip})
+            json!({"branch": "work/a", "outcome": "already-on-origin", "remote": "https://github.com/o/r.git", "commit": tip})
                 .as_object()
                 .unwrap()
                 .clone(),
@@ -1040,4 +1040,26 @@ fn an_unterminated_event_alone_moves_the_branch_it_speaks_about() {
     std::fs::write(&events, text).unwrap();
     let derived = host.assert_matches_uncached("an unterminated preservation alone");
     assert!(derived.contains("work/a"), "{derived:?}");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_base_gaining_a_path_that_is_not_text_answers_the_uncached_read() {
+    use std::os::unix::ffi::OsStrExt;
+    let host = Host::new();
+    host.branch("work/a");
+    host.read();
+    let name = std::ffi::OsStr::from_bytes(b"gain-\xff.txt");
+    std::fs::write(host.repo.join(name), "x\n").unwrap();
+    run(&host.repo, &["add", "."]);
+    run(
+        &host.repo,
+        &["commit", "-q", "-m", "chore: an undecodable path"],
+    );
+    let tip = run(&host.repo, &["rev-parse", "main"]);
+    run(
+        &host.repo,
+        &["update-ref", "refs/remotes/origin/main", &tip],
+    );
+    host.assert_matches_uncached("a path git cannot print as text");
 }

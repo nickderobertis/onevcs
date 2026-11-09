@@ -385,7 +385,9 @@ pub(crate) fn gained(
         ],
         b"",
     )?;
-    if !changed.ok() {
+    if !changed.ok()
+        || changed.stdout.is_empty() && !listed.stdout.is_empty() && gained.commits.len() > 1
+    {
         return Err(crate::error::invalid(format!(
             "git diff {from} {current} failed: {}",
             changed.diagnostic()

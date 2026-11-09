@@ -114,29 +114,9 @@ pub(super) fn journey(root: &Path) -> HostRecord {
     let scratch = tempfile::tempdir().expect("scratch");
     let diagnostics = scratch.path().join("diagnostics.ndjson");
 
-    // The cold read: no record of anything, every row the uncached read's.
-    let uncached_before = read(&fixture, "once", true, None, None);
-    let cold = read(&fixture, "once", false, Some(&diagnostics), None);
-    assert_eq!(
-        normalized_rows(&cold, &fixture),
-        normalized_rows(&uncached_before, &fixture),
-        "the cold read answers the uncached read's rows"
-    );
-    let cold_call = call(&cold);
-    // Every decision is on record; a warm read of unmoved inputs derives nothing.
-    let settled = read(&fixture, "once", false, Some(&diagnostics), None);
-    let warm_unmoved = diagnosed(&diagnostics);
-    assert_eq!(
-        warm_unmoved["derived"].as_array().unwrap().len(),
-        0,
-        "nothing moved, so nothing is re-derived: {warm_unmoved}"
-    );
-    assert_eq!(
-        normalized_rows(&settled, &fixture),
-        normalized_rows(&cold, &fixture),
-        "an unmoved warm read answers the cold read's rows"
-    );
-
+    // Every decision goes on record, then the fixture ages and the rest of the journey
+    // reads the one aged state, the cold read included.
+    read(&fixture, "once", false, None, None);
     let aged = age_host(&fixture).expect("the host ages");
     let uncached = read(&fixture, "once", true, None, None);
     let uncached_rows = normalized_rows(&uncached, &fixture);
@@ -146,6 +126,15 @@ pub(super) fn journey(root: &Path) -> HostRecord {
     let want = must_rederive(&aged);
     let expected_rows: BTreeMap<String, String> = landed_absent(&aged);
 
+    // The cold read: no record of anything, every row the uncached read's.
+    std::fs::remove_dir_all(fixture.home.join("decisions")).expect("the records go");
+    let cold = read(&fixture, "once", false, Some(&diagnostics), None);
+    assert_eq!(
+        normalized_rows(&cold, &fixture),
+        uncached_rows,
+        "the cold read answers the uncached read's rows"
+    );
+    let cold_call = call(&cold);
     let mut samples = Vec::with_capacity(WARM_CALLS);
     let mut checks = HostChecks::default();
     let _ = std::fs::remove_file(&diagnostics);

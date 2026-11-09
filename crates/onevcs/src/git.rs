@@ -3874,11 +3874,27 @@ pub fn known_to_carry_changes<'a>(
             "--",
         ],
     )?;
+    // Git's `text` answer for a listing that was not text is empty, which would read as
+    // nothing differing: held to the whole-tree count, an unreadable listing falls back
+    // on comparing the trees whole, the question the `counted_files` branch asks too.
+    if !listing_whole(cwd, &differing, base, commit)? {
+        return Ok(!trees_differ(cwd, base, commit)?);
+    }
     Ok(!differing
         .stdout
         .split('\0')
         .filter(|path| !path.is_empty())
         .any(|path| touched.contains(path)))
+}
+
+/// Whether a whole-tree `diff --name-only -z` answered in full: a listing of text arrived
+/// whole, and an empty one is held to git's count of files, since an undecodable listing
+/// reads as empty.
+fn listing_whole(cwd: Asked<'_>, listed: &Output, from: &str, to: &str) -> Result<bool> {
+    if !listed.read_failures.is_empty() {
+        return Ok(false);
+    }
+    Ok(!listed.stdout.is_empty() || counted_files(cwd, from, to)? == 0)
 }
 
 /// Whether merging `commit` into `base` is a content no-op.
@@ -5825,8 +5841,9 @@ pub fn differing_among<'a>(
     }
     // Whole trees compared and the asked paths looked up in the answer, for the reason
     // `known_to_carry_changes` gives: no argument list of them to overflow.
+    let cwd: Asked<'a> = cwd.into();
     let listed = checked_in(
-        cwd.into(),
+        cwd,
         &[
             "diff",
             "--name-only",
@@ -5837,6 +5854,11 @@ pub fn differing_among<'a>(
             "--",
         ],
     )?;
+    if !listing_whole(cwd, &listed, first, second)? {
+        return Err(error::invalid(format!(
+            "the paths {first} and {second} differ in could not be read whole"
+        )));
+    }
     let asked: BTreeSet<&str> = paths.iter().map(String::as_str).collect();
     let mut differing: Vec<String> = listed
         .stdout
