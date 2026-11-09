@@ -905,6 +905,35 @@ fn the_latency_program_refuses_what_it_cannot_use() {
     assert_eq!(code, Some(1), "{stderr}");
     assert!(stderr.contains("recoverable_matching failed"), "{stderr}");
     assert!(silent, "a failed read prints no report");
+
+    // A cold read answers from nothing a read left behind, its decision records included;
+    // a warm one keeps both. The clearing comes before the read this state root fails.
+    let left = [
+        home.join("cache/recoverable/v1/left.json"),
+        home.join("decisions/v1/identity/branch.json"),
+    ];
+    let leave = || {
+        for file in &left {
+            std::fs::create_dir_all(file.parent().expect("a parent")).expect("directories");
+            std::fs::write(file, "{}").expect("what a read left");
+        }
+    };
+    leave();
+    run(
+        &["--launcher", "x", "--calls", "1", "--mode", "warm"],
+        Some(&home),
+    );
+    assert!(left.iter().all(|file| file.exists()), "warm keeps them");
+    for mode in ["cold", "uncached"] {
+        leave();
+        run(
+            &["--launcher", "x", "--calls", "1", "--mode", mode],
+            Some(&home),
+        );
+        for file in &left {
+            assert!(!file.exists(), "{mode} leaves {}", file.display());
+        }
+    }
 }
 
 /// A long-lived caller repeats this read for hours, so one process making it two

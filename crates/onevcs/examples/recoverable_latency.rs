@@ -268,14 +268,23 @@ fn run() -> Result<serde_json::Value, Failure> {
             home.display()
         )));
     }
-    let caches = home.join("cache/recoverable/v1");
-    let clear = || match std::fs::remove_dir_all(&caches) {
-        Ok(()) => Ok(()),
-        Err(missing) if missing.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(failure) => Err(Failure::Read(format!(
-            "could not clear {}: {failure}",
-            caches.display()
-        ))),
+    // Everything a read can answer from without deriving: the proofs under the cache and
+    // the decision records, so a cold figure is never a recorded answer.
+    let caches = [home.join("cache/recoverable/v1"), home.join("decisions/v1")];
+    let clear = || {
+        for cache in &caches {
+            match std::fs::remove_dir_all(cache) {
+                Ok(()) => {}
+                Err(missing) if missing.kind() == std::io::ErrorKind::NotFound => {}
+                Err(failure) => {
+                    return Err(Failure::Read(format!(
+                        "could not clear {}: {failure}",
+                        cache.display()
+                    )))
+                }
+            }
+        }
+        Ok(())
     };
     let selection = Selection {
         detail: Detail::Decision,
