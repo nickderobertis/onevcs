@@ -44,6 +44,9 @@ pub(crate) const REANCHOR_AFTER: usize = 256;
 /// The most object ids one `merge-base --octopus` is asked about.
 const OCTOPUS_BATCH: usize = 64;
 
+// llmlint: ignore-block[invalid_states_unrepresentable] the spec fixes this document's
+// fields, and a record whose fields disagree is refused where it is read (`coherent`)
+// rather than typed apart, so the wire shape stays what later readers name.
 /// What one branch's decision was made from and answered.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Decision {
@@ -61,6 +64,7 @@ pub(crate) struct Decision {
     /// remote-tracking ref, which nothing asks about until its tip moves.
     pub row: Option<Recoverable>,
 }
+// llmlint: ignore-end[invalid_states_unrepresentable]
 
 /// The facts a read would otherwise spawn git for, about a branch whose inputs held.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -144,12 +148,31 @@ pub(crate) fn load(identity: &str) -> BTreeMap<String, Decision> {
             || decision.logic != LOGIC
             || decision.identity != identity
             || ids::digest(&decision.branch) != stem
+            || !coherent(&decision)
         {
             continue;
         }
         found.insert(decision.branch.clone(), decision);
     }
     found
+}
+
+/// Whether a record's own fields agree, so one edited by hand or written by a bug is
+/// no record rather than a served contradiction.
+fn coherent(decision: &Decision) -> bool {
+    if git::ObjectId::parse(&decision.tip).is_none() {
+        return false;
+    }
+    match &decision.row {
+        None => decision.landed && decision.decided_against.is_none(),
+        Some(row) => {
+            row.identity == decision.identity
+                && row.branch.branch == decision.branch
+                && row.tip.as_deref() == Some(decision.tip.as_str())
+                && row.landed.is_landed() == decision.landed
+                && decision.landed == decision.decided_against.is_none()
+        }
+    }
 }
 
 /// A digest of every session record naming the branch, and of what holds it.
@@ -485,7 +508,12 @@ fn load_entries(only: Option<&BTreeSet<String>>) -> HashMap<String, (String, Str
         std::fs::read(directory.join("streams.json"))
             .ok()
             .and_then(|bytes| serde_json::from_slice::<StreamsFile>(&bytes).ok())
-            .filter(|file| file.version == VERSION)
+            .filter(|file| {
+                file.version == VERSION
+                    && directory
+                        .file_name()
+                        .is_some_and(|name| name.to_string_lossy() == ids::digest(&file.identity))
+            })
     });
     for file in loaded.into_iter().flatten() {
         let identity = file.identity;

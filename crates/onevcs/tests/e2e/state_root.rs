@@ -40,7 +40,7 @@ use crate::support::workspace_root;
 /// scratch root, which [`every_spawn_helper_names_the_state_root_it_points_at`]
 /// then checks.
 const HELPERS: &[(&str, &str)] = &[
-    ("crates/onevcs/tests/e2e/decisions.rs", "binary"),
+    ("crates/onevcs/tests/e2e/decisions_support.rs", "binary"),
     ("crates/onevcs/tests/e2e/support.rs", "onevcs"),
     // `world::onevcs` is a wrapper over this one, which is where the world's whole
     // environment — the scratch state root included — is put on the command.

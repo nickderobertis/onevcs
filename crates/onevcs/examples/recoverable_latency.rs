@@ -157,9 +157,14 @@ enum Mode {
     Once,
 }
 
+/// Which rows the timed calls ask for: one launcher's, or the whole host's.
+enum Asked {
+    Launcher(Launcher),
+    Host,
+}
+
 struct Arguments {
-    launcher: Option<Launcher>,
-    host: bool,
+    asked: Asked,
     calls: NonZeroUsize,
     mode: Mode,
 }
@@ -224,12 +229,18 @@ fn arguments() -> Result<Arguments, String> {
             _ => return Err(format!("unexpected argument {flag} {value}")),
         }
     }
-    if launcher.is_none() && !host {
-        return Err("--launcher is required unless --selection host is given".to_owned());
-    }
+    let asked = match (launcher, host) {
+        (Some(launcher), false) => Asked::Launcher(launcher),
+        (None, true) => Asked::Host,
+        (Some(_), true) => {
+            return Err("--selection host and --launcher are alternatives".to_owned())
+        }
+        (None, false) => {
+            return Err("--launcher is required unless --selection host is given".to_owned())
+        }
+    };
     Ok(Arguments {
-        launcher,
-        host,
+        asked,
         calls: calls.ok_or("--calls is required")?,
         mode: mode.ok_or("--mode warm|cold|uncached|once is required")?,
     })
@@ -260,11 +271,11 @@ fn run() -> Result<serde_json::Value, Failure> {
     };
     let selection = Selection {
         detail: Detail::Decision,
-        labels: match (&arguments.launcher, arguments.host) {
-            (Some(launcher), false) => {
+        labels: match &arguments.asked {
+            Asked::Launcher(launcher) => {
                 BTreeMap::from([("launcher".to_owned(), launcher.0.clone())])
             }
-            _ => BTreeMap::new(),
+            Asked::Host => BTreeMap::new(),
         },
         ..Selection::default()
     };

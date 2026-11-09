@@ -14,6 +14,9 @@ mod boundary;
 mod boundary_sanitize;
 mod churn;
 mod counting;
+mod decisions_journeys;
+#[path = "../e2e/decisions_support.rs"]
+mod decisions_support;
 mod draft_hold;
 mod host;
 mod retire_hour;

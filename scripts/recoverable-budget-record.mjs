@@ -44,6 +44,15 @@ export function readRecord(directory = recordDirectory, sourceRoot = repositoryR
   if (record.preparation_ms <= 0 || record.total_ms < record.preparation_ms || !Number.isFinite(record.load1) || record.load1 < 0) {
     throw new Error("incomplete preparation/total timing");
   }
+  for (const sample of [record.host.cold, ...record.host.warm]) {
+    if (!(sample.wall_ms > 0) || !Number.isFinite(sample.load1) || sample.load1 < 0 || !digest(sample.verdict_sha256)) {
+      throw new Error("incomplete host-shaped sample");
+    }
+  }
+  if (!digest(record.host.rows_sha256) || record.host.slowest_ms < 0 || record.host.git_executions < 0 ||
+      record.host.checks.by_gain.some(check => !(check.seconds >= 0) || !(check.gained >= 0))) {
+    throw new Error("incomplete host-shaped detail");
+  }
   for (const [index, workload] of record.workloads.entries()) {
     const expectedScale = index === 0 ? 1 : 10;
     if (workload.scale !== expectedScale || workload.shape.some(n => n <= 0) ||

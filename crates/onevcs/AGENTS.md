@@ -1750,7 +1750,7 @@ host's check sources may be consulted (`auto`, `status-checks`, `actions`),
 admission (never the pool's size on disk), and the bounds
 (`ONEVCS_GIT_TIMEOUT`, `ONEVCS_GIT_HOOK_TIMEOUT`, `ONEVCS_LOCK_TIMEOUT_SECONDS`,
 `ONEVCS_CHECKS_TIMEOUT_SECONDS`, `ONEVCS_CHECKS_POLL_SECONDS`) are operator knobs a
-journey turns down so a bound can be *proved* rather than waited out.
+journey turns down so a bound can be *proved* rather than waited out. `ONEVCS_DECISION_RECORD=off` stops the decision record reusing or writing, which is how journeys counting what a read derives see the derivation; `ONEVCS_DECISION_DIAGNOSTICS=<file>` appends the read's own account of what it re-derived.
 
 ## Four rules that are easy to break quietly
 

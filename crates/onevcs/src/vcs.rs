@@ -801,14 +801,15 @@ fn scan_identity(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
         mut withheld_rows,
         mut seen,
         derive,
+        every,
         tips,
     } = served;
     let mut recorded = BTreeSet::new();
-    if !derive.is_empty() {
-        for branch in derive.iter().filter(|branch| *branch != WHOLE_IDENTITY) {
+    if every || !derive.is_empty() {
+        for branch in &derive {
             crate::decisions::note_derived(identity, branch);
         }
-        let mut derived = scanned(identity, scan, Some(&derive))?;
+        let mut derived = scanned(identity, scan, (!every).then_some(&derive))?;
         rows.append(&mut derived.rows);
         withheld_rows.append(&mut derived.withheld_rows);
         seen.append(&mut derived.seen);
@@ -840,6 +841,9 @@ struct Served {
     withheld_rows: Vec<(Option<u64>, Recoverable)>,
     seen: Vec<(String, String)>,
     derive: BTreeSet<String>,
+    /// Whether the derivation must cover every branch of the identity, because this
+    /// read could not list what the record would have served.
+    every: bool,
     /// Each branch's first listed copy, for what the derivation has to say about it.
     tips: BTreeMap<String, (PathBuf, String)>,
 }
@@ -890,6 +894,7 @@ fn serve_recorded(
                 // to make, so the whole identity goes there.
                 return Ok(Served {
                     derive: all_wanted(identity, narrowed, &records),
+                    every: true,
                     ..Served::default()
                 });
             }
@@ -900,6 +905,7 @@ fn serve_recorded(
         else {
             return Ok(Served {
                 derive: all_wanted(identity, narrowed, &records),
+                every: true,
                 ..Served::default()
             });
         };
@@ -1121,7 +1127,7 @@ fn wanted_here(identity: &str, branch: &str, narrowed: &Option<Narrowed>) -> boo
         .is_none_or(|only| only.wants(identity, branch))
 }
 
-/// Everything a read that cannot serve anything of this identity must derive.
+/// Every recorded branch a read that cannot serve this identity must derive.
 fn all_wanted(
     identity: &str,
     narrowed: &Option<Narrowed>,
@@ -1131,12 +1137,8 @@ fn all_wanted(
         .keys()
         .filter(|branch| wanted_here(identity, branch, narrowed))
         .cloned()
-        .chain(std::iter::once(WHOLE_IDENTITY.to_owned()))
         .collect()
 }
-
-/// A stand-in member of a derive set meaning every branch of the identity.
-const WHOLE_IDENTITY: &str = "\0";
 
 /// Scan every checkout of one identity for its preserved branches, or, where `only` is
 /// given, the branches named in it.
@@ -1250,7 +1252,7 @@ fn scanned(identity: &str, scan: &Scan<'_>, only: Option<&BTreeSet<String>>) -> 
             &repo,
             &preserved_here,
             |branch| {
-                only.is_none_or(|wanted| wanted.contains(branch) || wanted.contains(WHOLE_IDENTITY))
+                only.is_none_or(|wanted| wanted.contains(branch))
                     && narrowed
                         .as_ref()
                         .is_none_or(|narrowed| narrowed.wants(identity, branch))
@@ -1716,7 +1718,10 @@ fn preserved_row(
 /// `unknown` alone, every other branch keeps its answer, and nothing about the read
 /// fails. The reason is said even at Decision detail, because `unknown` with no reason
 /// is exactly what this row exists to avoid.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "every operand is a distinct fact of the row, and a struct for this one call would only rename them"
+)]
 fn undecided_row(
     identity: &str,
     repo: git::Asked<'_>,
@@ -1786,8 +1791,7 @@ fn unbased_rows(
         if !recorded_session
             || seen.contains(&key)
             || !wanted_here(identity, &branch, scan.narrowed)
-            || only
-                .is_some_and(|wanted| !wanted.contains(&branch) && !wanted.contains(WHOLE_IDENTITY))
+            || only.is_some_and(|wanted| !wanted.contains(&branch))
             || crate::stack_base::is_stack_base(&branch)
         {
             continue;
@@ -1810,7 +1814,10 @@ fn unbased_rows(
 }
 
 /// Write the decision of a branch this read derived.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the record is made from the facts the one caller already holds, each a different input"
+)]
 fn record_decision(
     identity: &str,
     asked: git::Asked<'_>,

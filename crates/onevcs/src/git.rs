@@ -3832,7 +3832,11 @@ pub fn known_to_carry_changes<'a>(
     // git's output as text, so how much of a listing survived that is a question to
     // settle rather than to assume — a comparison scoped by *some* of the paths a
     // commit touched would answer that the base carries it when the base does not.
-    if touched.len() != counted_files(cwd, fork, commit)? {
+    // A listing that arrived whole is text whole or not at all, as `changed_paths`
+    // says, so a read answering from its decision record does not pay a process per
+    // branch to count what it already read; only an empty one is asked.
+    let trust_listing = crate::decisions::enabled() && !touched.is_empty();
+    if !trust_listing && touched.len() != counted_files(cwd, fork, commit)? {
         // Which leaves the same question asked without paths: a base carrying this
         // commit's whole tree carries its changes too, and that is the one answer
         // that cannot be wrong about a path nobody here could name.

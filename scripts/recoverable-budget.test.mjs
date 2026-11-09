@@ -20,8 +20,8 @@ function fixture() {
   const class_counts = Object.fromEntries(["in-part","landed","live","no","retirable","superseded","unknown"].map(name=>[name,1]));
   const call = {wall_ms:12.5,load1:1,rows:5,verdict_sha256:sha("uncached verdict")};
   const calls = () => Array.from({length:10},()=>({...call}));
-  const host = {warm:calls(),cold:call,rederived:26,checks:{by_gain:[{gained:600,seconds:0.01}]},git_executions:40,slowest_ms:13,build_ms:5,load1:1,rows_sha256:sha("host rows")};
-  const record = {version:3,build,host,scenario:"launcher-decision",preparation_ms:10,total_ms:20,load1:1,
+  const hostRecord = {warm:calls(),cold:call,rederived:26,checks:{by_gain:[{gained:600,seconds:0.01}]},git_executions:40,slowest_ms:13,build_ms:5,load1:1,rows_sha256:sha("host rows")};
+  const record = {version:3,build,host:hostRecord,scenario:"launcher-decision",preparation_ms:10,total_ms:20,load1:1,
     workloads:[1,10].map(scale=>({scale,shape:schema["x-workloads"][String(scale)],class_counts,cold:sample,warm:sample,cold_git:100,warm_git:10,counted_verdict_sha256:sample.verdict_sha256,
       uncached_verdict_sha256:call.verdict_sha256,in_process_warm:calls(),...(scale === 1 ? {in_process_cold:calls()} : {})}))};
   const invocation = {state:"complete",...build};
@@ -140,6 +140,13 @@ test("latency reader reports median wall time despite minority outliers and refu
       const maximum = args[1] === "10" ? "5000.0" : "12.5";
       assert.equal(result.detail, `invocation ${f.record.build.run_id}: ${args[2].slice(2)} in-process launcher Decision, scale ${args[1]}: median of 10 calls ${(value * 1000).toFixed(1)}ms (maximum ${maximum}ms), load1 1-1`);
     }
+    rmSync(join(f.root, "result.json"), { force: true });
+    const host = run("--scale", "host", "--warm");
+    assert.equal(host.status, 0, host.stderr);
+    const hostResult = JSON.parse(readFileSync(join(f.root, "result.json"), "utf8"));
+    assert.equal(hostResult.value, 0.0125);
+    assert.match(hostResult.detail, /re-derived 26 branches; base-increment checks by commits gained: 600: 10\.0ms; a further warm call started 40 git processes/);
+    assert.match(hostResult.detail, /cold 12\.5ms/);
     // A systematic slowdown still reaches the checker as an over-budget value.
     for (const call of f.record.workloads[1].in_process_warm) call.wall_ms += 400;
     writeFileSync(join(f.root, "target", "budget-records", "recoverable.json"), JSON.stringify(f.record));

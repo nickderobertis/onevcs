@@ -1469,7 +1469,10 @@ fn build_host_identity(
     Ok(HostIdentity { registry, expected })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "this build's one recording of a preserved branch; each operand is a different part of it"
+)]
 fn record_preserved(
     session_record: &impl Fn(
         &Ref,
