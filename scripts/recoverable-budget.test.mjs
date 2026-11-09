@@ -147,6 +147,23 @@ test("latency reader reports median wall time despite minority outliers and refu
     assert.equal(hostResult.value, 0.0125);
     assert.match(hostResult.detail, /re-derived 26 branches; base-increment checks by commits gained: 600: 10\.0ms; a further warm call started 40 git processes/);
     assert.match(hostResult.detail, /cold 12\.5ms/);
+    // A host record that is incomplete or inconsistent is refused, not reported.
+    const saved = structuredClone(f.record.host);
+    for (const mangle of [
+      host => { host.warm[0].wall_ms = -1; },
+      host => { host.cold.verdict_sha256 = "not hex"; },
+      host => { host.checks.by_gain[0].seconds = -1; },
+      host => { host.rows_sha256 = "not hex"; },
+    ]) {
+      f.record.host = structuredClone(saved);
+      mangle(f.record.host);
+      writeFileSync(join(f.root, "target", "budget-records", "recoverable.json"), JSON.stringify(f.record));
+      const refused = run("--scale", "host", "--warm");
+      assert.equal(refused.status, 1, refused.stderr);
+      assert.match(refused.stderr, /host-shaped/);
+    }
+    f.record.host = saved;
+    writeFileSync(join(f.root, "target", "budget-records", "recoverable.json"), JSON.stringify(f.record));
     // A systematic slowdown still reaches the checker as an over-budget value.
     for (const call of f.record.workloads[1].in_process_warm) call.wall_ms += 400;
     writeFileSync(join(f.root, "target", "budget-records", "recoverable.json"), JSON.stringify(f.record));

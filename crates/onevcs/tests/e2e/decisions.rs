@@ -664,3 +664,49 @@ fn a_disagreeing_copy_and_a_non_base_origin_ref_answer_the_uncached_read() {
     assert_eq!(rows, host.uncached(), "the origin reaches work/b");
     assert!(rows.iter().all(|row| row["branch"]["branch"] != "work/b"));
 }
+
+#[test]
+fn a_record_of_another_logic_identity_or_shape_is_replaced_not_served() {
+    let host = Host::new();
+    for branch in ["work/logic", "work/identity", "work/row", "work/ok"] {
+        host.branch(branch);
+    }
+    host.read();
+    let edit = |branch: &str, key: &str, value: Value| {
+        let path = host.record_path(branch);
+        let mut record: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        record[key] = value;
+        std::fs::write(&path, record.to_string()).unwrap();
+    };
+    edit("work/logic", "logic", json!(99));
+    edit("work/identity", "identity", json!("/not/this/identity"));
+    edit("work/row", "tip", json!("not-an-object-id"));
+    assert_eq!(
+        host.assert_matches_uncached("records of another shape"),
+        set(&["work/logic", "work/identity", "work/row"])
+    );
+}
+
+#[test]
+fn a_recorded_stream_entry_that_cannot_be_trusted_is_read_again() {
+    let host = Host::new();
+    host.branch("work/a");
+    host.read();
+    let path = host
+        .home
+        .join("decisions/v1")
+        .join(onevcs_digest(&host.key))
+        .join("streams.json");
+    let mut document: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let token = Host::token("work/a");
+    let answer = &mut document["streams"][&token]["answer"];
+    answer["fingerprint"] = json!("0".repeat(64));
+    std::fs::write(&path, document.to_string()).unwrap();
+    let derived = host.assert_matches_uncached("a recorded fingerprint no line matches");
+    assert!(derived.contains("work/a"), "{derived:?}");
+
+    let mut document: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    document["streams"][&token]["answer"]["kept"] = json!([[u64::MAX, "{}"]]);
+    std::fs::write(&path, document.to_string()).unwrap();
+    host.assert_matches_uncached("a recorded position past the stream's own lines");
+}
