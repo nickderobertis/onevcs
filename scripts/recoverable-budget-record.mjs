@@ -49,7 +49,7 @@ export function readRecord(directory = recordDirectory, sourceRoot = repositoryR
       throw new Error("incomplete host-shaped sample");
     }
   }
-  if (new Set(record.host.warm.map(sample => sample.verdict_sha256)).size !== 1 || record.host.warm.some(sample => sample.rows <= 0)) {
+  if (new Set(record.host.warm.map(sample => sample.verdict_sha256)).size !== 1 || new Set(record.host.warm.map(sample => sample.rows)).size !== 1 || record.host.warm[0].rows <= 0) {
     throw new Error("host-shaped warm samples answered different rows");
   }
   if (!digest(record.host.rows_sha256) || record.host.git_executions < 0 ||

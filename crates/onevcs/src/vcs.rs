@@ -1826,8 +1826,9 @@ fn undecided_row(
     )
 }
 
-/// Answer every branch of a checkout with no base it can be compared against.
-fn unbased_rows(
+/// Answer the session-recorded branches of a checkout with no base to compare them
+/// against; a branch no session names has nothing here to say.
+fn session_rows_without_base(
     identity: &str,
     repo: &Path,
     scan: &Scan<'_>,

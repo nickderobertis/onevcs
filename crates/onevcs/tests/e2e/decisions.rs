@@ -562,17 +562,20 @@ fn each_way_a_base_gains_names_a_branch_rederives_only_that_branch() {
     host.branch("work/unrelated");
     host.read();
     base_commit(&host, "chore: touches work/path's file", "work-path");
-    assert!(host
-        .assert_matches_uncached("a changed path names it")
-        .contains("work/path"));
+    assert_eq!(
+        host.assert_matches_uncached("a changed path names it"),
+        set(&["work/path"])
+    );
     base_commit(&host, "feat: work/subject", "subject-carried");
-    assert!(host
-        .assert_matches_uncached("a subject names it")
-        .contains("work/subject"));
+    assert_eq!(
+        host.assert_matches_uncached("a subject names it"),
+        set(&["work/subject"])
+    );
     base_commit(&host, "fix: change landed (#7)", "number-carried");
-    assert!(host
-        .assert_matches_uncached("a number names it")
-        .contains("work/change"));
+    assert_eq!(
+        host.assert_matches_uncached("a number names it"),
+        set(&["work/change"])
+    );
     // A landing trailer naming a commit below every recorded branch's fork may land any
     // of them, so the check names them all rather than guessing.
     let seed = run(&host.repo, &["rev-list", "--max-parents=0", "main"]);
@@ -1003,4 +1006,38 @@ fn a_branch_whose_comparison_was_refused_is_not_recorded_and_answers_once_repair
         .unwrap();
     assert_eq!(repaired["landed"]["state"], "no");
     assert!(host.record_path("work/a").exists());
+}
+
+#[test]
+fn an_unterminated_event_alone_moves_the_branch_it_speaks_about() {
+    let host = Host::new();
+    host.branch("work/a");
+    host.read();
+    let tip = run(&host.repo, &["rev-parse", "work/a"]);
+    let events = host
+        .home
+        .join("streams")
+        .join(format!("{}.ndjson", Host::token("work/a")));
+    let scratch = Host::token("work/s");
+    testing::write_events(
+        &host.home,
+        &scratch,
+        &host.key,
+        &[(
+            EventKind::BranchPreserved,
+            json!({"branch": "work/a", "outcome": "already-on-origin", "remote": "origin", "commit": tip})
+                .as_object()
+                .unwrap()
+                .clone(),
+        )],
+    )
+    .unwrap();
+    let line = std::fs::read_to_string(host.home.join("streams").join(format!("{scratch}.ndjson")))
+        .unwrap();
+    std::fs::remove_file(host.home.join("streams").join(format!("{scratch}.ndjson"))).unwrap();
+    let mut text = std::fs::read_to_string(&events).unwrap();
+    text.push_str(line.trim_end());
+    std::fs::write(&events, text).unwrap();
+    let derived = host.assert_matches_uncached("an unterminated preservation alone");
+    assert!(derived.contains("work/a"), "{derived:?}");
 }

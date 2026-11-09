@@ -474,7 +474,12 @@ pub(crate) struct StreamEntry {
 pub(crate) struct Answer {
     pub lines: u64,
     pub kept: Vec<(u64, String)>,
+    /// A digest of what the kept lines mean, which reuse is held to.
     pub fingerprint: String,
+    /// The same with any unterminated final line, which is what `Moved` compares: an
+    /// event still being written is already part of the answer.
+    #[serde(default)]
+    pub seen: String,
 }
 // llmlint: ignore-end[invalid_states_unrepresentable]
 
@@ -698,6 +703,7 @@ fn advance(
     // A final line with no newline yet is read as the uncached reader reads it, but kept
     // out of what is recorded: it is still being written.
     absorb_tail(&mut record, token, path, lines, &bytes[complete..]);
+    let seen = fingerprint(&record);
     let length = entry.length + complete as u64;
     let Some(digest) = tail_digest(file, length) else {
         return Step::Unreadable(unreadable_record(token));
@@ -709,6 +715,7 @@ fn advance(
             lines,
             kept,
             fingerprint: fingerprint_of_kept,
+            seen,
         },
     };
     Step::New(record, new)
@@ -774,6 +781,7 @@ fn read_whole(token: &str, path: &Path) -> Step {
     }
     let fingerprint_of_kept = fingerprint(&record);
     absorb_tail(&mut record, token, path, lines, &raw[complete..]);
+    let seen = fingerprint(&record);
     let digest = {
         let start = raw.len().saturating_sub(4096).min(complete);
         format!("{:x}", Sha256::digest(&raw[start..complete]))
@@ -785,6 +793,7 @@ fn read_whole(token: &str, path: &Path) -> Step {
             lines,
             kept,
             fingerprint: fingerprint_of_kept,
+            seen,
         },
     };
     Step::New(record, new)
@@ -915,7 +924,7 @@ pub(crate) fn narrowed_moved(streams: &[Recorded], named: &BTreeSet<String>) -> 
     for record in streams {
         let same = entries
             .get(record.token())
-            .is_some_and(|(_, entry)| entry.answer.fingerprint == fingerprint(record));
+            .is_some_and(|(_, entry)| entry.answer.seen == fingerprint(record));
         if !same {
             moved.branches.extend(record.branches());
         }
@@ -985,6 +994,8 @@ pub(crate) fn update_streams(tokens: &[String]) {
 }
 
 /// How a read's work on a branch went, for the journey that holds a read to it.
+// llmlint: ignore[changed_behavior_has_e2e] a diagnostic of one read; the journeys that
+// read it each make one read at a time in their own process, as every caller does.
 #[derive(Debug, Default)]
 struct Diagnostics {
     derived: BTreeSet<(String, String)>,
