@@ -862,6 +862,10 @@ fn the_latency_program_refuses_what_it_cannot_use() {
             "are alternatives",
         ),
         (
+            vec!["--selection", "host", "--calls", "1", "--mode", "cold"],
+            "use --mode once",
+        ),
+        (
             vec!["--launcher", "a\nb", "--calls", "1", "--mode", "warm"],
             "is not a label value",
         ),
