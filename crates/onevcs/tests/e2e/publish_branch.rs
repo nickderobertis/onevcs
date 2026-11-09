@@ -4616,6 +4616,37 @@ fn a_publisher_that_dies_holds_nothing_by_the_rule_a_stale_lease_is_read_by() {
     assert_eq!(fixture.origin_log().len(), 1, "nothing landed");
 }
 
+/// Every repository under the state root or the checkout holding `branch`, with its tip.
+fn every_copy_of(fixture: &Fixture, branch: &str) -> Vec<(PathBuf, String)> {
+    let mut pending = vec![fixture.checkout.join(".git"), fixture.world.home()];
+    let mut copies = Vec::new();
+    while let Some(directory) = pending.pop() {
+        if directory.join("HEAD").is_file() && directory.join("refs").is_dir() {
+            let listed = std::process::Command::new("git")
+                .args(["--git-dir", &directory.to_string_lossy()])
+                .args(["rev-parse", "--verify", "--quiet"])
+                .arg(format!("refs/heads/{branch}"))
+                .output()
+                .expect("git runs");
+            if listed.status.success() {
+                let tip = String::from_utf8_lossy(&listed.stdout).trim().to_owned();
+                copies.push((directory.clone(), tip));
+            }
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        pending.extend(
+            entries
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| path.symlink_metadata().is_ok_and(|meta| meta.is_dir())),
+        );
+    }
+    copies
+}
+
 #[test]
 fn a_recording_read_lists_a_running_publication_whose_tracking_ref_already_moved() {
     let fixture = Fixture::local(&local_direct());
@@ -4624,15 +4655,13 @@ fn a_recording_read_lists_a_running_publication_whose_tracking_ref_already_moved
     let parked = ParkedPush::install(&fixture, 0);
     let mut running = start(&fixture, "publish-branch", branch);
     parked.reached(&mut running);
-    let tip = fixture.world.git(&fixture.checkout, &["rev-parse", branch]);
-    fixture.world.git(
-        &fixture.checkout,
-        &[
-            "update-ref",
-            &format!("refs/remotes/origin/{branch}"),
-            tip.trim(),
-        ],
-    );
+    // Every copy of it, the publication's own clone among them, already tracks its tip.
+    let reference = format!("refs/remotes/origin/{branch}");
+    let copies = every_copy_of(&fixture, branch);
+    assert!(copies.len() >= 2, "{copies:?}");
+    for (copy, tip) in &copies {
+        fixture.world.git(copy, &["update-ref", &reference, tip]);
+    }
 
     // The typed read a consumer links, which is the one that answers from records.
     std::env::set_var("ONEVCS_HOME", fixture.world.home());
@@ -4652,10 +4681,9 @@ fn a_recording_read_lists_a_running_publication_whose_tracking_ref_already_moved
     assert!(row.held_by.is_some(), "{row:?}");
 
     // Put back, or the publishing push's lease is held to the commit written above.
-    fixture.world.git(
-        &fixture.checkout,
-        &["update-ref", "-d", &format!("refs/remotes/origin/{branch}")],
-    );
+    for (copy, _) in &copies {
+        fixture.world.git(copy, &["update-ref", "-d", &reference]);
+    }
     parked.release();
     let (code, stderr) = finish(running);
     assert_eq!(code, Some(0), "{stderr}");
