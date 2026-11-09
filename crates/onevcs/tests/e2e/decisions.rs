@@ -1205,3 +1205,54 @@ fn a_branch_recorded_published_is_withheld_warm_and_answers_the_wider_report() {
     assert_eq!(warm, uncached);
     assert!(warm.iter().any(|row| row["branch"]["branch"] == "work/a"));
 }
+
+#[test]
+fn a_branch_filter_reads_the_streams_of_a_branch_no_session_recorded() {
+    let host = Host::new();
+    run(&host.repo, &["checkout", "-q", "-b", "work/loose", "main"]);
+    std::fs::write(host.repo.join("loose"), "loose\n").unwrap();
+    run(&host.repo, &["add", "."]);
+    run(&host.repo, &["commit", "-q", "-m", "feat: loose"]);
+    let tip = run(&host.repo, &["rev-parse", "HEAD"]);
+    run(&host.repo, &["checkout", "-q", "main"]);
+    let selected = || {
+        Git.recoverable_matching(
+            Scope::All,
+            &Selection {
+                detail: Detail::Decision,
+                branch: Some("work/loose".to_owned()),
+                ..Selection::default()
+            },
+        )
+        .unwrap()
+        .into_iter()
+        .map(|row| serde_json::to_value(row).unwrap())
+        .collect::<Vec<_>>()
+    };
+    let before = selected();
+    assert_eq!(before.len(), 1, "{before:?}");
+    assert!(before[0].get("on_origin").is_none(), "{before:?}");
+
+    testing::write_events(
+        &host.home,
+        &Host::token("work/scratch"),
+        &host.key,
+        &[(
+            EventKind::BranchPreserved,
+            json!({"branch": "work/loose", "outcome": "already-on-origin",
+                   "remote": "https://github.com/o/r.git", "commit": tip})
+            .as_object()
+            .unwrap()
+            .clone(),
+        )],
+    )
+    .unwrap();
+
+    let after = selected();
+    assert_eq!(after.len(), 1, "{after:?}");
+    assert_eq!(after[0]["on_origin"]["commit"], tip, "{after:?}");
+    std::env::set_var("GIT_NAMESPACE", "");
+    let uncached = selected();
+    std::env::remove_var("GIT_NAMESPACE");
+    assert_eq!(after, uncached);
+}

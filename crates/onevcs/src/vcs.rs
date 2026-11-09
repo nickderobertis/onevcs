@@ -510,6 +510,21 @@ impl Narrowed {
         self.only_branch.is_some() && !self.selected_sessions || self.checkouts.contains(repo)
     }
 
+    /// The (identity, branch) pairs this read's streams are about. A branch filter alone
+    /// names the branch in every identity, whether or not a session recorded it.
+    fn about(&self, registry: &crate::registry::Registry) -> BTreeSet<(String, String)> {
+        let mut about = self.branches.clone();
+        if let (Some(only), false) = (&self.only_branch, self.selected_sessions) {
+            about.extend(
+                registry
+                    .checkouts
+                    .values()
+                    .map(|checkout| (checkout.identity.clone(), only.clone())),
+            );
+        }
+        about
+    }
+
     /// Whether the read is confined to some identities: a branch filter alone is not,
     /// since any identity may hold the name.
     fn excludes_identity(&self, identity: &str) -> bool {
@@ -652,20 +667,14 @@ fn collected(
         };
         (streams, Some(answers), moved)
     } else {
-        let streams = crate::status::recorded_streams_about(
-            narrowed.as_ref().map(|only| &only.branches),
-            &sessions,
-        )?;
+        let about = narrowed.as_ref().map(|only| only.about(&registry));
+        let streams = crate::status::recorded_streams_about(about.as_ref(), &sessions)?;
         let moved = if reusing {
-            let named: BTreeSet<String> = narrowed
-                .as_ref()
-                .map(|only| {
-                    only.branches
-                        .iter()
-                        .map(|(_, branch)| branch.clone())
-                        .collect()
-                })
-                .unwrap_or_default();
+            let named: BTreeSet<String> = about
+                .iter()
+                .flatten()
+                .map(|(_, branch)| branch.clone())
+                .collect();
             crate::decisions::narrowed_moved(&streams, &named)
         } else {
             crate::decisions::Moved::default()
@@ -1977,21 +1986,29 @@ fn record_decision(
         // branch's inputs are in hand. A fork it cannot read leaves nothing to match
         // but the tip, which only an exact reach of the base can name.
         decided_against = Some(compared.to_owned());
-        // llmlint: ignore[changed_behavior_has_e2e] the branch's own commits and paths are
-        // read best-effort: a failure leaves a record that names fewer keys, which can only
-        // send the branch to its derivation sooner, never conceal a landing the tip names.
-        if let Ok(Some(fork)) = git::merge_base(asked, compared, branch) {
-            if let Ok(commits) = git::log_messages(asked, &fork, branch) {
+        // A fork this checkout cannot read leaves only the tip to match. Commits or paths it
+        // could not read would conceal a landing that names them, so that decision is not
+        // recorded; the subject is one key beside those and is left out where it has none.
+        // llmlint: ignore[changed_behavior_has_e2e] these reads follow a comparison of the
+        // same revisions in the same store, so no fixture fails one without the other.
+        if let Ok(fork) = git::merge_base(asked, compared, branch) {
+            if let Some(fork) = fork {
+                let (Ok(commits), Ok(paths)) = (
+                    git::log_messages(asked, &fork, branch),
+                    git::changed_paths(asked, &fork, branch),
+                ) else {
+                    return;
+                };
                 listing.commits = commits.into_iter().map(|commit| commit.sha).collect();
-            }
-            if let Ok(paths) = git::changed_paths(asked, &fork, branch) {
                 listing.paths = decisions::paths_key(&paths);
+                if let Ok(Ok(subject)) =
+                    provenance::publication_subject(asked, &fork, branch, None, trailers)
+                {
+                    listing.subject = Some(subject.to_string());
+                }
             }
-            if let Ok(Ok(subject)) =
-                provenance::publication_subject(asked, &fork, branch, None, trailers)
-            {
-                listing.subject = Some(subject.to_string());
-            }
+        } else {
+            return;
         }
         listing.change_number = row
             .branch
