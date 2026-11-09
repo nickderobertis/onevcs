@@ -41,6 +41,10 @@ pub(crate) const LOGIC: u32 = 1;
 /// else moves the record forward, so the increment asked of git does not keep growing.
 pub(crate) const REANCHOR_AFTER: usize = 256;
 
+/// More lines than any stream a run writes; a count past this is not one this build
+/// wrote.
+const MAX_STREAM_LINES: u64 = 1 << 40;
+
 /// The most object ids one `merge-base --octopus` is asked about.
 const OCTOPUS_BATCH: usize = 64;
 
@@ -534,6 +538,17 @@ fn load_entries(only: Option<&BTreeSet<String>>) -> HashMap<String, (String, Str
     for file in loaded.into_iter().flatten() {
         let identity = file.identity;
         for (token, entry) in file.streams {
+            // A position outside the stream's own line count is not one this build
+            // wrote; bounded here, before anything folds it into line arithmetic.
+            let bounded = entry.answer.lines < MAX_STREAM_LINES
+                && entry
+                    .answer
+                    .kept
+                    .iter()
+                    .all(|(index, _)| *index < entry.answer.lines);
+            if !bounded {
+                continue;
+            }
             found.insert(token, (identity.clone(), entry));
         }
     }
@@ -597,16 +612,6 @@ fn read_one(directory: &Path, token: &str, entry: Option<&StreamEntry>) -> Step 
         let unchanged = size >= entry.length
             && tail_digest(&file, entry.length).as_deref() == Some(entry.digest.as_str());
         if unchanged {
-            // Bounded before anything folds them, so a tampered position cannot reach
-            // the line arithmetic.
-            if entry
-                .answer
-                .kept
-                .iter()
-                .any(|(index, _)| *index >= entry.answer.lines)
-            {
-                return read_whole(token, &path);
-            }
             let record = fold(token, &path, &entry.answer.kept);
             // A kept answer that does not mean what its fingerprint says is no answer.
             if fingerprint(&record) != entry.answer.fingerprint

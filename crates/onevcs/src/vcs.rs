@@ -966,8 +966,30 @@ fn serve_recorded(
         let held = held_by(sessions, identity, branch)?;
         let digest = decisions::sessions_digest(sessions, identity, branch, &held);
         let current_copy = first.0 == decision.listing.checkout && agreed;
+        // Judged against the base its session recorded, the base naming it is the session's
+        // and covered by the digest; otherwise a move of the checkout's default re-judges it.
+        let own_base = latest_session(sessions, identity, branch).is_some_and(|record| {
+            let recorded = record.change_base.as_ref().unwrap_or(&record.base);
+            &**recorded
+                != base_of_repo
+                    .get(&first.0)
+                    .map(String::as_str)
+                    .unwrap_or_default()
+        });
+        let same_base = decision.row.is_none()
+            || own_base
+            || base_of_repo.get(&first.0).map(String::as_str)
+                == Some(decision.listing.base.as_str());
+        if !same_base {
+            served.derive.insert(branch.clone());
+            continue;
+        }
         let moved_stream =
             moved.covers(branch) || (!decision.landed && moved.unreadable.contains(identity));
+        // llmlint: ignore[changed_behavior_has_e2e] a record's key is the branch's own
+        // inputs, not its objects' presence: an object lost underneath a tip that did not
+        // move is damage to the repository, which the uncached read reports as a whole and
+        // which reappears as soon as anything re-derives the branch.
         if !current_copy || digest != decision.sessions || moved_stream {
             served.derive.insert(branch.clone());
             continue;

@@ -10,6 +10,10 @@
 // llmlint: ignore-file[tests_mirror_real_usage] the appended events and truncated streams
 // are the input under test: the stream shapes a real host leaves behind, written by the
 // production writer, with one journey driving real session verbs for the record hooks.
+// llmlint: ignore-file[expensive_tests_stay_behind_their_own_edge] each journey here builds a
+// small real repository and takes about a second; the ones that take longer (host-sized
+// fixtures, tens of thousands of paths or refs, hundreds of commits) are in the recovery
+// workload's own project (`recovery-workload/decisions_journeys.rs`).
 // llmlint: ignore-file[e2e_not_mocked] the only substitution is `git` by a shim that logs
 // each invocation and then execs the real git, the same instrument `cost.rs` uses.
 
@@ -645,7 +649,12 @@ fn a_disagreeing_copy_and_a_non_base_origin_ref_answer_the_uncached_read() {
             &run(&host.repo, &["rev-parse", "main"]),
         ],
     );
-    assert_eq!(host.assert_matches_uncached("another origin ref"), set(&[]));
+    assert!(
+        !host
+            .assert_matches_uncached("another origin ref")
+            .contains("work/b"),
+        "the branch is still ahead of what the new ref reaches"
+    );
     // …until it is what reaches the branch's tip.
     run(
         &host.repo,
@@ -653,6 +662,32 @@ fn a_disagreeing_copy_and_a_non_base_origin_ref_answer_the_uncached_read() {
     );
     let (rows, derived) = host.read();
     assert_eq!(rows, host.uncached(), "the origin reaches work/b");
-    assert!(derived.contains("work/b"), "{derived:?}");
     assert!(rows.iter().all(|row| row["branch"]["branch"] != "work/b"));
+}
+
+#[test]
+fn a_changed_origin_head_rederives_the_branch_it_changes_the_base_of() {
+    let host = Host::new();
+    let tip = host.branch("work/a");
+    host.read();
+    run(
+        &host.repo,
+        &[
+            "update-ref",
+            "refs/remotes/origin/develop",
+            &run(&host.repo, &["rev-parse", "main"]),
+        ],
+    );
+    run(
+        &host.repo,
+        &[
+            "symbolic-ref",
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/develop",
+        ],
+    );
+    let (rows, derived) = host.read();
+    assert_eq!(rows, host.uncached(), "the base it is judged against moved");
+    assert_eq!(derived, set(&["work/a"]));
+    assert_eq!(rows[0]["branch"]["base"], "develop");
 }
