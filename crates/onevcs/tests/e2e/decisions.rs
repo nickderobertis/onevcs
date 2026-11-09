@@ -803,3 +803,24 @@ fn a_stream_with_a_malformed_line_answers_the_uncached_read_each_time() {
     host.assert_matches_uncached("a malformed line kept on the record");
     host.assert_matches_uncached("and replayed from it");
 }
+
+#[test]
+fn a_final_event_with_no_newline_is_read_and_a_later_newline_changes_nothing() {
+    let host = Host::new();
+    host.branch("work/a");
+    host.read();
+    let path = host
+        .home
+        .join("streams")
+        .join(format!("{}.ndjson", Host::token("work/a")));
+    let text = std::fs::read_to_string(&path).unwrap();
+    let line = text.lines().last().unwrap().to_owned();
+    // The same event again, unterminated: complete as text, still being written.
+    let mut unterminated = text.clone();
+    unterminated.push_str(&line);
+    std::fs::write(&path, &unterminated).unwrap();
+    host.assert_matches_uncached("an event with no final newline");
+    unterminated.push('\n');
+    std::fs::write(&path, &unterminated).unwrap();
+    host.assert_matches_uncached("the newline arrived");
+}

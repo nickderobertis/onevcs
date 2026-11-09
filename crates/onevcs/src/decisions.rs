@@ -689,6 +689,10 @@ fn advance(
     if !notes.is_empty() {
         record.mark_gap();
     }
+    let fingerprint_of_kept = fingerprint(&record);
+    // A final line with no newline yet is read as the uncached reader reads it, but kept
+    // out of what is recorded: it is still being written.
+    absorb_tail(&mut record, token, path, lines, &bytes[complete..]);
     let length = entry.length + complete as u64;
     let Some(digest) = tail_digest(file, length) else {
         return Step::Unreadable(unreadable_record(token));
@@ -699,10 +703,34 @@ fn advance(
         answer: Answer {
             lines,
             kept,
-            fingerprint: fingerprint(&record),
+            fingerprint: fingerprint_of_kept,
         },
     };
     Step::New(record, new)
+}
+
+/// Fold an unterminated final line into a record, as the plain reader does, without
+/// recording it.
+fn absorb_tail(record: &mut Recorded, token: &str, path: &Path, lines: u64, tail: &[u8]) {
+    let Ok(line) = std::str::from_utf8(tail) else {
+        record.mark_gap();
+        return;
+    };
+    if line.is_empty() {
+        return;
+    }
+    let mut notes = Vec::new();
+    crate::status::absorb(
+        record,
+        token,
+        path,
+        usize::try_from(lines).unwrap_or(usize::MAX),
+        line,
+        &mut notes,
+    );
+    if !notes.is_empty() {
+        record.mark_gap();
+    }
 }
 
 fn read_whole(token: &str, path: &Path) -> Step {
@@ -739,6 +767,8 @@ fn read_whole(token: &str, path: &Path) -> Step {
     if !notes.is_empty() {
         record.mark_gap();
     }
+    let fingerprint_of_kept = fingerprint(&record);
+    absorb_tail(&mut record, token, path, lines, &raw[complete..]);
     let digest = {
         let start = raw.len().saturating_sub(4096).min(complete);
         format!("{:x}", Sha256::digest(&raw[start..complete]))
@@ -749,7 +779,7 @@ fn read_whole(token: &str, path: &Path) -> Step {
         answer: Answer {
             lines,
             kept,
-            fingerprint: fingerprint(&record),
+            fingerprint: fingerprint_of_kept,
         },
     };
     Step::New(record, new)
