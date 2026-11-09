@@ -1256,3 +1256,90 @@ fn a_branch_filter_reads_the_streams_of_a_branch_no_session_recorded() {
     std::env::remove_var("GIT_NAMESPACE");
     assert_eq!(after, uncached);
 }
+
+#[test]
+fn a_record_whose_row_contradicts_it_is_replaced_not_served() {
+    let host = Host::new();
+    let names = [
+        "work/row-identity",
+        "work/row-branch",
+        "work/row-tip",
+        "work/no-anchor",
+        "work/no-row",
+        "work/ok",
+    ];
+    for branch in names {
+        host.branch(branch);
+    }
+    host.read();
+    let edit = |branch: &str, change: &dyn Fn(&mut Value)| {
+        let path = host.record_path(branch);
+        let mut record: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        change(&mut record);
+        std::fs::write(&path, record.to_string()).unwrap();
+    };
+    edit("work/row-identity", &|record| {
+        record["row"]["identity"] = json!("/not/this/identity");
+    });
+    edit("work/row-branch", &|record| {
+        record["row"]["branch"]["branch"] = json!("work/ok");
+    });
+    edit("work/row-tip", &|record| {
+        record["row"]["tip"] = json!("0".repeat(40));
+    });
+    edit("work/no-anchor", &|record| {
+        record["decided_against"] = Value::Null;
+    });
+    edit("work/no-row", &|record| {
+        record["row"] = Value::Null;
+    });
+    assert_eq!(
+        host.assert_matches_uncached("rows contradicting their records"),
+        set(&names[..5])
+    );
+}
+
+#[test]
+fn recorded_stream_lines_out_of_order_are_read_again_in_order() {
+    let host = Host::new();
+    host.branch("work/a");
+    let queued = |pull: u32| {
+        (
+            EventKind::MergeQueued,
+            json!({"branch": "work/a", "url": format!("https://github.com/o/r/pull/{pull}")})
+                .as_object()
+                .unwrap()
+                .clone(),
+        )
+    };
+    let token = Host::token("work/a");
+    testing::write_events(&host.home, &token, &host.key, &[queued(1), queued(2)]).unwrap();
+    host.read();
+    let path = host
+        .home
+        .join("decisions/v1")
+        .join(onevcs_digest(&host.key))
+        .join("streams.json");
+    let positions = || -> Vec<u64> {
+        let document: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        document["streams"][&token]["answer"]["kept"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|line| line[0].as_u64().unwrap())
+            .collect()
+    };
+    let kept = positions();
+    assert!(kept.len() >= 2, "{kept:?}");
+
+    let mut document: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    document["streams"][&token]["answer"]["kept"]
+        .as_array_mut()
+        .unwrap()
+        .swap(0, 1);
+    std::fs::write(&path, document.to_string()).unwrap();
+    assert_ne!(positions(), kept);
+
+    host.assert_matches_uncached("recorded positions out of order");
+    assert_eq!(positions(), kept, "the entry was read again and rewritten");
+}
