@@ -188,8 +188,12 @@ pub(crate) fn now() -> String {
 
 /// A digest of the checkout's `origin` tips other than `base`.
 pub(crate) fn origin_digest(repo: &Path, base: &str) -> Option<String> {
+    let heads = match crate::native_refs::remote_heads(repo, "origin") {
+        Some(heads) => heads,
+        None => git::origin_tips_listed(repo).ok()?,
+    };
     let mut hasher = Sha256::new();
-    for (name, tip) in crate::native_refs::remote_heads(repo, "origin")? {
+    for (name, tip) in heads {
         if name != base {
             hasher.update(name.as_bytes());
             hasher.update([0]);

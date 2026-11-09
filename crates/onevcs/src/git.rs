@@ -120,6 +120,25 @@ enum Elapse {
     Answer,
 }
 
+/// Every `origin` remote-tracking tip by branch name, asked of git where the checkout's
+/// refs cannot be read in process.
+pub(crate) fn origin_tips_listed(cwd: &Path) -> Result<BTreeMap<String, String>> {
+    Ok(checked(
+        &[
+            "for-each-ref",
+            "--format=%(refname:lstrip=3)%00%(objectname)",
+            "refs/remotes/origin",
+        ],
+        Some(cwd),
+    )?
+    .stdout
+    .lines()
+    .filter_map(|line| line.split_once('\0'))
+    .filter(|(name, _)| *name != "HEAD")
+    .map(|(name, tip)| (name.to_owned(), tip.to_owned()))
+    .collect())
+}
+
 /// The most revisions an argument vector names before the list goes over standard
 /// input, whatever the checkout holds. Past it the read gives up its proof and
 /// in-process answer, which only ever reach git's own `--count` for a handful of
@@ -3040,6 +3059,52 @@ pub fn unpublished_branches_among(
         (heads, origin_tips)
     };
     let local: BTreeMap<String, String> = heads.iter().cloned().collect();
+    // Past a checkout's ordinary number of remote-tracking refs, each branch's count
+    // would be a process carrying every tip. One walk over standard input answers them
+    // all: the branches whose tip no such ref reaches are the tips it prints.
+    let walked: Option<BTreeSet<(Option<String>, String)>> = if origin_tips.len() > ARGV_LIST_LIMIT
+    {
+        let mut groups: BTreeMap<Option<String>, Vec<&str>> = BTreeMap::new();
+        for (branch, tip) in &heads {
+            if keep(branch) && !listed_anyway.contains(branch) && !origin_tips.contains(tip) {
+                let carried = based_on(branch).and_then(|base| local.get(&base).cloned());
+                if carried.as_deref() != Some(tip.as_str()) {
+                    groups.entry(carried).or_default().push(tip);
+                }
+            }
+        }
+        let mut found = BTreeSet::new();
+        for (carried, tips) in &groups {
+            let mut input = String::new();
+            for tip in tips {
+                input.push_str(tip);
+                input.push('\n');
+            }
+            input.push_str("--not\n");
+            for tip in origin_tips.iter().chain(carried.iter()) {
+                input.push_str(tip);
+                input.push('\n');
+            }
+            let given = run_given(cwd, &["rev-list", "--stdin", "--"], input.as_bytes())?;
+            if !given.ok() {
+                return Err(error::invalid(format!(
+                    "git rev-list over {} branches in {} failed: {}",
+                    tips.len(),
+                    cwd.display(),
+                    given.diagnostic()
+                )));
+            }
+            found.extend(
+                given
+                    .stdout
+                    .lines()
+                    .map(|line| (carried.clone(), line.to_owned())),
+            );
+        }
+        Some(found)
+    } else {
+        None
+    };
     let mut unpublished = Vec::new();
     for (branch, tip) in heads {
         if !keep(&branch) {
@@ -3054,6 +3119,12 @@ pub fn unpublished_branches_among(
         }
         let base = based_on(&branch).and_then(|base| local.get(&base).cloned());
         if base.as_deref() == Some(tip.as_str()) {
+            continue;
+        }
+        if let Some(walked) = &walked {
+            if walked.contains(&(base.clone(), tip.clone())) {
+                unpublished.push((branch, tip));
+            }
             continue;
         }
         let carried: Vec<&str> = base.iter().map(String::as_str).collect();
@@ -3721,7 +3792,11 @@ pub fn known_to_carry_changes<'a>(
     // git's output as text, so how much of a listing survived that is a question to
     // settle rather than to assume — a comparison scoped by *some* of the paths a
     // commit touched would answer that the base carries it when the base does not.
-    if touched.len() != counted_files(cwd, fork, commit)? {
+    // As in `changed_paths`, a listing that arrived whole is text whole or not at all,
+    // so only an empty one or one whose pipe failed part way is asked for git's count.
+    if (touched.is_empty() || !listed.read_failures.is_empty())
+        && touched.len() != counted_files(cwd, fork, commit)?
+    {
         // Which leaves the same question asked without paths: a base carrying this
         // commit's whole tree carries its changes too, and that is the one answer
         // that cannot be wrong about a path nobody here could name.

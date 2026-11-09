@@ -8,10 +8,30 @@ class Usage extends Error {}
 // A reader run outside onebudgetspec has nowhere to report to.
 class Unwired extends Error {}
 
+// The unfiltered read over the aged host-shaped fixture; every figure the detail states
+// is what `onevcs-recovery`'s journey recorded of it.
+function reportHost() {
+  const record = readRecord();
+  const host = record.host;
+  const timings = host.warm.map(call => call.wall_ms).sort((a, b) => a - b);
+  const median = (timings[4] + timings[5]) / 2;
+  const checks = host.checks.by_gain.map(check => `${check.gained}: ${(check.seconds * 1000).toFixed(1)}ms`).join(", ");
+  const loads = host.warm.map(call => call.load1);
+  const description = `host warm in-process Decision over the aged host-shaped fixture: median of ${host.warm.length} calls ${median.toFixed(1)}ms (maximum ${host.slowest_ms.toFixed(1)}ms), load1 ${Math.min(...loads)}-${Math.max(...loads)}; cold ${host.cold.wall_ms.toFixed(1)}ms; re-derived ${host.rederived} branches; base-increment checks by commits gained: ${checks}; a further warm call started ${host.git_executions} git processes`;
+  if (!report(median / 1000, `invocation ${record.build.run_id}: ${description}`)) {
+    throw new Unwired("ONEBUDGETSPEC_RESULT is missing, so there is nowhere to report to");
+  }
+}
+
 try {
+  main: {
   const args = process.argv.slice(2);
+  if (args.length === 3 && args[0] === "--scale" && args[1] === "host" && args[2] === "--warm") {
+    reportHost();
+    break main;
+  }
   if (!(args.length === 3 && args[0] === "--scale" && ["1", "10"].includes(args[1]) && ["--cold", "--warm"].includes(args[2]))) {
-    throw new Usage(`expected --scale 1|10 --cold|--warm, got ${JSON.stringify(args)}`);
+    throw new Usage(`expected --scale 1|10|host --cold|--warm, got ${JSON.stringify(args)}`);
   }
   const mode = args[2].slice(2);
   if (mode === "cold" && args[1] !== "1") {
@@ -32,10 +52,11 @@ try {
   if (!report(median / 1000, `invocation ${record.build.run_id}: ${description}`)) {
     throw new Unwired("ONEBUDGETSPEC_RESULT is missing, so there is nowhere to report to");
   }
+  }
 } catch (error) {
   const usage = error instanceof Usage || error instanceof Unwired;
   const next = error instanceof Usage
-    ? "pass --scale 1 --warm, --scale 10 --warm or --scale 1 --cold, as budgets.yaml's latency entries do"
+    ? "pass --scale 1 --warm, --scale 10 --warm, --scale 1 --cold or --scale host --warm, as budgets.yaml's latency entries do"
     : error instanceof Unwired
       ? "run 'just budgets', which runs this reader with the result path to report to"
       : `run '${journeyCommand}' to regenerate complete current-build records`;

@@ -52,6 +52,50 @@ pub(super) struct Workload {
     pub in_process_cold: Option<[Call; 10]>,
 }
 
+/// The per-checkout base-increment checks of one warm read, longest gain first.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct HostChecks {
+    pub by_gain: Vec<HostCheck>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct HostCheck {
+    pub gained: u64,
+    pub seconds: f64,
+}
+
+impl HostChecks {
+    pub(super) fn push(&mut self, gained: u64, seconds: f64) {
+        self.by_gain.push(HostCheck { gained, seconds });
+        self.by_gain.sort_by_key(|check| std::cmp::Reverse(check.gained));
+    }
+}
+
+/// The unfiltered read over [`onevcs_testing::recovery::HOST`]'s aged fixture.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct HostRecord {
+    /// Ten calls, each from the aged state `AgedHost::restore` re-established.
+    pub warm: [Call; 10],
+    /// The read with no record at all, stated in the budget's detail.
+    pub cold: Call,
+    /// How many branches every warm call re-derived.
+    pub rederived: usize,
+    /// The base-increment checks, each with the commits its base gained.
+    pub checks: HostChecks,
+    /// Git processes one further warm call started, through a counting shim.
+    pub git_executions: usize,
+    /// The slowest of the ten warm calls.
+    pub slowest_ms: f64,
+    /// How long `build_host` took.
+    pub build_ms: u64,
+    pub load1: f64,
+    /// The rows every warm call answered.
+    pub rows_sha256: String,
+}
+
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Record {
@@ -59,6 +103,8 @@ pub(super) struct Record {
     pub build: Build,
     pub scenario: Scenario,
     pub workloads: [Workload; 2],
+    /// The host-shaped workload, which reports through `--scale host` alone.
+    pub host: HostRecord,
     pub preparation_ms: u64,
     pub total_ms: u64,
     pub load1: f64,

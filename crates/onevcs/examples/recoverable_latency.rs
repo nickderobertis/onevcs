@@ -6,7 +6,11 @@
 //! test binary built for coverage cannot measure that. Its whole input is the state
 //! root `ONEVCS_HOME` names and three arguments:
 //!
-//! `recoverable_latency --launcher NAME --calls N --mode warm|cold|uncached`
+//! `recoverable_latency [--launcher NAME] [--selection host] --calls N --mode warm|cold|uncached|once`
+//!
+//! `--selection host` asks the unfiltered Decision read in place of a launcher's rows.
+//! `once` makes `N` calls with no priming and nothing cleared, for a caller that sets
+//! the state each call starts from.
 //!
 //! - `warm`: one untimed priming call, then `N` timed calls over unchanged state.
 //! - `cold`: every proof and index cache under the state root removed before each of
@@ -149,10 +153,13 @@ enum Mode {
     Cold,
     /// The caches removed once, under a `GIT_*` override the caller sets.
     Uncached,
+    /// Exactly `N` calls over the state the caller left: nothing primed or cleared.
+    Once,
 }
 
 struct Arguments {
-    launcher: Launcher,
+    launcher: Option<Launcher>,
+    host: bool,
     calls: NonZeroUsize,
     mode: Mode,
 }
@@ -183,6 +190,7 @@ enum Failure {
 
 fn arguments() -> Result<Arguments, String> {
     let mut launcher = None;
+    let mut host = false;
     let mut calls = None;
     let mut mode = None;
     let mut given = std::env::args().skip(1);
@@ -192,6 +200,7 @@ fn arguments() -> Result<Arguments, String> {
             .ok_or_else(|| format!("{flag} needs a value"))?;
         match flag.as_str() {
             "--launcher" => launcher = Some(Launcher::parse(value)?),
+            "--selection" if value == "host" => host = true,
             "--calls" => {
                 calls = Some(
                     value
@@ -204,16 +213,21 @@ fn arguments() -> Result<Arguments, String> {
                     "warm" => Mode::Warm,
                     "cold" => Mode::Cold,
                     "uncached" => Mode::Uncached,
-                    _ => return Err(format!("--mode {value:?} is not warm, cold or uncached")),
+                    "once" => Mode::Once,
+                    _ => return Err(format!("--mode {value:?} is not warm, cold, uncached or once")),
                 })
             }
             _ => return Err(format!("unexpected argument {flag} {value}")),
         }
     }
+    if launcher.is_none() && !host {
+        return Err("--launcher is required unless --selection host is given".to_owned());
+    }
     Ok(Arguments {
-        launcher: launcher.ok_or("--launcher is required")?,
+        launcher,
+        host,
         calls: calls.ok_or("--calls is required")?,
-        mode: mode.ok_or("--mode warm|cold|uncached is required")?,
+        mode: mode.ok_or("--mode warm|cold|uncached|once is required")?,
     })
 }
 
@@ -242,7 +256,10 @@ fn run() -> Result<serde_json::Value, Failure> {
     };
     let selection = Selection {
         detail: Detail::Decision,
-        labels: BTreeMap::from([("launcher".to_owned(), arguments.launcher.0.clone())]),
+        labels: match (&arguments.launcher, arguments.host) {
+            (Some(launcher), false) => BTreeMap::from([("launcher".to_owned(), launcher.0.clone())]),
+            _ => BTreeMap::new(),
+        },
         ..Selection::default()
     };
     let read = || {
@@ -254,7 +271,7 @@ fn run() -> Result<serde_json::Value, Failure> {
             read()?;
         }
         Mode::Uncached => clear()?,
-        Mode::Cold => {}
+        Mode::Cold | Mode::Once => {}
     }
     // Reserved whole before the first call, so the report's own records are not part
     // of what a later call's resident memory reads.

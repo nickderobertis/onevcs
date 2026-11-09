@@ -866,6 +866,7 @@ fn serve_recorded(
     let mut copies: BTreeMap<String, Vec<(PathBuf, String)>> = BTreeMap::new();
     let mut base_of_repo: BTreeMap<PathBuf, String> = BTreeMap::new();
     let mut origin_moved: BTreeMap<PathBuf, Option<BTreeSet<String>>> = BTreeMap::new();
+    let mut origin_digests: BTreeMap<PathBuf, Option<String>> = BTreeMap::new();
     let checkouts = workspace::checkouts_among(registry, &resolution, sessions);
     for repo in &checkouts {
         if narrowed.as_ref().is_some_and(|only| !only.looks_in(repo)) {
@@ -935,8 +936,11 @@ fn serve_recorded(
         let agreed = seen_at.iter().all(|(_, tip)| *tip == decision.tip);
         let origin_fresh = {
             let repo = &first.0;
-            let base = base_of_repo.get(repo).map(String::as_str).unwrap_or_default();
-            decisions::origin_digest(repo, base).as_deref() == Some(decision.listing.origin.as_str())
+            let digest = origin_digests.entry(repo.clone()).or_insert_with(|| {
+                let base = base_of_repo.get(repo).map(String::as_str).unwrap_or_default();
+                decisions::origin_digest(repo, base)
+            });
+            digest.as_deref() == Some(decision.listing.origin.as_str())
         };
         let held = held_by(sessions, identity, branch)?;
         let digest = decisions::sessions_digest(sessions, identity, branch, &held);

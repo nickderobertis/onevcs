@@ -32,7 +32,7 @@ export function readRecord(directory = recordDirectory, sourceRoot = repositoryR
   }
   const record = read("recoverable.json");
   if (!validate(record)) throw new Error(`incomplete telemetry: ${JSON.stringify(validate.errors)}`);
-  if (record.version !== 2 || record.scenario !== "launcher-decision") throw new Error("foreign telemetry format or scenario");
+  if (record.version !== 3 || record.scenario !== "launcher-decision") throw new Error("foreign telemetry format or scenario");
   if (record.build.run_id !== expected.run_id || record.build.binary !== expected.binary ||
       record.build.binary_sha256 !== expected.binary_sha256 || record.build.source_sha256 !== expected.source_sha256) throw new Error("stale or foreign invocation/build");
   if (!digest(record.build.source_sha256) || record.build.source_sha256 !== sourceFingerprint(sourceRoot)) {

@@ -22,6 +22,10 @@
       "minItems": 2,
       "maxItems": 2
     },
+    "host": {
+      "description": "The host-shaped workload, which reports through `--scale host` alone.",
+      "$ref": "#/$defs/HostRecord"
+    },
     "preparation_ms": {
       "type": "integer",
       "format": "uint64",
@@ -43,6 +47,7 @@
     "build",
     "scenario",
     "workloads",
+    "host",
     "preparation_ms",
     "total_ms",
     "load1"
@@ -219,6 +224,107 @@
         "load1",
         "rows",
         "verdict_sha256"
+      ]
+    },
+    "HostRecord": {
+      "description": "The unfiltered read over [`onevcs_testing::recovery::HOST`]'s aged fixture.",
+      "type": "object",
+      "properties": {
+        "warm": {
+          "description": "Ten calls, each from the aged state `AgedHost::restore` re-established.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Call"
+          },
+          "minItems": 10,
+          "maxItems": 10
+        },
+        "cold": {
+          "description": "The read with no record at all, stated in the budget's detail.",
+          "$ref": "#/$defs/Call"
+        },
+        "rederived": {
+          "description": "How many branches every warm call re-derived.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "checks": {
+          "description": "The base-increment checks, each with the commits its base gained.",
+          "$ref": "#/$defs/HostChecks"
+        },
+        "git_executions": {
+          "description": "Git processes one further warm call started, through a counting shim.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "slowest_ms": {
+          "description": "The slowest of the ten warm calls.",
+          "type": "number",
+          "format": "double"
+        },
+        "build_ms": {
+          "description": "How long `build_host` took.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "load1": {
+          "type": "number",
+          "format": "double"
+        },
+        "rows_sha256": {
+          "description": "The rows every warm call answered.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "warm",
+        "cold",
+        "rederived",
+        "checks",
+        "git_executions",
+        "slowest_ms",
+        "build_ms",
+        "load1",
+        "rows_sha256"
+      ]
+    },
+    "HostChecks": {
+      "description": "The per-checkout base-increment checks of one warm read, longest gain first.",
+      "type": "object",
+      "properties": {
+        "by_gain": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HostCheck"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "by_gain"
+      ]
+    },
+    "HostCheck": {
+      "type": "object",
+      "properties": {
+        "gained": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "seconds": {
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "gained",
+        "seconds"
       ]
     }
   },

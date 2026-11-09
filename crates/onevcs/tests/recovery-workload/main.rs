@@ -15,6 +15,7 @@ mod boundary_sanitize;
 mod churn;
 mod counting;
 mod draft_hold;
+mod host;
 mod retire_hour;
 #[cfg(target_os = "linux")]
 mod scoped;
@@ -739,11 +740,24 @@ fn full_workload_recovery() {
         )
         .unwrap();
     }
+    let host_root = tempfile::Builder::new()
+        .prefix("recovery-host-")
+        .tempdir_in(
+            std::env::var_os("ONEPIPELINE_NODE_SCRATCH_DIR")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(std::env::temp_dir),
+        )
+        .expect("empty disposable host");
+    let host_preparation = Instant::now();
+    let host = host::journey(host_root.path());
+    preparation_ms += milliseconds(host_preparation).min(host.build_ms);
+    host_root.close().expect("required host fixture cleanup");
     let mut record = Record {
-        version: 2,
+        version: 3,
         build: provenance.clone(),
         scenario: Scenario::LauncherDecision,
         workloads: workloads.try_into().expect("both workloads"),
+        host,
         preparation_ms,
         total_ms: milliseconds(start),
         load1: initial_load,
