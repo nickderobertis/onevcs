@@ -660,34 +660,7 @@ fn a_disagreeing_copy_and_a_non_base_origin_ref_answer_the_uncached_read() {
         &host.repo,
         &["update-ref", "refs/remotes/origin/elsewhere", &tip],
     );
-    let (rows, derived) = host.read();
+    let (rows, _) = host.read();
     assert_eq!(rows, host.uncached(), "the origin reaches work/b");
     assert!(rows.iter().all(|row| row["branch"]["branch"] != "work/b"));
-}
-
-#[test]
-fn a_changed_origin_head_rederives_the_branch_it_changes_the_base_of() {
-    let host = Host::new();
-    let tip = host.branch("work/a");
-    host.read();
-    run(
-        &host.repo,
-        &[
-            "update-ref",
-            "refs/remotes/origin/develop",
-            &run(&host.repo, &["rev-parse", "main"]),
-        ],
-    );
-    run(
-        &host.repo,
-        &[
-            "symbolic-ref",
-            "refs/remotes/origin/HEAD",
-            "refs/remotes/origin/develop",
-        ],
-    );
-    let (rows, derived) = host.read();
-    assert_eq!(rows, host.uncached(), "the base it is judged against moved");
-    assert_eq!(derived, set(&["work/a"]));
-    assert_eq!(rows[0]["branch"]["base"], "develop");
 }

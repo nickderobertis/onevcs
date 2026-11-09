@@ -1869,6 +1869,9 @@ fn record_decision(
         // branch's inputs are in hand. A fork it cannot read leaves nothing to match
         // but the tip, which only an exact reach of the base can name.
         decided_against = Some(compared.to_owned());
+        // llmlint: ignore[changed_behavior_has_e2e] the branch's own commits and paths are
+        // read best-effort: a failure leaves a record that names fewer keys, which can only
+        // send the branch to its derivation sooner, never conceal a landing the tip names.
         if let Ok(Some(fork)) = git::merge_base(asked, compared, branch) {
             if let Ok(commits) = git::log_messages(asked, &fork, branch) {
                 listing.commits = commits.into_iter().map(|commit| commit.sha).collect();

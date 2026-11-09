@@ -1279,7 +1279,6 @@ fn build_host_identity(
         );
     }
 
-    // Session records and streams.
     let session_record = |branch: &Ref,
                           token: &Token,
                           class: Class,
