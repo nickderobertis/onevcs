@@ -80,7 +80,6 @@ fn a_branch_changing_enough_paths_to_overflow_argv_is_answered_either_way() {
     assert!(child.wait().unwrap().success());
     host.session("big", Lifecycle::Closed);
 
-    // Not landed: every surface lists the branch, and says its work has not reached the base.
     assert_eq!(
         oversized_branch_answers(&host),
         OversizedAnswers {
@@ -91,8 +90,6 @@ fn a_branch_changing_enough_paths_to_overflow_argv_is_answered_either_way() {
         }
     );
 
-    // Landed: the unpublished read drops the branch on both surfaces, and the read that
-    // lists every preserved branch still says what became of it.
     landed_on_main(&host, "big", "squash");
     assert_eq!(
         oversized_branch_answers(&host),
