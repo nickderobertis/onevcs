@@ -626,27 +626,251 @@ fn query(producer: &str, consumer: &str, args: &[&str]) -> onevcs::AdoptionQuery
     }
 }
 
+/// What one case must answer, stated so the library half is held to the task's
+/// verdicts as well as to the command line's.
+#[derive(Debug, Clone, Copy)]
+enum Expect {
+    /// `completes`, with `releasing` and the target the wait resolves to.
+    Completes(bool, Option<&'static str>),
+    /// `never-completes`, refused by exactly these rules in order.
+    Never(&'static [&'static str]),
+    /// `unanswered`, its reason naming this.
+    Unanswered(&'static str),
+}
+
+/// Ask one case of the binary and of `onevcs::adoption_check` in-process, and hold
+/// both to each other and to `expect`, with `adoption` the effective rung.
+fn ask_both(
+    host: &Host,
+    (producer, consumer, args): (&str, &str, &[&str]),
+    expect: Expect,
+    adoption: &str,
+) {
+    let case = format!("{producer} <- {consumer} {args:?}");
+    let (code, printed) = host.check(producer, consumer, args);
+    let verdict = onevcs::adoption_check(&query(producer, consumer, args))
+        .unwrap_or_else(|failure| panic!("{case}: the check answers: {failure}"));
+    let answered = serde_json::to_value(&verdict).expect("serializes");
+    assert_eq!(answered, printed, "{case}: the library and the CLI differ");
+    let exit = match verdict.state {
+        onevcs::AdoptionState::Completes => 0,
+        onevcs::AdoptionState::NeverCompletes => 1,
+        onevcs::AdoptionState::Unanswered => 3,
+    };
+    assert_eq!(code, exit, "{case}");
+    assert_eq!(answered["adoption"], adoption, "{case}: {answered:#}");
+    match expect {
+        Expect::Completes(releasing, target) => {
+            completes(code, &answered, releasing, json!(target));
+        }
+        Expect::Never(expected) => {
+            assert_eq!(answered["state"], "never-completes", "{case}: {answered:#}");
+            assert_eq!(rules(&answered), expected, "{case}: {answered:#}");
+            for refusal in &verdict.refusals {
+                for named in [verdict.consumer.as_str(), verdict.producer.as_str()] {
+                    assert!(refusal.reason.contains(named), "{case}: {refusal:?}");
+                }
+            }
+        }
+        Expect::Unanswered(names) => unanswered(code, &answered, names),
+    }
+}
+
 #[test]
 fn the_library_answers_every_case_exactly_as_the_command_line_does() {
+    use Expect::{Completes, Never, Unanswered};
     let host = Host::new();
-    host.releases("published", &[(&host.direct, "    adoption: fast\n")]);
     inhabit(&host.world);
-    for (producer, consumer, args) in cases(&host) {
-        let (code, printed) = host.check(&producer, &consumer, &args);
-        let verdict =
-            onevcs::adoption_check(&query(&producer, &consumer, &args)).expect("the check answers");
-        assert_eq!(
-            serde_json::to_value(&verdict).expect("serializes"),
-            printed,
-            "{producer} ← {consumer} {args:?}"
-        );
-        let expected = match verdict.state {
-            onevcs::AdoptionState::Completes => 0,
-            onevcs::AdoptionState::NeverCompletes => 1,
-            onevcs::AdoptionState::Unanswered => 3,
-        };
-        assert_eq!(code, expected, "{producer} ← {consumer} {args:?}");
+    let (producer, silent) = (spelled(&host.producer), spelled(&host.silent));
+    let (consumer, direct) = (spelled(&host.consumer), spelled(&host.direct));
+    let nowhere = spelled(&host.world.path("never-registered"));
+    let (p, s, c, d, n) = (
+        producer.as_str(),
+        silent.as_str(),
+        consumer.as_str(),
+        direct.as_str(),
+        nowhere.as_str(),
+    );
+
+    // Global `published`; the local-direct consumer's own rung is `fast`.
+    host.releases("published", &[(&host.direct, "    adoption: fast\n")]);
+    for (case, expect, rung) in [
+        // The four rules, each refusing its violating case.
+        (
+            (p, c, &["--adoption", "published"][..]),
+            Never(&["published-no-target"]),
+            "published",
+        ),
+        (
+            (p, d, &["--adoption", "fast"][..]),
+            Never(&["fast-no-change-request"]),
+            "fast",
+        ),
+        (
+            (
+                p,
+                d,
+                &["--adoption", "published", "--consumes", "crate"][..],
+            ),
+            Never(&["consumes-without-change-request"]),
+            "published",
+        ),
+        (
+            (p, c, &["--consumes", "wheel"][..]),
+            Never(&["consumes-undeclared-target"]),
+            "published",
+        ),
+        (
+            (s, c, &["--consumes", "crate"][..]),
+            Never(&["consumes-undeclared-target"]),
+            "published",
+        ),
+        (
+            (p, d, &["--adoption", "fast", "--consumes", "wheel"][..]),
+            Never(&[
+                "fast-no-change-request",
+                "consumes-without-change-request",
+                "consumes-undeclared-target",
+            ]),
+            "fast",
+        ),
+        // The near misses, which complete.
+        (
+            (
+                p,
+                c,
+                &["--adoption", "published", "--consumes", "crate"][..],
+            ),
+            Completes(true, Some("crate")),
+            "published",
+        ),
+        (
+            (p, c, &["--adoption", "fast", "--policy", "change-auto"][..]),
+            Completes(true, None),
+            "fast",
+        ),
+        (
+            (p, c, &["--adoption", "fast", "--consumes", "npm"][..]),
+            Completes(true, Some("npm")),
+            "fast",
+        ),
+        // The node-level policy beats the resolved publication.
+        (
+            (p, d, &["--adoption", "fast", "--policy", "change-auto"][..]),
+            Completes(true, None),
+            "fast",
+        ),
+        // Nothing released: the consumer's own identity, and a producer declaring nothing.
+        (
+            (p, p, &["--adoption", "published"][..]),
+            Completes(false, None),
+            "published",
+        ),
+        ((s, d, &[][..]), Completes(false, None), "fast"),
+        ((s, c, &[][..]), Completes(false, None), "published"),
+        // Precedence: global with no rung of its own, the repository rung over the
+        // global one, and the node rung over the repository one.
+        (
+            (p, c, &[][..]),
+            Never(&["published-no-target"]),
+            "published",
+        ),
+        ((p, d, &[][..]), Never(&["fast-no-change-request"]), "fast"),
+        (
+            (p, d, &["--adoption", "published"][..]),
+            Never(&["published-no-target"]),
+            "published",
+        ),
+        // What cannot be resolved is unanswered.
+        ((n, c, &[][..]), Unanswered("the producer"), "published"),
+        ((p, n, &[][..]), Unanswered("the consumer"), "published"),
+        (
+            (n, d, &["--adoption", "fast"][..]),
+            Unanswered("never-registered"),
+            "fast",
+        ),
+    ] {
+        ask_both(&host, case, expect, rung);
     }
+
+    // A declared `default_target` is what a `published` wait with no `consumes` takes.
+    host.releases("fast", &[(&host.producer, "    default_target: npm\n")]);
+    ask_both(
+        &host,
+        (p, c, &["--adoption", "published"]),
+        Completes(true, Some("npm")),
+        "published",
+    );
+    ask_both(
+        &host,
+        (p, c, &["--adoption", "published", "--consumes", "crate"]),
+        Completes(true, Some("crate")),
+        "published",
+    );
+
+    // One naming no declared target is a configuration every release verb refuses.
+    host.releases("fast", &[(&host.producer, "    default_target: wheel\n")]);
+    ask_both(
+        &host,
+        (p, c, &["--adoption", "published"]),
+        Unanswered("default_target \"wheel\""),
+        "published",
+    );
+
+    // A host release-targets file that does not read.
+    std::fs::write(host.world.home().join("releases.yml"), "version: [\n")
+        .expect("a malformed host file");
+    ask_both(
+        &host,
+        (p, c, &["--adoption", "published"]),
+        Unanswered("release-targets file"),
+        "published",
+    );
+    ask_both(
+        &host,
+        (p, c, &[]),
+        Unanswered("release-targets file"),
+        "fast",
+    );
+
+    // A rules file that does not read, which a node-level policy need not read.
+    host.releases("fast", &[]);
+    configure_rules(&host.world, "version: [\n");
+    ask_both(
+        &host,
+        (p, c, &["--adoption", "fast"]),
+        Unanswered("the consumer"),
+        "fast",
+    );
+    ask_both(
+        &host,
+        (p, c, &["--adoption", "fast", "--policy", "change-open"]),
+        Completes(true, None),
+        "fast",
+    );
+
+    // A producer whose own declaration does not parse is unknown, not undeclared.
+    host.commit(
+        &host.silent,
+        onevcs::declaration::FILE,
+        "schema_version = 1\n[[target]\n",
+    );
+    ask_both(
+        &host,
+        (s, c, &["--adoption", "fast", "--policy", "change-open"]),
+        Unanswered(onevcs::declaration::FILE),
+        "fast",
+    );
+
+    // A registry that does not read resolves nothing at all.
+    std::fs::write(host.world.home().join("registry.json"), "{ not json")
+        .expect("a corrupt registry");
+    ask_both(
+        &host,
+        (p, c, &["--adoption", "fast"]),
+        Unanswered("registry"),
+        "fast",
+    );
 }
 
 #[test]
