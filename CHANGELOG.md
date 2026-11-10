@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.65.0](https://github.com/nickderobertis/onevcs/compare/v0.64.0...v0.65.0) - 2026-11-10
+
+### Added
+
+- answer whether a consumer's release adoption of a producer can complete ([#658](https://github.com/nickderobertis/onevcs/pull/658))
+
+### Fixed
+
+- *(deps)* [**breaking**] build on onemessagebus 0.11 ([#657](https://github.com/nickderobertis/onevcs/pull/657))
+
 ## [0.64.0](https://github.com/nickderobertis/onevcs/compare/v0.63.0...v0.64.0) - 2026-11-09
 
 ### Added
