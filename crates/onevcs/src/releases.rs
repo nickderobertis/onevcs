@@ -214,8 +214,11 @@ impl std::fmt::Display for DeclarationPolicy {
 /// per-repository one. The node rung and a consumer's own default are the
 /// consumer's, which is why [`adoption_for`](crate::adoption_for) answers these two
 /// and never those.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, clap::ValueEnum,
+)]
 #[serde(rename_all = "kebab-case")]
+#[value(rename_all = "kebab-case")]
 pub enum Adoption {
     /// The work is enough: a consumer may proceed as soon as the change lands.
     Fast,

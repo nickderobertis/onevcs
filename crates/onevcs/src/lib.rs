@@ -50,6 +50,7 @@
 
 use std::path::Path;
 
+mod adoption;
 mod app;
 mod base_merge;
 pub mod boundary;
@@ -126,6 +127,10 @@ mod workspace;
 pub mod workspaces;
 mod yaml;
 
+pub use adoption::{
+    AdoptionQuery, AdoptionRefusal, AdoptionRule, AdoptionState, AdoptionVerdict,
+    ADOPTION_VERDICT_VERSION,
+};
 pub use boundary::{
     boundary_schema, check_public_output, check_public_output_with_evidence, declared_terms,
     inspect_repository, public_phrases, repository_boundary, sanitize_public_output,
@@ -164,8 +169,9 @@ pub use ops::{
     repositories, resolve_repository, rules_check, sweep, sync, work_status, BasePush,
     BranchPublishRequest, CheckoutAudit, DirectOperation, GateAudit, ImportRequest,
     IntegrateRequest, MatchedRule, MergePathCoverage, OperationHandle, RecoverRequest,
-    RegisteredCheckout, RegisteredRepository, Registration, RequiredChecksAnswer, ResolvedPolicy,
-    ResolvedRepository, RulesCheck, StatusReport, Sweeping, Synced, TrailerPrefixSource,
+    RegisteredCheckout, RegisteredRepository, Registration, ReleaseFacts, RequiredChecksAnswer,
+    ResolvedPolicy, ResolvedRepository, RulesCheck, StatusReport, Sweeping, Synced,
+    TrailerPrefixSource,
 };
 pub use pool::{
     pool_maintain, pool_prune, pool_status, workspace_capacity, IdentityMaintenance,
@@ -801,4 +807,40 @@ pub fn render_release_declaration(declared: &Declaration) -> Result<String> {
 /// make the chain unreadable from either side.
 pub fn adoption_for(repo: &str) -> Result<Adoption> {
     release::adoption(&store::load()?, repo)
+}
+
+/// Whether one consumer's release adoption of one producer can ever complete.
+///
+/// The library form of `onevcs release check-adoption`. Every fact it reads is this
+/// host's own configuration — the producer's resolved targets and `default_target`
+/// (the same three layers [`release_targets`] resolves), the adoption rungs, and the
+/// consumer's resolved publication policy — so an engine or a host asks this rather
+/// than restating any rule over them. Four rules, each refusing by its
+/// [`AdoptionRule`] id with a reason naming the consumer, the producer and what to
+/// change:
+///
+/// - `published-no-target`: the effective rung is `published` behind a releasing
+///   producer, the query names no `consumes`, and the producer resolves no
+///   `default_target`;
+/// - `fast-no-change-request`: the effective rung is `fast` behind a releasing
+///   producer and the consumer's publication opens no change request;
+/// - `consumes-without-change-request`: a `consumes` is named while the consumer's
+///   publication opens no change request;
+/// - `consumes-undeclared-target`: the `consumes` names a target the producer does not
+///   resolve.
+///
+/// A producer *releases* when it is a different identity from the consumer and
+/// resolves at least one target; the first two rules apply only behind one, and the two
+/// `consumes` rules apply whenever a `consumes` is named, a producer that releases
+/// nothing included. With no `consumes` named, a producer that releases nothing answers
+/// [`AdoptionState::Completes`] with `releasing: false`.
+///
+/// A repository that does not resolve, a release-targets file that does not read, a
+/// producer's own declaration this build cannot read, and a producer whose
+/// `default_target` names no target each answer [`AdoptionState::Unanswered`] with the
+/// reason — never a refusal.
+///
+/// It takes no [`Providers`] for the reason [`release_targets`] does not.
+pub fn adoption_check(query: &AdoptionQuery) -> Result<AdoptionVerdict> {
+    adoption::check(query)
 }

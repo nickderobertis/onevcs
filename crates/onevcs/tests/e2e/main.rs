@@ -86,6 +86,13 @@ mod publication_boundary;
 #[cfg(unix)]
 // llmlint: ignore[e2e_not_mocked,expensive_tests_stay_behind_their_own_edge] see the note above this module's declaration.
 mod public_phrases;
+// Whether a consumer's release adoption of a producer can complete, and the release
+// facts `rules check` states. Unix only: it commits declarations into real checkouts
+// through `world.rs`'s POSIX fixture. It drives the binary and, for the promise a binary
+// cannot show, the library beside it — see its own header.
+#[cfg(unix)]
+// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
+mod adoption;
 // The producer's own release declaration. It drives the binary and, for the half of
 // the promise a binary cannot show, the library beside it — see its own header.
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.

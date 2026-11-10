@@ -3869,6 +3869,7 @@ fn operation_of() -> Vec<(&'static str, &'static str)> {
             operation!(onevcs::read_release_declaration),
         ),
         ("release holdup", operation!(onevcs::release_holdup)),
+        ("release check-adoption", operation!(onevcs::adoption_check)),
         (
             "pool declaration",
             operation!(onevcs::repository_config::read_repository_maintenance),
@@ -11192,4 +11193,152 @@ fn shared_export_fixtures_match_the_declared_consumer_surface() {
     let _ = |kind: UnreadableMember| match kind {
         UnreadableMember::Encrypted | UnreadableMember::Lzma => (),
     };
+}
+
+#[test]
+fn the_adoption_amendment_states_the_surface_the_crate_exports() {
+    let section = regions()
+        .0
+        .split("## Whether a release adoption can ever complete is answered here")
+        .nth(1)
+        .expect("the adoption amendment")
+        .split("\n## ")
+        .next()
+        .expect("its body")
+        .to_owned();
+    let declarations = amendment_declaring("pub struct AdoptionVerdict");
+    for declared in [
+        "pub fn opens_change_request(&self) -> bool;",
+        "pub fn adoption_check(query: &AdoptionQuery) -> Result<AdoptionVerdict>;",
+        "pub const ADOPTION_VERDICT_VERSION: u32 = 1;",
+        "pub enum AdoptionState { Completes, NeverCompletes, Unanswered }",
+        "pub struct AdoptionRefusal { pub rule: AdoptionRule, pub reason: String }",
+    ] {
+        assert!(declarations.contains(declared), "{declared}");
+    }
+    for phrase in [
+        "onevcs release check-adoption <PRODUCER> --consumer <REPO> [--adoption fast|published] \
+         [--consumes <TARGET>] [--policy <MERGE_POLICY>] [--json]",
+        "`published-no-target`",
+        "`fast-no-change-request`",
+        "`consumes-without-change-request`",
+        "`consumes-undeclared-target`",
+        "exits `0` for `completes`, `1` for `never-completes` and `3` for `unanswered`",
+    ] {
+        assert!(section.contains(phrase), "{phrase}");
+    }
+
+    // The code is what the text says: the signatures, each struct's fields in order, and
+    // every wire spelling.
+    let _: fn(&onevcs::AdoptionQuery) -> onevcs::Result<onevcs::AdoptionVerdict> =
+        onevcs::adoption_check;
+    let _: fn(&onevcs::MergePolicy) -> bool = onevcs::MergePolicy::opens_change_request;
+    assert_eq!(onevcs::ADOPTION_VERDICT_VERSION, 1);
+    let _ = onevcs::AdoptionQuery {
+        consumer: String::new(),
+        producer: String::new(),
+        adoption: Some(onevcs::Adoption::Fast),
+        consumes: None::<onevcs::TargetName>,
+        consumer_policy: Some(onevcs::MergePolicy::ChangeOpen),
+    };
+    let _ = onevcs::ReleaseFacts {
+        adoption: Some(onevcs::Adoption::Fast),
+        adoption_from: String::new(),
+        targets: Vec::<onevcs::TargetName>::new(),
+        default_target: None,
+        declaration: None::<onevcs::DeclarationSource>,
+        opens_change_request: true,
+        findings: Vec::<String>::new(),
+    };
+    let verdict = onevcs::AdoptionVerdict {
+        schema_version: 1,
+        consumer: "github.com/acme-corp/app".to_owned(),
+        producer: "github.com/acme-corp/widgets".to_owned(),
+        adoption: onevcs::Adoption::Published,
+        releasing: true,
+        target: None,
+        state: onevcs::AdoptionState::NeverCompletes,
+        refusals: vec![onevcs::AdoptionRefusal {
+            rule: onevcs::AdoptionRule::PublishedNoTarget,
+            reason: "the consumer … ".to_owned(),
+        }],
+        unanswered: None,
+    };
+    let documented: serde_json::Value = serde_json::from_str(&amendment_block_declaring(
+        "json",
+        "\"published-no-target\"",
+    ))
+    .expect("the amendment's verdict is JSON");
+    assert_eq!(
+        serde_json::to_value(&verdict).expect("serializes"),
+        documented
+    );
+    for (name, fields) in [
+        (
+            "AdoptionQuery",
+            &[
+                "consumer:String",
+                "producer:String",
+                "adoption:Option<Adoption>",
+                "consumes:Option<TargetName>",
+                "consumer_policy:Option<MergePolicy>",
+            ][..],
+        ),
+        (
+            "AdoptionVerdict",
+            &[
+                "schema_version:u32",
+                "consumer:String",
+                "producer:String",
+                "adoption:Adoption",
+                "releasing:bool",
+                "target:Option<TargetName>",
+                "state:AdoptionState",
+                "refusals:Vec<AdoptionRefusal>",
+                "unanswered:Option<String>",
+            ][..],
+        ),
+        (
+            "ReleaseFacts",
+            &[
+                "adoption:Option<Adoption>",
+                "adoption_from:String",
+                "targets:Vec<TargetName>",
+                "default_target:Option<TargetName>",
+                "declaration:Option<DeclarationSource>",
+                "opens_change_request:bool",
+                "findings:Vec<String>",
+            ][..],
+        ),
+    ] {
+        assert_eq!(documented_fields(&declarations, name), fields, "{name}");
+    }
+    for (rule, spelled) in [
+        (
+            onevcs::AdoptionRule::PublishedNoTarget,
+            "published-no-target",
+        ),
+        (
+            onevcs::AdoptionRule::FastNoChangeRequest,
+            "fast-no-change-request",
+        ),
+        (
+            onevcs::AdoptionRule::ConsumesWithoutChangeRequest,
+            "consumes-without-change-request",
+        ),
+        (
+            onevcs::AdoptionRule::ConsumesUndeclaredTarget,
+            "consumes-undeclared-target",
+        ),
+    ] {
+        assert_eq!(serde_json::to_value(rule).expect("a word"), json!(spelled));
+        assert_eq!(rule.as_str(), spelled);
+    }
+    for (state, spelled) in [
+        (onevcs::AdoptionState::Completes, "completes"),
+        (onevcs::AdoptionState::NeverCompletes, "never-completes"),
+        (onevcs::AdoptionState::Unanswered, "unanswered"),
+    ] {
+        assert_eq!(serde_json::to_value(state).expect("a word"), json!(spelled));
+    }
 }
