@@ -153,7 +153,7 @@ mod edges;
 #[cfg(target_os = "linux")]
 mod fetch_turns;
 // Linux only: the stamping `git` and the hooks it is measured against read the clock
-// with GNU `date +%s%3N`. The required-checks journeys are in-process for the reason
+// with `date +%s.%N`, which GNU and uutils coreutils both spell whole. The required-checks journeys are in-process for the reason
 // `drafts.rs` is, and its own header carries the rest.
 #[cfg(target_os = "linux")]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
