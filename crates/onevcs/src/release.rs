@@ -34,10 +34,11 @@ use crate::host::Hosting;
 use crate::landed::{Landed, LandingEvidence};
 use crate::registry::Registry;
 use crate::releases::{
-    Acknowledgement, Adoption, Baseline, BaselineRecord, DeclarationPolicy, DeclarationSource,
-    Discovery, Probe, ReleaseAnswer, ReleaseDefault, ReleaseMethod, ReleaseRule, ReleaseSource,
-    ReleaseStatus, ReleaseTarget, ReleasesFile, RepositoryReleases, SupersededRelease, TargetName,
-    TargetRelease, TargetSource, DEFAULT_PROBE_TIMEOUT_SECONDS, VERSION,
+    Acknowledgement, Adoption, AdoptionSource, Baseline, BaselineRecord, DeclarationPolicy,
+    DeclarationSource, Discovery, Probe, ReleaseAnswer, ReleaseDefault, ReleaseMethod, ReleaseRule,
+    ReleaseSource, ReleaseStatus, ReleaseTarget, ReleasesFile, RepositoryReleases,
+    SupersededRelease, TargetName, TargetRelease, TargetSource, DEFAULT_PROBE_TIMEOUT_SECONDS,
+    VERSION,
 };
 use crate::remainder::Remainder;
 use crate::stream::Stream;
@@ -230,27 +231,6 @@ pub fn for_repository(registry: &Registry, repo: &str) -> Result<Located> {
     })
 }
 
-/// Which rung of the adoption chain a repository's resolved `adoption` came from.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum AdoptionFrom {
-    /// The numbered rule of this host's release-targets file that matched it.
-    Rule { index: usize, file: PathBuf },
-    /// The release-targets file's own `default`.
-    Default { file: PathBuf },
-    /// No release-targets file exists, so the empty document's `fast` applies.
-    NoFile,
-}
-
-impl std::fmt::Display for AdoptionFrom {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            AdoptionFrom::Rule { index, file } => write!(f, "rule {index} in {}", file.display()),
-            AdoptionFrom::Default { file } => write!(f, "the default in {}", file.display()),
-            AdoptionFrom::NoFile => f.write_str("the built-in default; no release-targets file"),
-        }
-    }
-}
-
 /// What one repository's release configuration resolves to, before the check a
 /// release verb makes of it.
 ///
@@ -264,7 +244,7 @@ pub(crate) struct Facts {
     /// The publication checkout a script probe runs in, or the reason there is none.
     pub(crate) checkout: probe::Checkout,
     /// Which rung decided `releases.adoption`.
-    pub(crate) adoption_from: AdoptionFrom,
+    pub(crate) adoption_from: AdoptionSource,
     /// The refusal [`for_repository`] makes of this configuration, where it makes one.
     pub(crate) default_refusal: Option<error::Error>,
 }
@@ -284,12 +264,12 @@ pub(crate) fn facts(registry: &Registry, repo: &str) -> Result<Facts> {
         .enumerate()
         .find(|(_, rule)| policy::matches(&rule.r#match, &normalized, &checkout_path));
     let adoption_from = match (present, matched) {
-        (false, _) => AdoptionFrom::NoFile,
-        (true, Some((index, rule))) if rule.adoption.is_some() => AdoptionFrom::Rule {
+        (false, _) => AdoptionSource::BuiltIn,
+        (true, Some((index, rule))) if rule.adoption.is_some() => AdoptionSource::Rule {
             index: index + 1,
             file: path.clone(),
         },
-        (true, _) => AdoptionFrom::Default { file: path.clone() },
+        (true, _) => AdoptionSource::Default { file: path.clone() },
     };
     let matched = matched.map(|(_, rule)| rule);
     let checkout = probe_checkout(publication);

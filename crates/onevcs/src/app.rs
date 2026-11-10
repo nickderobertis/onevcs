@@ -2667,13 +2667,13 @@ fn rules_check(args: &RulesCheckArgs) -> Result<u8> {
 /// The release section of `onevcs rules check`: every fact an adoption of or by this
 /// repository is decided from, each with what decided it, then each finding.
 fn print_release_facts(release: &crate::ReleaseFacts) {
-    println!(
-        "release adoption: {} (from {})",
-        release
-            .adoption
-            .map_or_else(|| "unknown".to_owned(), |rung| rung.to_string()),
-        release.adoption_from
-    );
+    match &release.adoption {
+        Some(resolved) => println!(
+            "release adoption: {} (from {})",
+            resolved.rung, resolved.from
+        ),
+        None => println!("release adoption: unknown (the release-targets file could not be read)"),
+    }
     let names = |names: &[TargetName]| match names.is_empty() {
         true => "none".to_owned(),
         false => names

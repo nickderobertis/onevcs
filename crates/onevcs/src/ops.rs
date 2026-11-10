@@ -26,7 +26,7 @@ use crate::integrate::Outcome as Integration;
 use crate::providers::Providers;
 use crate::publish::{PublishOutcome, Subject};
 use crate::registry::Registry;
-use crate::releases::{Adoption, DeclarationSource, TargetName};
+use crate::releases::{DeclarationSource, ResolvedAdoption, TargetName};
 use crate::rules::{Approvals, BaseMerge, MergePolicy, RuleMatch};
 pub use crate::store::Coverage as MergePathCoverage;
 use crate::store::{self, Resolution};
@@ -983,12 +983,9 @@ pub struct RulesCheck {
 /// `onevcs rules check` exits non-zero for it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseFacts {
-    /// The adoption rung the repository and global rungs resolve to, or `None` where
-    /// the release-targets file could not be read.
-    pub adoption: Option<Adoption>,
-    /// What decided `adoption`: a numbered rule of the release-targets file, its
-    /// default, or the built-in default where there is no file.
-    pub adoption_from: String,
+    /// The adoption rung the repository and global rungs resolve to, and which of them
+    /// decided it — or `None` where the release-targets file could not be read.
+    pub adoption: Option<ResolvedAdoption>,
     /// Every target the three layers resolve, in their order.
     pub targets: Vec<TargetName>,
     /// What a consumer naming no target gets.
@@ -1008,7 +1005,6 @@ impl ReleaseFacts {
         match release::facts(registry, repo) {
             Err(failure) => ReleaseFacts {
                 adoption: None,
-                adoption_from: "the release-targets file, which could not be read".to_owned(),
                 targets: Vec::new(),
                 default_target: None,
                 declaration: None,
@@ -1028,8 +1024,10 @@ impl ReleaseFacts {
                     ));
                 }
                 ReleaseFacts {
-                    adoption: Some(read.releases.adoption),
-                    adoption_from: read.adoption_from.to_string(),
+                    adoption: Some(ResolvedAdoption {
+                        rung: read.releases.adoption,
+                        from: read.adoption_from,
+                    }),
                     targets: read
                         .releases
                         .targets

@@ -7210,10 +7210,12 @@ pub enum AdoptionRule { PublishedNoTarget, FastNoChangeRequest,
                         ConsumesWithoutChangeRequest, ConsumesUndeclaredTarget }
 
 // `RulesCheck` gains one field, `pub release: ReleaseFacts`: the facts `rules check` prints.
-pub struct ReleaseFacts { pub adoption: Option<Adoption>, pub adoption_from: String,
+pub struct ReleaseFacts { pub adoption: Option<ResolvedAdoption>,
                           pub targets: Vec<TargetName>, pub default_target: Option<TargetName>,
                           pub declaration: Option<DeclarationSource>,
                           pub opens_change_request: bool, pub findings: Vec<String> }
+pub struct ResolvedAdoption { pub rung: Adoption, pub from: AdoptionSource }
+pub enum AdoptionSource { Rule { index: usize, file: PathBuf }, Default { file: PathBuf }, BuiltIn }
 ```
 
 `consumer` and `producer` are spelled as `release_targets` takes a repository: an
@@ -7298,7 +7300,8 @@ release verb refuses when it is used — a `default_target` naming no target the
 repository resolves, a `release-targets.toml` this build cannot read, a release-targets
 file that does not read. A repository with any finding exits `1`, naming the count on
 stderr; a sound one exits `0` as before. `ReleaseFacts` is that section as a value, and
-`RulesCheck::release` carries it.
+`RulesCheck::release` carries it; its `adoption` is `None` exactly where the
+release-targets file could not be read, which prints `release adoption: unknown`.
 
 ---
 

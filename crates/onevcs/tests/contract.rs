@@ -11213,6 +11213,7 @@ fn the_adoption_amendment_states_the_surface_the_crate_exports() {
         "pub const ADOPTION_VERDICT_VERSION: u32 = 1;",
         "pub enum AdoptionState { Completes, NeverCompletes, Unanswered }",
         "pub struct AdoptionRefusal { pub rule: AdoptionRule, pub reason: String }",
+        "pub enum AdoptionSource { Rule { index: usize, file: PathBuf }, Default { file: PathBuf }, BuiltIn }",
     ] {
         assert!(declarations.contains(declared), "{declared}");
     }
@@ -11234,6 +11235,12 @@ fn the_adoption_amendment_states_the_surface_the_crate_exports() {
         onevcs::adoption_check;
     let _: fn(&onevcs::MergePolicy) -> bool = onevcs::MergePolicy::opens_change_request;
     assert_eq!(onevcs::ADOPTION_VERDICT_VERSION, 1);
+    // Exhaustive, so a source the crate adds or reshapes fails to compile here.
+    let _ = |source: onevcs::AdoptionSource| match source {
+        onevcs::AdoptionSource::Rule { index: _, file: _ } => (),
+        onevcs::AdoptionSource::Default { file: _ } => (),
+        onevcs::AdoptionSource::BuiltIn => (),
+    };
     let _ = onevcs::AdoptionQuery {
         consumer: String::new(),
         producer: String::new(),
@@ -11242,8 +11249,10 @@ fn the_adoption_amendment_states_the_surface_the_crate_exports() {
         consumer_policy: Some(onevcs::MergePolicy::ChangeOpen),
     };
     let _ = onevcs::ReleaseFacts {
-        adoption: Some(onevcs::Adoption::Fast),
-        adoption_from: String::new(),
+        adoption: Some(onevcs::ResolvedAdoption {
+            rung: onevcs::Adoption::Fast,
+            from: onevcs::AdoptionSource::BuiltIn,
+        }),
         targets: Vec::<onevcs::TargetName>::new(),
         default_target: None,
         declaration: None::<onevcs::DeclarationSource>,
@@ -11285,6 +11294,10 @@ fn the_adoption_amendment_states_the_surface_the_crate_exports() {
             ][..],
         ),
         (
+            "ResolvedAdoption",
+            &["rung:Adoption", "from:AdoptionSource"][..],
+        ),
+        (
             "AdoptionVerdict",
             &[
                 "schema_version:u32",
@@ -11301,8 +11314,7 @@ fn the_adoption_amendment_states_the_surface_the_crate_exports() {
         (
             "ReleaseFacts",
             &[
-                "adoption:Option<Adoption>",
-                "adoption_from:String",
+                "adoption:Option<ResolvedAdoption>",
                 "targets:Vec<TargetName>",
                 "default_target:Option<TargetName>",
                 "declaration:Option<DeclarationSource>",

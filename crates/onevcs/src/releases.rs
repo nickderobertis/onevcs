@@ -242,6 +242,50 @@ impl std::fmt::Display for Adoption {
     }
 }
 
+/// Which rung of the adoption chain decided a repository's resolved adoption.
+///
+/// Stated beside the rung wherever it is reported, because the edit that changes a
+/// rung is in a different place in each case.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AdoptionSource {
+    /// A numbered rule (one-based) of this host's release-targets file matched the
+    /// repository and named a rung.
+    Rule {
+        /// Its one-based position in the file.
+        index: usize,
+        /// The release-targets file.
+        file: PathBuf,
+    },
+    /// No matching rule named a rung, so the file's own `default` decided.
+    Default {
+        /// The release-targets file.
+        file: PathBuf,
+    },
+    /// There is no release-targets file, so the empty document's `fast` applies.
+    BuiltIn,
+}
+
+impl std::fmt::Display for AdoptionSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AdoptionSource::Rule { index, file } => {
+                write!(f, "rule {index} in {}", file.display())
+            }
+            AdoptionSource::Default { file } => write!(f, "the default in {}", file.display()),
+            AdoptionSource::BuiltIn => f.write_str("the built-in default; no release-targets file"),
+        }
+    }
+}
+
+/// A repository's adoption rung and the rung of the chain that decided it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedAdoption {
+    /// The rung.
+    pub rung: Adoption,
+    /// What decided it.
+    pub from: AdoptionSource,
+}
+
 /// One thing a repository releases.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseTarget {

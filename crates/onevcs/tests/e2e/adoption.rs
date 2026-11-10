@@ -396,6 +396,125 @@ fn what_cannot_be_read_is_unanswered_and_never_refused() {
 }
 
 #[test]
+fn a_configuration_that_does_not_read_is_unanswered_with_the_rung_still_reported() {
+    let host = Host::new();
+    let (producer, consumer) = (spelled(&host.producer), spelled(&host.consumer));
+
+    // A producer whose `default_target` names nothing it resolves is a configuration
+    // every release verb refuses, so what the wait would resolve to is unknown.
+    host.releases("fast", &[(&host.producer, "    default_target: wheel\n")]);
+    let (code, verdict) = host.check(&producer, &consumer, &["--adoption", "published"]);
+    unanswered(code, &verdict, "default_target \"wheel\"");
+    assert_eq!(verdict["adoption"], "published");
+
+    // A release-targets file that does not read: the node's rung is still reported,
+    // and with none the empty document's `fast` is.
+    std::fs::write(host.world.home().join("releases.yml"), "version: [\n")
+        .expect("a malformed host file");
+    let (code, verdict) = host.check(&producer, &consumer, &["--adoption", "published"]);
+    unanswered(code, &verdict, "release-targets file");
+    assert_eq!(verdict["adoption"], "published");
+    let (code, verdict) = host.check(&producer, &consumer, &[]);
+    unanswered(code, &verdict, "release-targets file");
+    assert_eq!(verdict["adoption"], "fast");
+
+    // A rules file that does not read leaves the consumer's publication unknown…
+    host.releases("fast", &[]);
+    configure_rules(&host.world, "version: [\n");
+    let (code, verdict) = host.check(&producer, &consumer, &["--adoption", "fast"]);
+    unanswered(code, &verdict, "the consumer");
+    // …which a node-level policy does not need to read.
+    let (code, verdict) = host.check(
+        &producer,
+        &consumer,
+        &["--adoption", "fast", "--policy", "change-open"],
+    );
+    completes(code, &verdict, true, Value::Null);
+
+    // A registry that does not read resolves nothing at all.
+    std::fs::write(host.world.home().join("registry.json"), "{ not json")
+        .expect("a corrupt registry");
+    let (code, verdict) = host.check(&producer, &consumer, &["--adoption", "fast"]);
+    unanswered(code, &verdict, "registry");
+    assert_eq!(verdict["consumer"], consumer.as_str());
+    assert_eq!(verdict["producer"], producer.as_str());
+}
+
+#[test]
+fn every_rule_that_refuses_is_reported_in_the_stated_order() {
+    let host = Host::new();
+    host.releases("fast", &[]);
+    let (code, verdict) = host.check(
+        &spelled(&host.producer),
+        &spelled(&host.direct),
+        &["--adoption", "fast", "--consumes", "wheel"],
+    );
+    assert_eq!(code, 1, "{verdict:#}");
+    assert_eq!(
+        rules(&verdict),
+        [
+            "fast-no-change-request",
+            "consumes-without-change-request",
+            "consumes-undeclared-target",
+        ]
+    );
+    assert_eq!(verdict["target"], Value::Null);
+}
+
+/// `onevcs release check-adoption` rendered as text: exit code and stdout.
+fn text(host: &Host, producer: &str, consumer: &str, args: &[&str]) -> (i32, String) {
+    let output = host
+        .world
+        .onevcs()
+        .args([
+            "release",
+            "check-adoption",
+            producer,
+            "--consumer",
+            consumer,
+        ])
+        .args(args)
+        .output()
+        .expect("the binary runs");
+    (
+        output.status.code().expect("an exit code"),
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+    )
+}
+
+#[test]
+fn the_text_rendering_states_completes_and_unanswered_verdicts() {
+    let host = Host::new();
+    host.releases("fast", &[]);
+    let (code, stdout) = text(
+        &host,
+        &spelled(&host.producer),
+        &spelled(&host.consumer),
+        &["--adoption", "published", "--consumes", "npm"],
+    );
+    assert_eq!(code, 0, "{stdout}");
+    for line in [
+        "adoption: published",
+        "releasing: yes",
+        "target: npm",
+        "state: completes",
+    ] {
+        assert!(stdout.contains(line), "{stdout}\nlacks {line:?}");
+    }
+    assert!(!stdout.contains("refused:") && !stdout.contains("unanswered:"));
+
+    let nowhere = spelled(&host.world.path("never-registered"));
+    let (code, stdout) = text(&host, &nowhere, &spelled(&host.consumer), &[]);
+    assert_eq!(code, 3, "{stdout}");
+    assert!(stdout.contains("state: unanswered"), "{stdout}");
+    assert!(
+        stdout.contains("unanswered: the producer ") && stdout.contains("never-registered"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("refused:"), "{stdout}");
+}
+
+#[test]
 fn the_text_rendering_states_the_same_verdict() {
     let host = Host::new();
     host.releases("fast", &[]);

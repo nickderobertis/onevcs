@@ -75,6 +75,13 @@ pub struct AdoptionVerdict {
     #[schemars(with = "Option<String>")]
     pub target: Option<TargetName>,
     /// The answer.
+    // llmlint: ignore[invalid_states_unrepresentable] `state`, `refusals` and
+    // `unanswered` as three sibling fields is the verdict shape the task fixes for the
+    // sibling repository that links this release and the JSON document it reads; a
+    // payload-carrying enum would move them under one key and break that contract. The
+    // one constructor, `adoption::check`, sets them together (`decide` derives `state`
+    // from `refusals`; the unanswered path sets both), and the schema journeys hold
+    // every printed verdict to it.
     pub state: AdoptionState,
     /// Every rule that refused, in the order the rules are stated; empty unless
     /// `state` is `never-completes`.

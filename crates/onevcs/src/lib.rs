@@ -186,10 +186,10 @@ pub use publish::{
 };
 pub use registry::Identity;
 pub use releases::{
-    Acknowledgement, Adoption, Baseline, BaselineRecord, DeclarationPolicy, DeclarationSource,
-    Discovery, Probe, ReleaseAnswer, ReleaseDefault, ReleaseMethod, ReleaseRule, ReleaseSource,
-    ReleaseStatus, ReleaseStyle, ReleaseTarget, ReleasesFile, RepositoryReleases,
-    SupersededRelease, TargetName, TargetRelease, TargetSource,
+    Acknowledgement, Adoption, AdoptionSource, Baseline, BaselineRecord, DeclarationPolicy,
+    DeclarationSource, Discovery, Probe, ReleaseAnswer, ReleaseDefault, ReleaseMethod, ReleaseRule,
+    ReleaseSource, ReleaseStatus, ReleaseStyle, ReleaseTarget, ReleasesFile, RepositoryReleases,
+    ResolvedAdoption, SupersededRelease, TargetName, TargetRelease, TargetSource,
 };
 pub use retire::{
     BranchHolder, BranchHolderKind, BranchRef, Derivation, FailedHolder, KeepReason, RetireMode,
