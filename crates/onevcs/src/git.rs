@@ -5472,6 +5472,11 @@ pub fn remote_tip_read(cwd: &Path, remote: &str, branch: &str) -> Result<RemoteT
 /// fetched there failed that fetch with `cannot lock ref`. The write is leased on the
 /// value read as well, so a push moving the ref meanwhile is never overwritten.
 pub fn record_on_origin(repo: &Path, branch: &str, commit: &ObjectId) -> bool {
+    // A ref already there is answered without the lock: a recovery read asks this of
+    // every branch origin carries, and almost always of one a fetch already wrote.
+    if tip(repo, &format!("refs/remotes/origin/{branch}")).as_deref() == Some(commit.as_str()) {
+        return true;
+    }
     // Under the fetch lock, so a fetch into this checkout never has the ref moved
     // between its read of it and its write: the two take turns. A lock that cannot be
     // taken writes nothing, which is what every other way this can decline already is.
@@ -5586,15 +5591,20 @@ pub fn copy_branch(source: &Path, destination: &Path, branch: &str) -> Result<bo
 /// lands on is the caller's scratch rather than a branch. What the source is
 /// spelled as — a path or a remote name — is git's own question, so both go
 /// through one invocation rather than two that could come to fetch differently.
+///
+/// A fetch into the checkout like any other, so under its [`FETCH_LOCK`] and run again
+/// on a lost race ([`fetch_settled`]): from a configured remote git also moves that
+/// remote's `refs/remotes/<remote>/<branch>` on the side, which is the ref every other
+/// fetch and push into this checkout writes too.
 pub fn fetch_into_ref(cwd: &Path, source: &str, branch: &str, into: &str) -> Result<bool> {
     let source = git_location(source);
-    let output = run(
+    let output = fetch_settled(
+        cwd,
         &[
             "fetch",
             source.as_ref(),
             &format!("+refs/heads/{branch}:{into}"),
         ],
-        Some(cwd),
     )?;
     Ok(output.ok())
 }
@@ -6649,28 +6659,32 @@ mod fetch_turns {
         commits
     }
 
-    /// Run [`RACES`] fetches into `checkout`, each started together with `write(i)` on
-    /// another thread, and answer every fetch's failure.
+    /// Run [`RACES`] fetches into `checkout` — `fetching(i)` — each started together
+    /// with `write(i)` on another thread, and answer every fetch's failure.
     ///
     /// The fetch of race `i` starts a step later than the one before it, wrapping at
     /// `spread`, so the fetches' windows sweep across the whole of the writer's run
     /// rather than all meeting it at one point of it.
-    fn race(checkout: &Path, spread: Duration, write: impl Fn(usize) + Sync) -> Vec<String> {
+    fn race(
+        spread: Duration,
+        fetching: impl Fn(usize) -> Result<()> + Sync,
+        write: impl Fn(usize) + Sync,
+    ) -> Vec<String> {
         let step = spread / 37;
         let mut failures = Vec::new();
         for i in 0..RACES {
             let start = std::sync::Barrier::new(2);
             let fetched = std::thread::scope(|scope| {
-                let fetching = scope.spawn(|| {
+                let fetched = scope.spawn(|| {
                     start.wait();
                     if !spread.is_zero() {
                         std::thread::sleep(step * u32::try_from(i % 37).unwrap_or(0));
                     }
-                    fetch(checkout, "origin")
+                    fetching(i)
                 });
                 start.wait();
                 write(i);
-                fetching.join().expect("the fetching thread returns")
+                fetched.join().expect("the fetching thread returns")
             });
             if let Err(failed) = fetched {
                 failures.push(failed.to_string());
@@ -6683,7 +6697,8 @@ mod fetch_turns {
     /// — and [`record_on_origin`] writes the checkout's remote-tracking ref to it while
     /// another process fetches into the checkout. 0.64.0 wrote that ref outside the
     /// fetch lock, and the fetch lost its transaction to it with `cannot lock ref ...
-    /// is at <new> but expected <old>`.
+    /// is at <new> but expected <old>`. Every other race is the one-branch fetch a
+    /// recovery read makes beside that write ([`fetch_tracking`]).
     #[test]
     fn a_fetch_survives_a_session_close_recording_what_origin_carries() {
         let (_directory, root) = scratch();
@@ -6691,7 +6706,16 @@ mod fetch_turns {
         let checkout = checkout(&root, &origin, "checkout");
         let links = chain(&writer, &checkout, 2 * RACES);
 
-        let failures = race(&checkout, Duration::ZERO, |i| {
+        let fetching = |i: usize| {
+            if i.is_multiple_of(2) {
+                return fetch(&checkout, "origin");
+            }
+            match fetch_tracking(&checkout, "origin", "main")? {
+                true => Ok(()),
+                false => Err(error::invalid("a fetch of origin's main alone failed")),
+            }
+        };
+        let failures = race(Duration::ZERO, fetching, |i| {
             let pushed = &links[2 * i + 1];
             git(&origin, &["update-ref", "refs/heads/main", pushed]);
             let recorded = ObjectId::parse(pushed).expect("an object id");
@@ -6720,18 +6744,22 @@ mod fetch_turns {
         let checkout = checkout(&root, &origin, "checkout");
         let links = chain(&writer, &checkout, 2 * RACES);
 
-        let failures = race(&checkout, Duration::from_millis(60), |i| {
-            git(&origin, &["update-ref", "refs/heads/main", &links[2 * i]]);
-            git(
-                &checkout,
-                &[
-                    "push",
-                    "-q",
-                    "origin",
-                    &format!("{}:refs/heads/main", links[2 * i + 1]),
-                ],
-            );
-        });
+        let failures = race(
+            Duration::from_millis(60),
+            |_| fetch(&checkout, "origin"),
+            |i| {
+                git(&origin, &["update-ref", "refs/heads/main", &links[2 * i]]);
+                git(
+                    &checkout,
+                    &[
+                        "push",
+                        "-q",
+                        "origin",
+                        &format!("{}:refs/heads/main", links[2 * i + 1]),
+                    ],
+                );
+            },
+        );
         assert!(
             failures.is_empty(),
             "{} of {RACES} fetches failed beside a push from their checkout: {failures:#?}",

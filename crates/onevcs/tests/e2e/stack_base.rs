@@ -723,6 +723,89 @@ fn a_stack_base_push_never_runs_the_pre_push_hook() {
     assert!(ran.exists(), "and records that it ran");
 }
 
+/// A parent pushed while the assembly's fetch runs is merged at the head it was pushed
+/// at, rather than failing the assembly.
+///
+/// On a host whose sessions push and fetch one checkout at once, a push from the
+/// registered checkout moves its `origin/<parent>` itself, inside the window between
+/// the fetch reading that ref and writing it — which failed `stack-base` with `cannot
+/// lock ref ... is at <pushed> but expected <read>`. The push is put in that window
+/// rather than raced for: a `reference-transaction` hook in the checkout pushes the
+/// parent's next commit from the checkout once the fetch's prune of a branch origin
+/// deleted has committed, which git does after reading every ref and before writing any.
+#[test]
+fn a_parent_pushed_during_the_assemblys_fetch_is_merged_at_its_pushed_head() {
+    let stack = Stack::new();
+    let world = &stack.world;
+    let checkout = &stack.checkout;
+    stack.parent("feature/a", "a.txt", "a\n");
+    let c = stack.parent("feature/c", "c.txt", "c\n");
+    // A branch the checkout tracks and origin then deletes, so the fetch prunes first.
+    stack.parent("feature/gone", "gone.txt", "gone\n");
+    world.git(checkout, &["fetch", "-q", "origin"]);
+    world.git(
+        &stack.elsewhere,
+        &["push", "-q", "origin", "--delete", "feature/gone"],
+    );
+    // origin's `feature/a` moves on past what the checkout tracks, and the checkout
+    // holds — on a local branch, its tracking ref untouched — the commit somebody in it
+    // pushes next.
+    let a2 = stack.advance("feature/a", "a.txt", "a, reworked\n");
+    world.git(
+        checkout,
+        &["fetch", "-q", "--refmap=", "origin", "refs/heads/feature/a"],
+    );
+    world.git(checkout, &["checkout", "-q", "-b", "rework", "FETCH_HEAD"]);
+    world.commit_file(
+        checkout,
+        "a.txt",
+        "a, reworked again\n",
+        "fix: rework a again",
+    );
+    let a3 = world.git(checkout, &["rev-parse", "HEAD"]);
+    world.git(checkout, &["checkout", "-q", "main"]);
+    assert_ne!(
+        world.git(checkout, &["rev-parse", "refs/remotes/origin/feature/a"]),
+        a2,
+        "the premise: the fetch has origin/feature/a to update"
+    );
+
+    let pushed = world.path("pushed-during-the-fetch");
+    world.install_hook(
+        checkout,
+        "reference-transaction",
+        &format!(
+            "[ \"$1\" = committed ] || exit 0\n\
+             [ \"$(pwd -P)\" = {checkout:?} ] || exit 0\n\
+             grep -q ' refs/remotes/origin/feature/gone$' || exit 0\n\
+             mkdir {pushed:?} 2>/dev/null || exit 0\n\
+             git push -q origin rework:feature/a\n",
+            checkout = checkout.display().to_string(),
+            pushed = pushed.display().to_string(),
+        ),
+    );
+
+    let created = stack.assembled(&["feature/a", "feature/c"], 0);
+    assert!(
+        pushed.is_dir(),
+        "the premise: the parent was pushed inside the assembly's fetch"
+    );
+    assert_eq!(created["outcome"]["kind"], "created", "{created}");
+    assert_eq!(
+        stack.tip("feature/a").as_deref(),
+        Some(a3.as_str()),
+        "the push landed"
+    );
+    assert_eq!(
+        created["parents"],
+        parents_of(&[("feature/a", &a3), ("feature/c", &c)]),
+        "the parent is merged at the head pushed during the fetch"
+    );
+    let head = stack.tip(BRANCH).expect("the stack base is on the origin");
+    assert_eq!(created["head"], head.as_str());
+    assert!(stack.carries(&head, &a3) && stack.carries(&head, &c));
+}
+
 #[test]
 fn a_stack_base_the_public_boundary_refuses_is_not_pushed_and_neutral_parents_are() {
     let host = Boundary::with_private(&[]);
