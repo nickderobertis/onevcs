@@ -2177,7 +2177,12 @@ pub fn carry_remote_refs(source: &Path, dest: &Path, base: &str) -> Result<BaseC
     lfs::carry(source, source, dest)?;
     if has_remote(source, "origin") {
         let source_arg = git_path(source).to_string_lossy();
-        checked(
+        // Through the clone's fetch lock, and run again on a lost race, like every
+        // fetch into a checkout: a recovery read may be writing this clone's
+        // remote-tracking refs ([`fetch_tracking`], [`record_on_origin`]) as a reused
+        // slot is taken, and losing to it would refuse the open over nothing.
+        fetch_checked(
+            dest,
             &[
                 "fetch",
                 "--no-tags",
@@ -2193,7 +2198,6 @@ pub fn carry_remote_refs(source: &Path, dest: &Path, base: &str) -> Result<BaseC
                 // from exactly such a branch. Copying over them takes nothing away.
                 "+refs/remotes/origin/*:refs/remotes/origin/*",
             ],
-            Some(dest),
         )?;
     }
     // After the copy, which overwrites `origin/HEAD` with whatever the lender's own
@@ -2735,9 +2739,79 @@ pub const FETCH_LOCK: &str = "onevcs-fetch.lock";
 /// lock, which is held across whole publications — exactly the section fetches are
 /// kept outside of. And it is dropped on every return: a fetch git failed, or whose
 /// process was killed, leaves the next one free to run.
+///
+/// The lock orders fetches against each other and against [`record_on_origin`], but
+/// not against a push: git moves the pushing checkout's `refs/remotes/<remote>/<branch>`
+/// itself once the remote takes the update, and a push runs the repository's whole
+/// `pre-push` gate, which no fetch may wait behind. A fetch that loses its ref
+/// transaction to such a write is therefore run again — see [`fetch_settled`].
 pub fn fetch(cwd: &Path, remote: &str) -> Result<()> {
+    fetch_checked(cwd, &["fetch", remote, "--prune"]).map(|_| ())
+}
+
+/// [`fetch_settled`], turning a failure that was not a lost race into the error
+/// [`checked`] would have named it with.
+fn fetch_checked(cwd: &Path, args: &[&str]) -> Result<Output> {
+    let output = fetch_settled(cwd, args)?;
+    if output.ok() {
+        return Ok(output);
+    }
+    Err(Error::Invalid {
+        reason: format!(
+            "git {} failed (exit {}): {}",
+            args.join(" "),
+            output.status,
+            output.diagnostic()
+        ),
+    })
+}
+
+/// How many times one fetch is run in all while each run loses its ref transaction to
+/// a concurrent write.
+///
+/// A lost race leaves the refs at what the other writer wrote, and the next run reads
+/// that as its starting point, so a run only loses again to yet another write landing
+/// inside its own window. Bounded all the same, so a ref something rewrites without
+/// pause is reported rather than chased for ever.
+const FETCH_ATTEMPTS: usize = 10;
+
+/// Run one fetch under the checkout's [`FETCH_LOCK`], running it again while it fails
+/// only because another process moved one of the refs it was updating.
+///
+/// git reads every ref a fetch will update before it transfers anything, and commits
+/// the updates in one transaction afterwards, each leased on the value it read. A
+/// write landing in between — a push from this checkout, or any process writing its
+/// remote-tracking refs outside the lock — fails that transaction with `cannot lock
+/// ref`, though nothing about the fetch was wrong: what origin holds is still exactly
+/// what it was asked for. Run again, the fetch reads the moved ref and answers.
+/// Every other failure is returned as git wrote it, on its first run.
+fn fetch_settled(cwd: &Path, args: &[&str]) -> Result<Output> {
     fetching(cwd, || {
-        checked(&["fetch", remote, "--prune"], Some(cwd)).map(|_| ())
+        let mut attempt = 1;
+        loop {
+            let output = run(args, Some(cwd))?;
+            if output.ok() || attempt >= FETCH_ATTEMPTS || !lost_ref_race(&output.stderr) {
+                return Ok(output);
+            }
+            attempt += 1;
+        }
+    })
+}
+
+/// Whether git refused a ref update only because another process wrote, or was
+/// writing, that ref while this command ran.
+///
+/// Three wordings, all of a lease or a lock a concurrent writer took: the ref is not
+/// at the value read (`but expected`), a ref read as absent was created
+/// (`reference already exists`), and another writer held its lock file (`File
+/// exists`). A ref git refuses for a reason of its own — a name that collides with a
+/// directory of refs among them — is none of these, and is never run again.
+fn lost_ref_race(stderr: &str) -> bool {
+    stderr.lines().any(|line| {
+        line.contains("cannot lock ref")
+            && (line.contains("but expected")
+                || line.contains("reference already exists")
+                || line.contains("File exists"))
     })
 }
 
@@ -5392,8 +5466,20 @@ pub fn remote_tip_read(cwd: &Path, remote: &str, branch: &str) -> Result<RemoteT
 /// What a fetch of that one ref would have written, and only where a fetch would have
 /// written it: the commit must be one this repository holds itself, and a ref already
 /// at or past it is left where it is — moving it back would hide a push somebody else
-/// made. The write is leased on the value read, so a fetch racing it wins.
+/// made. It is written under the checkout's [`FETCH_LOCK`], so it takes turns with every
+/// fetch into the checkout rather than failing one: 0.64.0 wrote it outside the lock,
+/// and a session closing ([`crate::workspace::copy_back`]) while another process
+/// fetched there failed that fetch with `cannot lock ref`. The write is leased on the
+/// value read as well, so a push moving the ref meanwhile is never overwritten.
 pub fn record_on_origin(repo: &Path, branch: &str, commit: &ObjectId) -> bool {
+    // Under the fetch lock, so a fetch into this checkout never has the ref moved
+    // between its read of it and its write: the two take turns. A lock that cannot be
+    // taken writes nothing, which is what every other way this can decline already is.
+    fetching(repo, || Ok(record_on_origin_now(repo, branch, commit))).unwrap_or(false)
+}
+
+/// [`record_on_origin`]'s read and write, made while its caller holds the fetch lock.
+fn record_on_origin_now(repo: &Path, branch: &str, commit: &ObjectId) -> bool {
     let reference = format!("refs/remotes/origin/{branch}");
     // llmlint: ignore-block[changed_behavior_has_e2e] uncovered: a commit this repository
     // lacks. A copy-back fetches the commit first and a refresh only writes one it just read.
@@ -5411,10 +5497,10 @@ pub fn record_on_origin(repo: &Path, branch: &str, commit: &ObjectId) -> bool {
         }
     }
     let lease = current.unwrap_or_else(|| "0".repeat(commit.as_str().len()));
-    // llmlint: ignore-block[changed_behavior_has_e2e] uncovered: this lease lost to a racing
-    // fetch, between the read above and this write; no verb can be held inside that span,
-    // and losing it leaves the ref the fetch wrote. The write itself is every copy-back
-    // journey's assertion.
+    // llmlint: ignore-block[changed_behavior_has_e2e] uncovered: this lease lost to a push
+    // from this checkout moving the ref between the read above and this write — no fetch
+    // can, under the lock — and no verb can be held inside that span; losing it leaves
+    // the ref the push wrote. The write itself is every copy-back journey's assertion.
     run(
         &["update-ref", &reference, commit.as_str(), &lease],
         Some(repo),
@@ -6052,17 +6138,15 @@ pub fn fetch_objects_of(cwd: &Path, remote: &str, branch: &str) -> Result<bool> 
 /// Fetch one branch of a remote to its remote-tracking ref and nothing else — no tag,
 /// no prune — answering whether git took it.
 pub fn fetch_tracking(cwd: &Path, remote: &str, branch: &str) -> Result<bool> {
-    Ok(fetching(cwd, || {
-        run(
-            &[
-                "fetch",
-                "--no-tags",
-                remote,
-                &format!("+refs/heads/{branch}:refs/remotes/{remote}/{branch}"),
-            ],
-            Some(cwd),
-        )
-    })?
+    Ok(fetch_settled(
+        cwd,
+        &[
+            "fetch",
+            "--no-tags",
+            remote,
+            &format!("+refs/heads/{branch}:refs/remotes/{remote}/{branch}"),
+        ],
+    )?
     .ok())
 }
 
@@ -6282,6 +6366,12 @@ mod ref_name_tests {
 /// Every fetch here is held, refused, or killed by a real `reference-transaction`
 /// hook in the checkout, at `prepared` — its ref locks taken and its update not yet
 /// written, which is the point two fetches collide at.
+///
+/// The races below are the other writers of a checkout's remote-tracking refs —
+/// [`record_on_origin`], which a session's close runs and which no verb can be held
+/// inside, and a push from the checkout — run against real fetches many times over,
+/// because what they hold is an interleaving rather than an order. A journey holding
+/// one ordering of it through the binary is `stack_base`'s concurrent push.
 #[cfg(all(test, unix))]
 mod fetch_turns {
     use std::os::unix::fs::PermissionsExt;
@@ -6510,6 +6600,145 @@ mod fetch_turns {
             .expect("the fetching thread returns")
             .expect("the held fetch completes");
         assert_eq!(tracked_main(&held), origin_main(&origin));
+    }
+
+    /// How many fetches each race below runs against its concurrent writer.
+    const RACES: usize = 150;
+
+    /// A chain of `count` commits on top of origin's `main`, every one of them already
+    /// in `checkout`'s own object store under `refs/heads/chain` and in origin's, so a
+    /// writer can point either repository's refs at any of them without a transfer.
+    fn chain(writer: &Path, checkout: &Path, count: usize) -> Vec<String> {
+        let mut commits = Vec::with_capacity(count);
+        let mut parent = checked(&["rev-parse", "HEAD"], Some(writer))
+            .expect("the writer has a head")
+            .trimmed();
+        let tree = checked(&["rev-parse", "HEAD^{tree}"], Some(writer))
+            .expect("the writer has a tree")
+            .trimmed();
+        for n in 0..count {
+            let message = format!("link {n}");
+            let commit = checked_with_env(
+                &["commit-tree", &tree, "-p", &parent, "-m", &message],
+                Some(writer),
+                &[
+                    ("GIT_AUTHOR_NAME".into(), "Race".into()),
+                    ("GIT_AUTHOR_EMAIL".into(), "race@example.invalid".into()),
+                    ("GIT_COMMITTER_NAME".into(), "Race".into()),
+                    ("GIT_COMMITTER_EMAIL".into(), "race@example.invalid".into()),
+                ],
+            )
+            .expect("a link is committed")
+            .trimmed();
+            commits.push(commit.clone());
+            parent = commit;
+        }
+        git(
+            writer,
+            &[
+                "push",
+                "-q",
+                "origin",
+                &format!("{parent}:refs/heads/chain"),
+            ],
+        );
+        git(
+            checkout,
+            &["fetch", "-q", "origin", "chain:refs/heads/chain"],
+        );
+        commits
+    }
+
+    /// Run [`RACES`] fetches into `checkout`, each started together with `write(i)` on
+    /// another thread, and answer every fetch's failure.
+    ///
+    /// The fetch of race `i` starts a step later than the one before it, wrapping at
+    /// `spread`, so the fetches' windows sweep across the whole of the writer's run
+    /// rather than all meeting it at one point of it.
+    fn race(checkout: &Path, spread: Duration, write: impl Fn(usize) + Sync) -> Vec<String> {
+        let step = spread / 37;
+        let mut failures = Vec::new();
+        for i in 0..RACES {
+            let start = std::sync::Barrier::new(2);
+            let fetched = std::thread::scope(|scope| {
+                let fetching = scope.spawn(|| {
+                    start.wait();
+                    if !spread.is_zero() {
+                        std::thread::sleep(step * u32::try_from(i % 37).unwrap_or(0));
+                    }
+                    fetch(checkout, "origin")
+                });
+                start.wait();
+                write(i);
+                fetching.join().expect("the fetching thread returns")
+            });
+            if let Err(failed) = fetched {
+                failures.push(failed.to_string());
+            }
+        }
+        failures
+    }
+
+    /// The writer a session's close is: origin moves on — the session's clone pushed
+    /// — and [`record_on_origin`] writes the checkout's remote-tracking ref to it while
+    /// another process fetches into the checkout. 0.64.0 wrote that ref outside the
+    /// fetch lock, and the fetch lost its transaction to it with `cannot lock ref ...
+    /// is at <new> but expected <old>`.
+    #[test]
+    fn a_fetch_survives_a_session_close_recording_what_origin_carries() {
+        let (_directory, root) = scratch();
+        let (origin, writer) = origin(&root);
+        let checkout = checkout(&root, &origin, "checkout");
+        let links = chain(&writer, &checkout, 2 * RACES);
+
+        let failures = race(&checkout, Duration::ZERO, |i| {
+            let pushed = &links[2 * i + 1];
+            git(&origin, &["update-ref", "refs/heads/main", pushed]);
+            let recorded = ObjectId::parse(pushed).expect("an object id");
+            assert!(
+                record_on_origin(&checkout, "main", &recorded)
+                    || is_ancestor(checkout.as_path(), pushed, &tracked_main(&checkout))
+                        .unwrap_or(false),
+                "the close records origin's commit, or a fetch already carried the ref past it"
+            );
+        });
+        assert!(
+            failures.is_empty(),
+            "{} of {RACES} fetches failed beside a close recording origin's commit: {failures:#?}",
+            failures.len()
+        );
+        assert_eq!(tracked_main(&checkout), origin_main(&origin));
+    }
+
+    /// The writer no lock can order: a push from the checkout, which moves the
+    /// checkout's own `refs/remotes/origin/<branch>` once origin takes it. A fetch into
+    /// the same checkout meanwhile loses its transaction to that write and is run again.
+    #[test]
+    fn a_fetch_survives_a_push_from_its_own_checkout() {
+        let (_directory, root) = scratch();
+        let (origin, writer) = origin(&root);
+        let checkout = checkout(&root, &origin, "checkout");
+        let links = chain(&writer, &checkout, 2 * RACES);
+
+        let failures = race(&checkout, Duration::from_millis(60), |i| {
+            git(&origin, &["update-ref", "refs/heads/main", &links[2 * i]]);
+            git(
+                &checkout,
+                &[
+                    "push",
+                    "-q",
+                    "origin",
+                    &format!("{}:refs/heads/main", links[2 * i + 1]),
+                ],
+            );
+        });
+        assert!(
+            failures.is_empty(),
+            "{} of {RACES} fetches failed beside a push from their checkout: {failures:#?}",
+            failures.len()
+        );
+        fetch(&checkout, "origin").expect("a last fetch settles the checkout");
+        assert_eq!(tracked_main(&checkout), origin_main(&origin));
     }
 }
 
