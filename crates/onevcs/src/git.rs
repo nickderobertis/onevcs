@@ -2833,16 +2833,28 @@ fn fetch_settled(cwd: &Path, args: &[&str]) -> Result<Output> {
 /// Whether git refused a ref update only because another process wrote, or was
 /// writing, that ref while this command ran.
 ///
-/// Two wordings, of a lease or a lock a concurrent writer took: the ref is not at the
-/// value read (`but expected`), and another writer held its lock file for longer than
-/// git waits for one (`File exists`). A ref the fetch creates is written with no
-/// lease, so another writer creating it first fails nothing. A ref git refuses for a
-/// reason of its own — a name that collides with a directory of refs among them — is
-/// neither, and is never run again.
+/// Two failures, of a lease or a lock a concurrent writer took: the ref is not at the
+/// value read, and another writer held its lock file for longer than git waits for
+/// one. Each has two wordings, because git words a fetch's refusal by version: an
+/// older git (2.43 among them) commits one transaction per ref and refuses with
+/// `cannot lock ref` (`but expected`, `File exists`); a newer one (2.53 among them)
+/// commits them as one batch that lets a single ref fail, and names that ref with
+/// `fetching ref <ref> failed:` and the batch's reason (`incorrect old value
+/// provided`, and `reference already exists` for a held lock). A ref the fetch creates is written with no lease, so another writer
+/// creating it first fails nothing on either. A ref git refuses for a reason of its
+/// own — a name that collides with a directory of refs (`ref name conflict`) among
+/// them — is neither, and is never run again.
 fn lost_ref_race(stderr: &str) -> bool {
     stderr.lines().any(|line| {
-        line.contains("cannot lock ref")
-            && (line.contains("but expected") || line.contains("File exists"))
+        (line.contains("cannot lock ref")
+            && (line.contains("but expected") || line.contains("File exists")))
+            || (line.contains("fetching ref ")
+                && (line
+                    .trim_end()
+                    .ends_with("failed: incorrect old value provided")
+                    || line
+                        .trim_end()
+                        .ends_with("failed: reference already exists")))
     })
 }
 
@@ -6765,26 +6777,20 @@ mod fetch_turns {
         assert_eq!(tracked_main(&checkout), origin_main(&origin));
     }
 
-    /// A `reference-transaction` hook in `repo` that runs `body` — once, where `once`
-    /// says so — when a transaction naming `trigger` has committed.
+    /// A `reference-transaction` hook in `repo` that runs `body` when a transaction
+    /// naming `trigger` has committed.
     ///
-    /// A fetch reads every ref it will update before it transfers anything and
-    /// writes them one transaction at a time afterwards, so a hook on an earlier
-    /// transaction of the same fetch is inside its window: what `body` writes is a
-    /// concurrent writer arranged rather than raced for. Nothing `body` writes runs the
+    /// A fetch reads every ref it will update before it transfers anything, and a
+    /// pruning fetch commits its prune before its updates whether it commits those one
+    /// ref at a time or as one batch, so a hook on the prune is inside the update's
+    /// window: what `body` writes is a concurrent writer arranged rather than raced for. Nothing `body` writes runs the
     /// hook again. Answers the file each run of `body` adds the writing git's pid to —
     /// git can commit one prune as two transactions, so a fetch is a pid, not a line.
-    fn on_committed(root: &Path, repo: &Path, trigger: &str, once: bool, body: &str) -> PathBuf {
+    fn on_committed(root: &Path, repo: &Path, trigger: &str, body: &str) -> PathBuf {
         let name = repo.file_name().unwrap_or_default().to_string_lossy();
         let hooks = root.join(format!("written-{name}"));
         std::fs::create_dir_all(&hooks).expect("a hooks directory");
         let runs = root.join(format!("runs-{name}"));
-        let marker = root.join(format!("ran-{name}"));
-        let guard = if once {
-            format!("mkdir {} 2>/dev/null || exit 0\n", marker.display())
-        } else {
-            String::new()
-        };
         let hook = hooks.join("reference-transaction");
         std::fs::write(
             &hook,
@@ -6793,7 +6799,6 @@ mod fetch_turns {
                  [ \"$1\" = committed ] || exit 0\n\
                  [ -z \"$RACE_WRITING\" ] || exit 0\n\
                  grep -q ' {trigger}$' || exit 0\n\
-                 {guard}\
                  export RACE_WRITING=1\n\
                  echo \"$PPID\" >> {runs}\n\
                  {body}\n",
@@ -6870,7 +6875,6 @@ mod fetch_turns {
             &root,
             &checkout,
             "refs/remotes/origin/stale",
-            false,
             &churn(&runs_file, Some(LOST_RUNS)),
         );
         assert_eq!(written, runs_file);
@@ -6899,7 +6903,6 @@ mod fetch_turns {
             &root,
             &checkout,
             "refs/remotes/origin/stale",
-            false,
             &churn(&runs_file, None),
         );
 
@@ -6912,7 +6915,7 @@ mod fetch_turns {
             "the bound is what is named: {failed}"
         );
         assert!(
-            !failed.contains("cannot lock ref"),
+            !failed.contains("cannot lock ref") && !failed.contains("incorrect old value"),
             "git's refusal of one run is not the answer: {failed}"
         );
     }
@@ -6954,7 +6957,6 @@ mod fetch_turns {
             &root,
             &checkout,
             "refs/remotes/origin/stale",
-            false,
             &format!(
                 "lock=\"$(git rev-parse --git-path refs/remotes/origin/main.lock)\"\n\
                  if [ ! -e {holder} ]; then\n\
@@ -6980,6 +6982,57 @@ mod fetch_turns {
         assert_eq!(tracked_main(&checkout), origin_main(&origin));
     }
 
+    /// Run `body` once, in `repo`, inside the next fetch into it: after the fetch read the
+    /// refs it updates and before it commits them. Answers the directory whose existence
+    /// says `body` ran.
+    ///
+    /// The command a repository with an object store to borrow from runs to list that
+    /// store's refs (`core.alternateRefsCommand`) is what runs it, because git runs that
+    /// while checking that what a fetch brought is connected. Not a
+    /// `reference-transaction` hook ([`on_committed`]): a git that commits a fetch's
+    /// updates as one batch makes no earlier transaction of an unpruned fetch to hang
+    /// the write on, so a hook there writes after the fetch rather than inside it. A
+    /// session's clone borrows its lender's store already (`clone --shared`); any other
+    /// `repo` is given `borrowed`'s, which adds nothing it needs.
+    fn inside_next_fetch(root: &Path, repo: &Path, borrowed: Option<&Path>, body: &str) -> PathBuf {
+        if let Some(borrowed) = borrowed {
+            let alternates = repo.join(".git/objects/info/alternates");
+            std::fs::create_dir_all(alternates.parent().unwrap_or(repo))
+                .expect("an objects/info directory");
+            std::fs::write(
+                &alternates,
+                format!("{}\n", borrowed.join("objects").display()),
+            )
+            .expect("the borrowed store is recorded");
+        }
+        let ran = root.join("ran-inside-fetch");
+        let command = root.join("alternate-refs");
+        std::fs::write(
+            &command,
+            format!(
+                "#!/bin/sh\n\
+                 if mkdir {ran} 2>/dev/null; then\n\
+                 (cd {repo} && {body})\n\
+                 fi\n\
+                 git --git-dir=\"$1\" for-each-ref --format='%(objectname)'\n",
+                ran = ran.display(),
+                repo = repo.display(),
+            ),
+        )
+        .expect("the command is written");
+        std::fs::set_permissions(&command, std::fs::Permissions::from_mode(0o755))
+            .expect("the command is executable");
+        git(
+            repo,
+            &[
+                "config",
+                "core.alternateRefsCommand",
+                &command.to_string_lossy(),
+            ],
+        );
+        ran
+    }
+
     /// A session's clone given its lender's view of origin while something writes one of
     /// the clone's remote-tracking refs: the carry runs again rather than refusing the
     /// session that is opening.
@@ -6994,6 +7047,7 @@ mod fetch_turns {
             &[
                 "clone",
                 "-q",
+                "--shared",
                 "--no-checkout",
                 &lender.to_string_lossy(),
                 &clone.to_string_lossy(),
@@ -7005,16 +7059,15 @@ mod fetch_turns {
             &["push", "-q", "origin", "HEAD:refs/heads/feature"],
         );
         fetch(&lender, "origin").expect("the lender sees origin move");
-        let written = on_committed(
+        let ran = inside_next_fetch(
             &root,
             &clone,
-            "refs/remotes/origin/feature",
-            true,
+            None,
             &moves("refs/remotes/origin/main", "refs/heads/main"),
         );
 
         carry_remote_refs(&lender, &clone, "main").expect("the carry runs again and answers");
-        assert_eq!(runs(&written), 1, "the premise: a ref moved mid-carry");
+        assert!(ran.is_dir(), "the premise: a ref moved mid-carry");
         assert_eq!(tracked_main(&clone), origin_main(&origin));
     }
 
@@ -7027,11 +7080,10 @@ mod fetch_turns {
         let checkout = checkout(&root, &origin, "checkout");
         advance(&writer);
         let scratch_ref = "refs/onevcs/scratch";
-        let written = on_committed(
+        let ran = inside_next_fetch(
             &root,
             &checkout,
-            scratch_ref,
-            true,
+            Some(&origin),
             &moves("refs/remotes/origin/main", "HEAD"),
         );
 
@@ -7039,9 +7091,8 @@ mod fetch_turns {
             fetch_into_ref(&checkout, "origin", "main", scratch_ref).expect("the fetch runs"),
             "the fetch runs again and takes the branch"
         );
-        assert_eq!(
-            runs(&written),
-            1,
+        assert!(
+            ran.is_dir(),
             "the premise: the tracking ref moved mid-fetch"
         );
         assert_eq!(
