@@ -19,12 +19,12 @@ use crate::cli::{
     HostCommand, HostCommitRunsArgs, HostReleaseChangesArgs, HostRunJobsArgs, HostSchemaArgs,
     ImportArgs, IntegrateArgs, PoolCommand, PoolMaintainArgs, PoolPruneArgs, PoolStatusArgs,
     PreserveArgs, PublishArgs, PublishBranchArgs, ReclaimArgs, RecoverArgs, RecoverableArgs,
-    RegisterArgs, ReleaseAcknowledgeArgs, ReleaseCommand, ReleaseDeclarationArgs,
-    ReleaseDiscoverArgs, ReleaseHoldupArgs, ReleaseLatestArgs, ReleaseStatusArgs,
-    ReleaseTargetsArgs, ReposArgs, ResolveArgs, RetireArgs, RetireFinishedArgs, RulesApplyArgs,
-    RulesCheckArgs, RulesCommand, SessionCommand, SessionHoldersArgs, SessionOpenArgs,
-    SessionTokenArgs, StackBaseArgs, StandingCommentCommand, StatusArgs, SupersedeArgs, SweepArgs,
-    SweepFormat, SyncArgs,
+    RegisterArgs, ReleaseAcknowledgeArgs, ReleaseCheckAdoptionArgs, ReleaseCommand,
+    ReleaseDeclarationArgs, ReleaseDiscoverArgs, ReleaseHoldupArgs, ReleaseLatestArgs,
+    ReleaseStatusArgs, ReleaseTargetsArgs, ReposArgs, ResolveArgs, RetireArgs, RetireFinishedArgs,
+    RulesApplyArgs, RulesCheckArgs, RulesCommand, SessionCommand, SessionHoldersArgs,
+    SessionOpenArgs, SessionTokenArgs, StackBaseArgs, StandingCommentCommand, StatusArgs,
+    SupersedeArgs, SweepArgs, SweepFormat, SyncArgs,
 };
 use crate::declaration::{RegistryId, RepositoryPath};
 use crate::error::{self, Error, Result};
@@ -134,6 +134,7 @@ fn dispatch(command: &Command, providers: &Providers<'_>) -> Result<u8> {
             ReleaseCommand::Acknowledge(args) => release_acknowledge(args, providers),
             ReleaseCommand::Declaration(args) => release_declaration(args),
             ReleaseCommand::Holdup(args) => release_holdup(args),
+            ReleaseCommand::CheckAdoption(args) => release_check_adoption(args),
         },
         Command::Pool { command } => match command {
             PoolCommand::Status(args) => pool_status(args),
@@ -2650,7 +2651,63 @@ fn rules_check(args: &RulesCheckArgs) -> Result<u8> {
             TrailerPrefixSource::BuiltIn => "the default",
         }
     );
-    Ok(0)
+    print_release_facts(&checked.release);
+    if checked.release.findings.is_empty() {
+        return Ok(0);
+    }
+    eprintln!(
+        "onevcs: {} has {} release configuration finding(s) a release verb refuses when it is \
+         used; fix each `release finding` above",
+        checked.identity,
+        checked.release.findings.len()
+    );
+    Ok(1)
+}
+
+/// The release section of `onevcs rules check`: every fact an adoption of or by this
+/// repository is decided from, each with what decided it, then each finding.
+fn print_release_facts(release: &crate::ReleaseFacts) {
+    match &release.adoption {
+        Some(resolved) => println!(
+            "release adoption: {} (from {})",
+            resolved.rung, resolved.from
+        ),
+        None => println!("release adoption: unknown (the release-targets file could not be read)"),
+    }
+    let names = |names: &[TargetName]| match names.is_empty() {
+        true => "none".to_owned(),
+        false => names
+            .iter()
+            .map(TargetName::to_string)
+            .collect::<Vec<String>>()
+            .join(", "),
+    };
+    println!("release targets: {}", names(&release.targets));
+    println!(
+        "release default target: {}",
+        release
+            .default_target
+            .as_ref()
+            .map_or_else(|| "none".to_owned(), TargetName::to_string)
+    );
+    println!(
+        "release declaration: {}",
+        release
+            .declaration
+            .as_ref()
+            .map_or_else(|| "unknown".to_owned(), declaration_state)
+    );
+    println!(
+        "opens a change request: {} (from publication)",
+        if release.opens_change_request {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+    for finding in &release.findings {
+        eprintln!("onevcs: release finding: {finding}");
+    }
 }
 
 /// Render what one repository releases, and what it adopts.
@@ -2783,6 +2840,49 @@ fn describe(target: &ReleaseTarget) -> String {
         } => format!("shell {shell}"),
         ReleaseMethod::HumanStep { action } => format!("action: {action}"),
     }
+}
+
+/// Render whether a consumer's release adoption of a producer can complete, which is
+/// [`crate::adoption_check`]'s answer; the exit code is the verdict's state.
+fn release_check_adoption(args: &ReleaseCheckAdoptionArgs) -> Result<u8> {
+    let verdict = crate::adoption_check(&crate::AdoptionQuery {
+        consumer: args.consumer.clone(),
+        producer: args.producer.clone(),
+        adoption: args.adoption,
+        consumes: args.consumes.clone(),
+        consumer_policy: args.policy,
+    })?;
+    let code = match verdict.state {
+        crate::AdoptionState::Completes => 0,
+        crate::AdoptionState::NeverCompletes => 1,
+        crate::AdoptionState::Unanswered => 3,
+    };
+    if args.json {
+        print_json(&verdict)?;
+        return Ok(code);
+    }
+    println!("consumer: {}", verdict.consumer);
+    println!("producer: {}", verdict.producer);
+    println!("adoption: {}", verdict.adoption);
+    println!(
+        "releasing: {}",
+        if verdict.releasing { "yes" } else { "no" }
+    );
+    println!(
+        "target: {}",
+        verdict
+            .target
+            .as_ref()
+            .map_or_else(|| "none".to_owned(), TargetName::to_string)
+    );
+    println!("state: {}", verdict.state);
+    for refusal in &verdict.refusals {
+        println!("refused: {}: {}", refusal.rule, refusal.reason);
+    }
+    if let Some(reason) = &verdict.unanswered {
+        eprintln!("onevcs: unanswered: {reason}");
+    }
+    Ok(code)
 }
 
 /// Report what is holding a repository's next release, the way `onevcs release holdup`

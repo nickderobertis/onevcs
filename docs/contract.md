@@ -3081,7 +3081,8 @@ pub fn rules_check(repo: &str) -> Result<RulesCheck>;
 pub struct RulesCheck { pub identity: String, pub checkout: PathBuf, pub rules: String,
                         pub matched: Option<MatchedRule>, pub policy: ResolvedPolicy,
                         pub trailer_prefix: String,
-                        pub trailer_prefix_source: TrailerPrefixSource }
+                        pub trailer_prefix_source: TrailerPrefixSource,
+                        pub release: ReleaseFacts }   // the adoption amendment's
 pub struct MatchedRule { pub index: usize, pub criteria: RuleMatch }
 pub enum TrailerPrefixSource { RulesFile, BuiltIn }
 
@@ -7071,6 +7072,131 @@ present:
 
 A hook that ends itself with a signal does not end git: git reports it through its own
 exit status, so `signal` stays `null` and `exit_status` holds what git exited with.
+
+## Whether a release adoption can ever complete is answered here
+
+A plan that waits on another repository's release can be written so its wait never
+ends — a hold with no target, a draft its own repository refuses, a target the producer
+never publishes. Every fact that decides it is this crate's configuration — the
+producer's resolved release targets and `default_target`, the adoption rungs, and the
+consumer's publication policy — so the rules are stated once, here, and an engine or a
+host asks this validation and restates none of them.
+
+```rust
+impl MergePolicy {
+    /// `false` for `local-direct`; `true` for `change-open`, `change-auto`, `change-direct`.
+    pub fn opens_change_request(&self) -> bool;
+}
+
+pub fn adoption_check(query: &AdoptionQuery) -> Result<AdoptionVerdict>;
+pub struct AdoptionQuery { pub consumer: String, pub producer: String,
+                           pub adoption: Option<Adoption>, pub consumes: Option<TargetName>,
+                           pub consumer_policy: Option<MergePolicy> }
+pub const ADOPTION_VERDICT_VERSION: u32 = 1;
+pub struct AdoptionVerdict { pub schema_version: u32, pub consumer: String, pub producer: String,
+                             pub adoption: Adoption, pub releasing: bool,
+                             pub target: Option<TargetName>, pub state: AdoptionState,
+                             pub refusals: Vec<AdoptionRefusal>, pub unanswered: Option<String> }
+pub enum AdoptionState { Completes, NeverCompletes, Unanswered }
+pub struct AdoptionRefusal { pub rule: AdoptionRule, pub reason: String }
+pub enum AdoptionRule { PublishedNoTarget, FastNoChangeRequest,
+                        ConsumesWithoutChangeRequest, ConsumesUndeclaredTarget }
+
+// `RulesCheck` gains one field, `pub release: ReleaseFacts`: the facts `rules check` prints.
+pub struct ReleaseFacts { pub adoption: Option<ResolvedAdoption>,
+                          pub targets: Vec<TargetName>, pub default_target: Option<TargetName>,
+                          pub declaration: Option<DeclarationSource>,
+                          pub opens_change_request: bool, pub findings: Vec<String> }
+pub struct ResolvedAdoption { pub rung: Adoption, pub from: AdoptionSource }
+pub enum AdoptionSource { Rule { index: usize, file: PathBuf }, Default { file: PathBuf }, BuiltIn }
+```
+
+`consumer` and `producer` are spelled as `release_targets` takes a repository: an
+identity key, a registered alias, an origin URL, or a path. The query's three optional
+fields are the consumer node's own statements, and each `None` falls to the
+repository: `adoption` to the consumer repository's rung and then the global rung,
+exactly as `adoption_for` resolves them; `consumes` to the producer's `default_target`;
+`consumer_policy` to the consumer repository's resolved `publication`.
+
+A producer **releases** when it is a different identity from the consumer and resolves
+at least one target through the three layers `release_targets` resolves. Four rules,
+each refusing by its id with a `reason` naming the consumer, the producer and what to
+change:
+
+- `published-no-target` — the effective rung is `published` behind a releasing
+  producer, no `consumes` is named, and the producer resolves no `default_target`:
+  nothing can ever release the hold.
+- `fast-no-change-request` — the effective rung is `fast` behind a releasing producer
+  and the consumer's publication opens no change request: the draft that carries an
+  unreleased pin cannot be opened, so the consumer fails at its last step.
+- `consumes-without-change-request` — a `consumes` is named while the consumer's
+  publication opens no change request.
+- `consumes-undeclared-target` — the `consumes` names a target the producer does not
+  resolve; the reason lists the targets it does resolve.
+
+The first two apply only behind a releasing producer. The two `consumes` rules apply
+whenever a `consumes` is named, a producer that releases nothing included, because a
+wait on a target nobody publishes is no less endless for it. With no `consumes` named, a
+producer that is the consumer's own identity or resolves no target answers `completes`
+with `releasing: false`. Refusals are listed in the order above.
+
+**What cannot be read is `unanswered`, never a refusal.** A consumer or producer this
+host has not registered, a release-targets file that does not read, a producer whose own
+`release-targets.toml` this build cannot read, and a producer whose `default_target`
+names no target it resolves each answer `unanswered` with the reason. `Err` is reserved
+for nothing a configuration can cause. Which artifacts one host installs, and whether a
+repository is that host's own, are facts this crate does not hold, so no rule here reads
+them: those stay the host's.
+
+`AdoptionVerdict` is declared once, in the crate, and its JSON form is its `Serialize`
+— the `JsonSchema` derived beside it is that document's schema, and the journeys
+validate every printed verdict against it. Schema version 1, every field always
+present, in this order:
+
+```json
+{
+  "schema_version": 1,
+  "consumer": "github.com/acme-corp/app",
+  "producer": "github.com/acme-corp/widgets",
+  "adoption": "published",
+  "releasing": true,
+  "target": null,
+  "state": "never-completes",
+  "refusals": [{"rule": "published-no-target", "reason": "the consumer … "}],
+  "unanswered": null
+}
+```
+
+`consumer` and `producer` are identity keys, or the reference as given where it did not
+resolve; `adoption` is the effective rung (`fast` where neither the node nor any
+readable document names one); `target` is what the wait resolves to — the named
+`consumes`, else the producer's `default_target`, where the producer releases and the
+producer resolves it — and `null` otherwise; `state` is `completes`, `never-completes`
+or `unanswered`; `refusals` is empty unless `never-completes`, and `unanswered` is
+`null` unless `unanswered`.
+
+The command line is its rendering:
+
+```
+onevcs release check-adoption <PRODUCER> --consumer <REPO> [--adoption fast|published] [--consumes <TARGET>] [--policy <MERGE_POLICY>] [--json]
+```
+
+It exits `0` for `completes`, `1` for `never-completes` and `3` for `unanswered`, and
+`--json` prints the `AdoptionVerdict` document. The text rendering writes the verdict's
+facts and each `refused:` line to stdout, and an unanswered verdict's reason to stderr
+as `onevcs: unanswered: …`.
+
+**`onevcs rules check <repo>` states the release facts.** After every line it printed
+before, unchanged, it prints `release adoption: <rung> (from <rule N in FILE | the
+default in FILE | the built-in default; no release-targets file>)`, `release targets:`,
+`release default target:`, `release declaration:` and `opens a change request: yes|no
+(from publication)`, and writes one `onevcs: release finding: …` line to stderr per
+release configuration a release verb refuses when it is used — a `default_target` naming no target the
+repository resolves, a `release-targets.toml` this build cannot read, a release-targets
+file that does not read. A repository with any finding exits `1`, naming the count on
+stderr; a sound one exits `0` as before. `ReleaseFacts` is that section as a value, and
+`RulesCheck::release` carries it; its `adoption` is `None` exactly where the
+release-targets file could not be read, which prints `release adoption: unknown`.
 
 ## Sessionless standing comments and artifact queries
 

@@ -359,6 +359,21 @@ pub enum MergePolicy {
 }
 
 impl MergePolicy {
+    /// Whether a publication under this policy opens a change request.
+    ///
+    /// `false` for [`LocalDirect`](Self::LocalDirect) alone, which merges in a local
+    /// checkout and pushes; `true` for [`ChangeOpen`](Self::ChangeOpen),
+    /// [`ChangeAuto`](Self::ChangeAuto) and [`ChangeDirect`](Self::ChangeDirect). It is
+    /// what decides whether anything a change request carries — a draft held for a
+    /// release, a wait on a consumed target — can exist for a repository at all, so the
+    /// adoption check and `rules check` ask it rather than matching the names.
+    pub fn opens_change_request(&self) -> bool {
+        match self {
+            MergePolicy::LocalDirect => false,
+            MergePolicy::ChangeOpen | MergePolicy::ChangeAuto | MergePolicy::ChangeDirect => true,
+        }
+    }
+
     /// This policy narrowed to `requested`, or the reason that would widen it.
     ///
     /// The rule belongs to the rules system rather than to any one implementation

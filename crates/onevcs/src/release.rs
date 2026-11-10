@@ -34,10 +34,11 @@ use crate::host::Hosting;
 use crate::landed::{Landed, LandingEvidence};
 use crate::registry::Registry;
 use crate::releases::{
-    Acknowledgement, Adoption, Baseline, BaselineRecord, DeclarationPolicy, DeclarationSource,
-    Discovery, Probe, ReleaseAnswer, ReleaseDefault, ReleaseMethod, ReleaseRule, ReleaseSource,
-    ReleaseStatus, ReleaseTarget, ReleasesFile, RepositoryReleases, SupersededRelease, TargetName,
-    TargetRelease, TargetSource, DEFAULT_PROBE_TIMEOUT_SECONDS, VERSION,
+    Acknowledgement, Adoption, AdoptionSource, Baseline, BaselineRecord, DeclarationPolicy,
+    DeclarationSource, Discovery, Probe, ReleaseAnswer, ReleaseDefault, ReleaseMethod, ReleaseRule,
+    ReleaseSource, ReleaseStatus, ReleaseTarget, ReleasesFile, RepositoryReleases,
+    SupersededRelease, TargetName, TargetRelease, TargetSource, DEFAULT_PROBE_TIMEOUT_SECONDS,
+    VERSION,
 };
 use crate::remainder::Remainder;
 use crate::stream::Stream;
@@ -220,13 +221,57 @@ pub struct Located {
 /// repository-checked-in probe form — which is a "not answered" answer carrying
 /// that reason, not an error that fails a command.
 pub fn for_repository(registry: &Registry, repo: &str) -> Result<Located> {
+    let read = facts(registry, repo)?;
+    if let Some(refusal) = read.default_refusal {
+        return Err(refusal);
+    }
+    Ok(Located {
+        releases: read.releases,
+        checkout: read.checkout,
+    })
+}
+
+/// What one repository's release configuration resolves to, before the check a
+/// release verb makes of it.
+///
+/// [`for_repository`] refuses a resolved `default_target` naming no target, and that
+/// is right for a verb about to select one. A reader *reporting* the configuration —
+/// `rules check` and the adoption check — needs the facts and the refusal side by side,
+/// so the one resolution answers both and neither restates it.
+pub(crate) struct Facts {
+    /// What this repository releases, and what it adopts.
+    pub(crate) releases: RepositoryReleases,
+    /// The publication checkout a script probe runs in, or the reason there is none.
+    pub(crate) checkout: probe::Checkout,
+    /// Which rung decided `releases.adoption`.
+    pub(crate) adoption_from: AdoptionSource,
+    /// The refusal [`for_repository`] makes of this configuration, where it makes one.
+    pub(crate) default_refusal: Option<error::Error>,
+}
+
+/// [`for_repository`]'s resolution, with its `default_target` refusal carried rather
+/// than raised.
+pub(crate) fn facts(registry: &Registry, repo: &str) -> Result<Facts> {
     let (key, publication) = locate(registry, repo)?;
+    let path = default_path()?;
+    let present = path.is_file();
     let file = load()?;
     let normalized = store::normalize(&key);
-    let matched = publication
-        .as_deref()
-        .map(|checkout| first_match(&file, &normalized, checkout))
-        .unwrap_or_else(|| first_match(&file, &normalized, Path::new("")));
+    let checkout_path = publication.clone().unwrap_or_default();
+    let matched = file
+        .repositories
+        .iter()
+        .enumerate()
+        .find(|(_, rule)| policy::matches(&rule.r#match, &normalized, &checkout_path));
+    let adoption_from = match (present, matched) {
+        (false, _) => AdoptionSource::BuiltIn,
+        (true, Some((index, rule))) if rule.adoption.is_some() => AdoptionSource::Rule {
+            index: index + 1,
+            file: path.clone(),
+        },
+        (true, _) => AdoptionSource::Default { file: path.clone() },
+    };
+    let matched = matched.map(|(_, rule)| rule);
     let checkout = probe_checkout(publication);
     let declaration = declared_in(&checkout);
     let (targets, sources) = resolve(matched, &declaration);
@@ -240,13 +285,19 @@ pub fn for_repository(registry: &Registry, repo: &str) -> Result<Located> {
         declaration,
         sources,
     };
-    honours_default(
-        &default_path()?,
+    let default_refusal = honours_default(
+        &path,
         &format!("the repository {}", releases.identity),
         releases.default_target.as_ref(),
         &releases.targets,
-    )?;
-    Ok(Located { releases, checkout })
+    )
+    .err();
+    Ok(Facts {
+        releases,
+        checkout,
+        adoption_from,
+        default_refusal,
+    })
 }
 
 /// What the repository itself declares, read out of the one checkout a declaration
@@ -368,17 +419,6 @@ fn from_declaration(declared: &Declaration, target: &DeclaredTarget) -> ReleaseT
         // what makes layer 1 worth having for prose as well as for probes.
         adoption_instructions: target.adoption_instructions.clone(),
     }
-}
-
-/// The first rule that matches, in the rules file's own vocabulary.
-fn first_match<'a>(
-    file: &'a ReleasesFile,
-    identity: &store::Normalized,
-    checkout: &Path,
-) -> Option<&'a ReleaseRule> {
-    file.repositories
-        .iter()
-        .find(|rule| policy::matches(&rule.r#match, identity, checkout))
 }
 
 /// The identity a repository argument names, and the head-branch glob of the change

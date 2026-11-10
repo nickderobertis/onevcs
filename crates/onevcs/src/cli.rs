@@ -1415,6 +1415,37 @@ pub enum ReleaseCommand {
     /// Report what is holding a repository's next release: each open change request its
     /// release tool opened, with every check on it, required or not.
     Holdup(ReleaseHoldupArgs),
+    /// Check whether a consumer's release adoption of a producer can ever complete.
+    ///
+    /// Exits 0 when it completes, 1 when a rule says it never can, and 3 when a
+    /// repository or a document it depends on could not be read.
+    CheckAdoption(ReleaseCheckAdoptionArgs),
+}
+
+/// Arguments for `onevcs release check-adoption`.
+#[derive(Debug, Clone, PartialEq, Eq, Parser)]
+pub struct ReleaseCheckAdoptionArgs {
+    /// The producing repository: an identity key, a registered alias, an origin URL,
+    /// or a path.
+    pub producer: String,
+    /// The consuming repository, spelled the same ways.
+    #[arg(long, value_name = "REPO")]
+    pub consumer: String,
+    /// The consumer node's own adoption rung. Omitted, the consumer repository's rung
+    /// applies, then the global one.
+    #[arg(long, value_enum)]
+    pub adoption: Option<crate::releases::Adoption>,
+    /// The producer's target the consumer names. Omitted, the producer's
+    /// `default_target` is taken.
+    #[arg(long, value_name = "TARGET")]
+    pub consumes: Option<TargetName>,
+    /// A node-level publication policy. Omitted, the consumer repository's resolved
+    /// publication applies.
+    #[arg(long, value_enum, value_name = "MERGE_POLICY")]
+    pub policy: Option<MergePolicy>,
+    /// Report the verdict as its JSON document.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Arguments for `onevcs release holdup`.

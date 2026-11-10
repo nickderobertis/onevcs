@@ -26,13 +26,14 @@ use crate::integrate::Outcome as Integration;
 use crate::providers::Providers;
 use crate::publish::{PublishOutcome, Subject};
 use crate::registry::Registry;
+use crate::releases::{DeclarationSource, ResolvedAdoption, TargetName};
 use crate::rules::{Approvals, BaseMerge, MergePolicy, RuleMatch};
 pub use crate::store::Coverage as MergePathCoverage;
 use crate::store::{self, Resolution};
 use crate::stream::Stream;
 use crate::sweep::Report as SweepReport;
 use crate::workspace::Ref;
-use crate::{git, policy, provenance, status, stream};
+use crate::{git, policy, provenance, release, status, stream};
 
 /// A direct invocation's selector, using its normalized registered identity.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -966,6 +967,81 @@ pub struct RulesCheck {
     /// reads and writes every repository's provenance, so it is resolved once, from
     /// the file or the default.
     pub trailer_prefix_source: TrailerPrefixSource,
+    /// The release facts an adoption of or by this repository depends on, and what
+    /// about them this crate refuses when they are used.
+    pub release: ReleaseFacts,
+}
+
+/// The release configuration one repository resolves to, as `rules check` states it.
+///
+/// Every fact a release adoption is decided from: the rung, the targets, the default,
+/// and whether the publication opens a change request. `findings` are the
+/// configurations a release verb refuses when one is used — a `default_target` naming
+/// no target, a declaration this build cannot read, a release-targets file that does
+/// not read — reported here so a misconfiguration is seen when it is checked rather
+/// than when a node is first held. A repository with any finding is not sound, and
+/// `onevcs rules check` exits non-zero for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReleaseFacts {
+    /// The adoption rung the repository and global rungs resolve to, and which of them
+    /// decided it — or `None` where the release-targets file could not be read.
+    pub adoption: Option<ResolvedAdoption>,
+    /// Every target the three layers resolve, in their order.
+    pub targets: Vec<TargetName>,
+    /// What a consumer naming no target gets.
+    pub default_target: Option<TargetName>,
+    /// What the repository's own declaration contributed, or why it could not.
+    pub declaration: Option<DeclarationSource>,
+    /// Whether the resolved publication opens a change request.
+    pub opens_change_request: bool,
+    /// Each release misconfiguration found, as the refusal a release verb makes of it.
+    pub findings: Vec<String>,
+}
+
+impl ReleaseFacts {
+    /// The facts for one resolved repository, with every refusal carried as a finding.
+    fn of(registry: &Registry, repo: &str, publication: MergePolicy) -> Self {
+        let opens_change_request = publication.opens_change_request();
+        match release::facts(registry, repo) {
+            Err(failure) => ReleaseFacts {
+                adoption: None,
+                targets: Vec::new(),
+                default_target: None,
+                declaration: None,
+                opens_change_request,
+                findings: vec![failure.to_string()],
+            },
+            Ok(read) => {
+                let mut findings = Vec::new();
+                if let Some(refusal) = read.default_refusal {
+                    findings.push(refusal.to_string());
+                }
+                if let Some(reason) = read.releases.declaration.unreadable() {
+                    findings.push(format!(
+                        "the repository {}'s own {} could not be read, so what it publishes is                          unknown: {reason}",
+                        read.releases.identity,
+                        crate::declaration::FILE,
+                    ));
+                }
+                ReleaseFacts {
+                    adoption: Some(ResolvedAdoption {
+                        rung: read.releases.adoption,
+                        from: read.adoption_from,
+                    }),
+                    targets: read
+                        .releases
+                        .targets
+                        .iter()
+                        .map(|target| target.name.clone())
+                        .collect(),
+                    default_target: read.releases.default_target,
+                    declaration: Some(read.releases.declaration),
+                    opens_change_request,
+                    findings,
+                }
+            }
+        }
+    }
 }
 
 /// What decided the provenance trailer prefix.
@@ -987,6 +1063,7 @@ pub fn rules_check(repo: &str) -> Result<RulesCheck> {
     let (file, source) = policy::load(&registry)?;
     let normalized = store::normalize(&resolution.identity.origin);
     let resolved = policy::resolve(&file, &source, &normalized, &resolution.publication);
+    let release = ReleaseFacts::of(&registry, repo, resolved.policy.publication);
     Ok(RulesCheck {
         identity: resolution.key,
         checkout: resolution.publication,
@@ -1001,5 +1078,6 @@ pub fn rules_check(repo: &str) -> Result<RulesCheck> {
             true => TrailerPrefixSource::RulesFile,
             false => TrailerPrefixSource::BuiltIn,
         },
+        release,
     })
 }
