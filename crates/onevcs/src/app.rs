@@ -2657,7 +2657,7 @@ fn rules_check(args: &RulesCheckArgs) -> Result<u8> {
     }
     eprintln!(
         "onevcs: {} has {} release configuration finding(s) a release verb refuses when it is \
-         used; fix each one named above",
+         used; fix each `release finding` above",
         checked.identity,
         checked.release.findings.len()
     );
@@ -2706,7 +2706,7 @@ fn print_release_facts(release: &crate::ReleaseFacts) {
         }
     );
     for finding in &release.findings {
-        println!("release finding: {finding}");
+        eprintln!("onevcs: release finding: {finding}");
     }
 }
 
@@ -2880,7 +2880,7 @@ fn release_check_adoption(args: &ReleaseCheckAdoptionArgs) -> Result<u8> {
         println!("refused: {}: {}", refusal.rule, refusal.reason);
     }
     if let Some(reason) = &verdict.unanswered {
-        println!("unanswered: {reason}");
+        eprintln!("onevcs: unanswered: {reason}");
     }
     Ok(code)
 }

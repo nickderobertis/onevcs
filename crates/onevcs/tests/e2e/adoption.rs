@@ -367,6 +367,14 @@ fn what_cannot_be_read_is_unanswered_and_never_refused() {
     host.releases("fast", &[]);
     let nowhere = spelled(&host.world.path("never-registered"));
 
+    // With no node rung and a consumer nobody registered, the readable global rung is
+    // what the unanswered verdict still reports.
+    host.releases("published", &[]);
+    let (code, verdict) = host.check(&spelled(&host.producer), &nowhere, &[]);
+    unanswered(code, &verdict, "the consumer");
+    assert_eq!(verdict["adoption"], "published");
+    host.releases("fast", &[]);
+
     let (code, verdict) = host.check(&nowhere, &spelled(&host.direct), &["--adoption", "fast"]);
     unanswered(code, &verdict, "the producer");
     assert!(verdict["unanswered"]
@@ -462,7 +470,7 @@ fn every_rule_that_refuses_is_reported_in_the_stated_order() {
 }
 
 /// `onevcs release check-adoption` rendered as text: exit code and stdout.
-fn text(host: &Host, producer: &str, consumer: &str, args: &[&str]) -> (i32, String) {
+fn text(host: &Host, producer: &str, consumer: &str, args: &[&str]) -> (i32, String, String) {
     let output = host
         .world
         .onevcs()
@@ -479,6 +487,7 @@ fn text(host: &Host, producer: &str, consumer: &str, args: &[&str]) -> (i32, Str
     (
         output.status.code().expect("an exit code"),
         String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
     )
 }
 
@@ -486,7 +495,7 @@ fn text(host: &Host, producer: &str, consumer: &str, args: &[&str]) -> (i32, Str
 fn the_text_rendering_states_completes_and_unanswered_verdicts() {
     let host = Host::new();
     host.releases("fast", &[]);
-    let (code, stdout) = text(
+    let (code, stdout, _) = text(
         &host,
         &spelled(&host.producer),
         &spelled(&host.consumer),
@@ -504,14 +513,19 @@ fn the_text_rendering_states_completes_and_unanswered_verdicts() {
     assert!(!stdout.contains("refused:") && !stdout.contains("unanswered:"));
 
     let nowhere = spelled(&host.world.path("never-registered"));
-    let (code, stdout) = text(&host, &nowhere, &spelled(&host.consumer), &[]);
+    let (code, stdout, stderr) = text(&host, &nowhere, &spelled(&host.consumer), &[]);
     assert_eq!(code, 3, "{stdout}");
     assert!(stdout.contains("state: unanswered"), "{stdout}");
+    // The facts are the answer, on stdout; why nothing more could be said is a
+    // diagnostic, on stderr.
     assert!(
-        stdout.contains("unanswered: the producer ") && stdout.contains("never-registered"),
+        stderr.contains("onevcs: unanswered: the producer ") && stderr.contains("never-registered"),
+        "{stderr}"
+    );
+    assert!(
+        !stdout.contains("unanswered:") && !stdout.contains("refused:"),
         "{stdout}"
     );
-    assert!(!stdout.contains("refused:"), "{stdout}");
 }
 
 #[test]
@@ -764,7 +778,7 @@ fn rules_check_states_the_release_facts_an_adoption_depends_on() {
     ] {
         assert!(stdout.contains(&line), "{stdout}\nlacks {line:?}");
     }
-    assert!(!stdout.contains("release finding"), "{stdout}");
+    assert!(!stdout.contains("release finding") && !stderr.contains("release finding"));
 
     let (code, stdout, stderr) = host.rules_check(&host.direct);
     assert_eq!(code, 0, "{stdout}{stderr}");
@@ -799,9 +813,9 @@ fn rules_check_reports_a_default_target_naming_no_target_as_a_finding() {
     assert_eq!(code, 1, "{stdout}{stderr}");
     assert_policy_lines_unchanged(&stdout);
     assert!(
-        stdout.contains("release finding: ")
-            && stdout.contains("default_target \"wheel\", which it does not declare"),
-        "{stdout}"
+        stderr.contains("onevcs: release finding: ")
+            && stderr.contains("default_target \"wheel\", which it does not declare"),
+        "{stderr}"
     );
     assert!(
         stderr.contains("1 release configuration finding(s)"),
@@ -830,20 +844,20 @@ fn rules_check_reports_an_unreadable_declaration_as_a_finding() {
         "{stdout}"
     );
     assert!(
-        stdout.contains("release finding: ")
-            && stdout.contains("own release-targets.toml could not be read"),
-        "{stdout}"
+        stderr.contains("onevcs: release finding: ")
+            && stderr.contains("own release-targets.toml could not be read"),
+        "{stderr}"
     );
 
     // A release-targets file that does not read is a finding too, never a crash.
     std::fs::write(host.world.home().join("releases.yml"), "version: [\n")
         .expect("a malformed host file");
-    let (code, stdout, _) = host.rules_check(&host.consumer);
+    let (code, stdout, stderr) = host.rules_check(&host.consumer);
     assert_eq!(code, 1, "{stdout}");
     assert_policy_lines_unchanged(&stdout);
     assert!(stdout.contains("release adoption: unknown"), "{stdout}");
     assert!(
-        stdout.contains("release finding: invalid input: the release-targets file at"),
-        "{stdout}"
+        stderr.contains("onevcs: release finding: invalid input: the release-targets file at"),
+        "{stderr}"
     );
 }

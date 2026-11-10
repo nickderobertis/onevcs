@@ -7289,14 +7289,16 @@ onevcs release check-adoption <PRODUCER> --consumer <REPO> [--adoption fast|publ
 ```
 
 It exits `0` for `completes`, `1` for `never-completes` and `3` for `unanswered`, and
-`--json` prints the `AdoptionVerdict` document.
+`--json` prints the `AdoptionVerdict` document. The text rendering writes the verdict's
+facts and each `refused:` line to stdout, and an unanswered verdict's reason to stderr
+as `onevcs: unanswered: …`.
 
 **`onevcs rules check <repo>` states the release facts.** After every line it printed
 before, unchanged, it prints `release adoption: <rung> (from <rule N in FILE | the
 default in FILE | the built-in default; no release-targets file>)`, `release targets:`,
 `release default target:`, `release declaration:` and `opens a change request: yes|no
-(from publication)`, then one `release finding: …` line per release configuration a
-release verb refuses when it is used — a `default_target` naming no target the
+(from publication)`, and writes one `onevcs: release finding: …` line to stderr per
+release configuration a release verb refuses when it is used — a `default_target` naming no target the
 repository resolves, a `release-targets.toml` this build cannot read, a release-targets
 file that does not read. A repository with any finding exits `1`, naming the count on
 stderr; a sound one exits `0` as before. `ReleaseFacts` is that section as a value, and
