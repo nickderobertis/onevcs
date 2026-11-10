@@ -2766,17 +2766,16 @@ fn fetch_checked(cwd: &Path, args: &[&str]) -> Result<Output> {
     })
 }
 
-/// How many times one fetch is run in all while each run loses its ref transaction to
-/// a concurrent write.
-///
-/// A lost race leaves the refs at what the other writer wrote, and the next run reads
-/// that as its starting point, so a run only loses again to yet another write landing
-/// inside its own window. Bounded all the same, so a ref something rewrites without
-/// pause is reported rather than chased for ever.
-const FETCH_ATTEMPTS: usize = 10;
+/// The pause before a fetch that lost its ref transaction is run again, doubled after
+/// each further loss up to [`FETCH_RERUN_PAUSE_LIMIT`], so a writer mid-way through a
+/// burst of updates is given room to finish rather than raced again at once.
+const FETCH_RERUN_FIRST_PAUSE: Duration = Duration::from_millis(10);
 
-/// Run one fetch under the checkout's [`FETCH_LOCK`], running it again while it fails
-/// only because another process moved one of the refs it was updating.
+/// The longest pause between two runs of a fetch that keeps losing its transaction.
+const FETCH_RERUN_PAUSE_LIMIT: Duration = Duration::from_millis(500);
+
+/// Run one fetch under the checkout's [`FETCH_LOCK`], running it again for as long as
+/// it fails only because another process moved one of the refs it was updating.
 ///
 /// git reads every ref a fetch will update before it transfers anything, and commits
 /// the updates in one transaction afterwards, each leased on the value it read. A
@@ -2784,16 +2783,43 @@ const FETCH_ATTEMPTS: usize = 10;
 /// remote-tracking refs outside the lock — fails that transaction with `cannot lock
 /// ref`, though nothing about the fetch was wrong: what origin holds is still exactly
 /// what it was asked for. Run again, the fetch reads the moved ref and answers.
-/// Every other failure is returned as git wrote it, on its first run.
+///
+/// No count of losses ends it, because any count is one a busy host's writers can
+/// exceed: churn that ends is outlasted, however many updates it made. What bounds it
+/// is the wait a fetch already accepts for its turn ([`lock::TIMEOUT_ENV`]) — a ref
+/// rewritten without pause for that long is an error naming the bound, never git's
+/// refusal of one run, which would read as the fetch having been wrong. Every other
+/// failure is returned as git wrote it, on its first run.
 fn fetch_settled(cwd: &Path, args: &[&str]) -> Result<Output> {
+    let bound = Duration::from_secs_f64(lock::timeout_seconds()?);
     fetching(cwd, || {
-        let mut attempt = 1;
+        let started = Instant::now();
+        let mut pause = FETCH_RERUN_FIRST_PAUSE;
+        let mut lost = 0_usize;
         loop {
             let output = run(args, Some(cwd))?;
-            if output.ok() || attempt >= FETCH_ATTEMPTS || !lost_ref_race(&output.stderr) {
+            if output.ok() || !lost_ref_race(&output.stderr) {
                 return Ok(output);
             }
-            attempt += 1;
+            lost += 1;
+            if started.elapsed() + pause > bound {
+                return Err(Error::Invalid {
+                    reason: format!(
+                        "git {command} lost its ref update to another writer on each of its \
+                         {lost} runs over {waited:.1}s, which is as long as a fetch waits for \
+                         its turn ({env}); something is rewriting the remote-tracking refs of \
+                         {checkout} without pause. Each run left every ref either at origin's \
+                         commit or at that writer's. Run it again once that writer stops, or \
+                         raise {env}",
+                        command = args.join(" "),
+                        waited = started.elapsed().as_secs_f64(),
+                        env = lock::TIMEOUT_ENV,
+                        checkout = cwd.display(),
+                    ),
+                });
+            }
+            std::thread::sleep(pause);
+            pause = (pause * 2).min(FETCH_RERUN_PAUSE_LIMIT);
         }
     })
 }
@@ -6802,37 +6828,86 @@ mod fetch_turns {
         std::fs::read_to_string(file).map_or(0, |runs| runs.lines().collect::<BTreeSet<_>>().len())
     }
 
-    /// A fetch that loses its transaction on every run is run [`FETCH_ATTEMPTS`] times
-    /// in all, and then answers the last run's failure as git wrote it.
+    /// How many runs of a fetch the churn below makes lose: more than any small fixed
+    /// count of re-runs would outlast.
+    const LOST_RUNS: usize = 15;
+
+    /// The hook body that makes each run of a fetch lose its update of `origin/main` —
+    /// a fresh commit written there inside its window, and the stale ref put back so
+    /// the next run prunes, and so meets the hook, again — until `limit` fetches have
+    /// run, when the writer stops. `None` never stops.
+    fn churn(runs: &Path, limit: Option<usize>) -> String {
+        let stop = limit.map_or_else(String::new, |limit| {
+            format!(
+                "[ \"$(sort -u {runs} | wc -l)\" -gt {limit} ] && exit 0\n",
+                runs = runs.display()
+            )
+        });
+        format!(
+            "{stop}git update-ref refs/remotes/origin/stale HEAD\n{}",
+            moves("refs/remotes/origin/main", "HEAD")
+        )
+    }
+
+    /// A fetch that loses its update to [`LOST_RUNS`] writes in a row — well past the
+    /// ten runs an earlier build gave up after, with `cannot lock ref` — answers once
+    /// the writer stops.
     #[test]
-    fn a_fetch_that_loses_every_run_answers_the_last_failure_after_its_bound() {
+    fn a_fetch_outlasts_a_writer_that_beats_it_many_times_and_then_stops() {
         let (_directory, root) = scratch();
         let (origin, writer) = origin(&root);
         let checkout = checkout(&root, &origin, "checkout");
         advance(&writer);
         stale(&checkout);
+        let runs_file = root.join("runs-checkout");
         let written = on_committed(
             &root,
             &checkout,
             "refs/remotes/origin/stale",
             false,
-            &format!(
-                "git update-ref refs/remotes/origin/stale HEAD\n{}",
-                moves("refs/remotes/origin/main", "HEAD")
-            ),
+            &churn(&runs_file, Some(LOST_RUNS)),
         );
+        assert_eq!(written, runs_file);
 
-        let failed = fetch(&checkout, "origin").expect_err("every run lost its transaction");
+        fetch(&checkout, "origin").expect("the fetch answers once the writer stops");
         assert_eq!(
             runs(&written),
-            FETCH_ATTEMPTS,
-            "each run of the fetch lost to a write"
+            LOST_RUNS + 1,
+            "the premise: {LOST_RUNS} runs each lost to a write, and the next one won"
         );
-        let failed = failed.to_string();
+        assert_eq!(tracked_main(&checkout), origin_main(&origin));
+    }
+
+    /// A writer that never stops is waited out for as long as a fetch waits for its
+    /// turn, and then reported as that — never as git's refusal of one run.
+    #[test]
+    fn a_fetch_under_churn_that_never_stops_names_the_bound_it_waited() {
+        let (_directory, root) = scratch();
+        std::env::set_var(lock::TIMEOUT_ENV, "1");
+        let (origin, writer) = origin(&root);
+        let checkout = checkout(&root, &origin, "checkout");
+        advance(&writer);
+        stale(&checkout);
+        let runs_file = root.join("runs-checkout");
+        let written = on_committed(
+            &root,
+            &checkout,
+            "refs/remotes/origin/stale",
+            false,
+            &churn(&runs_file, None),
+        );
+
+        let failed = fetch(&checkout, "origin")
+            .expect_err("a ref rewritten for the whole bound")
+            .to_string();
+        assert!(runs(&written) > 1, "the fetch was run again while it lost");
         assert!(
-            failed.contains("cannot lock ref 'refs/remotes/origin/main'")
-                && failed.contains("but expected"),
-            "git's own refusal is what is answered: {failed}"
+            failed.contains(lock::TIMEOUT_ENV) && failed.contains("without pause"),
+            "the bound is what is named: {failed}"
+        );
+        assert!(
+            !failed.contains("cannot lock ref"),
+            "git's refusal of one run is not the answer: {failed}"
         );
     }
 
