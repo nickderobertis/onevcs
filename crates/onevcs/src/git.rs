@@ -2791,7 +2791,13 @@ const FETCH_RERUN_PAUSE_LIMIT: Duration = Duration::from_millis(500);
 /// refusal of one run, which would read as the fetch having been wrong. Every other
 /// failure is returned as git wrote it, on its first run.
 fn fetch_settled(cwd: &Path, args: &[&str]) -> Result<Output> {
-    let bound = Duration::from_secs_f64(lock::timeout_seconds()?);
+    let seconds = lock::timeout_seconds()?;
+    let bound = Duration::try_from_secs_f64(seconds).map_err(|_| Error::Invalid {
+        reason: format!(
+            "{env} must be a number of seconds a wait can be measured in, not {seconds:e}",
+            env = lock::TIMEOUT_ENV
+        ),
+    })?;
     fetching(cwd, || {
         let started = Instant::now();
         let mut pause = FETCH_RERUN_FIRST_PAUSE;
@@ -5492,10 +5498,10 @@ pub fn remote_tip_read(cwd: &Path, remote: &str, branch: &str) -> Result<RemoteT
 /// written it: the commit must be one this repository holds itself, and a ref already
 /// at or past it is left where it is — moving it back would hide a push somebody else
 /// made. It is written under the checkout's [`FETCH_LOCK`], so it takes turns with every
-/// fetch into the checkout rather than failing one: 0.64.0 wrote it outside the lock,
-/// and a session closing ([`crate::workspace::copy_back`]) while another process
-/// fetched there failed that fetch with `cannot lock ref`. The write is leased on the
-/// value read as well, so a push moving the ref meanwhile is never overwritten.
+/// fetch into the checkout: a session's close ([`crate::workspace::copy_back`]) writing
+/// it while another process fetched there would move a ref that fetch had already read,
+/// and git would refuse the fetch's whole update. The write is leased on the value read
+/// as well, so a push moving the ref meanwhile is never overwritten.
 pub fn record_on_origin(repo: &Path, branch: &str, commit: &ObjectId) -> bool {
     // A ref already there is answered without the lock: a recovery read asks this of
     // every branch origin carries, and almost always of one a fetch already wrote.
@@ -6849,9 +6855,9 @@ mod fetch_turns {
         )
     }
 
-    /// A fetch that loses its update to [`LOST_RUNS`] writes in a row — well past the
-    /// ten runs an earlier build gave up after, with `cannot lock ref` — answers once
-    /// the writer stops.
+    /// A fetch that loses its update to [`LOST_RUNS`] writes in a row answers once the
+    /// writer stops: churn is outlasted however many updates it makes, so no small
+    /// fixed count of re-runs is what decides the answer.
     #[test]
     fn a_fetch_outlasts_a_writer_that_beats_it_many_times_and_then_stops() {
         let (_directory, root) = scratch();
@@ -6909,6 +6915,27 @@ mod fetch_turns {
             !failed.contains("cannot lock ref"),
             "git's refusal of one run is not the answer: {failed}"
         );
+    }
+
+    /// A bound too long to measure a wait in is refused, naming it, before any fetch
+    /// runs, rather than crashing the fetch that would have waited under it.
+    #[test]
+    fn a_fetch_refuses_a_bound_no_wait_can_be_measured_in() {
+        let (_directory, root) = scratch();
+        let (origin, writer) = origin(&root);
+        let checkout = checkout(&root, &origin, "checkout");
+        advance(&writer);
+        let before = tracked_main(&checkout);
+        std::env::set_var(lock::TIMEOUT_ENV, "1e100");
+
+        let refused = fetch(&checkout, "origin")
+            .expect_err("the bound is refused")
+            .to_string();
+        assert!(
+            refused.contains(lock::TIMEOUT_ENV) && refused.contains("1e100"),
+            "the refusal names the setting and its value: {refused}"
+        );
+        assert_eq!(tracked_main(&checkout), before, "no fetch ran");
     }
 
     /// A ref whose lock another writer holds for longer than git waits for one: the
