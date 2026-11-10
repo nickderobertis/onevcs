@@ -1128,7 +1128,7 @@ dependencies = [
 
 [[package]]
 name = "onevcs"
-version = "0.63.0"
+version = "0.64.0"
 dependencies = [
  "assert_cmd",
  "clap",
@@ -1186,7 +1186,7 @@ dependencies = [
 
 [[package]]
 name = "onevcs-testing"
-version = "0.20.5"
+version = "0.21.0"
 dependencies = [
  "clap",
  "flate2",

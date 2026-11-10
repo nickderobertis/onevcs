@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.20.5...onevcs-testing-v0.21.0) - 2026-11-09
+
+### Added
+
+- [**breaking**] answer host-wide recovery reads in under a second, never overflowing git's argument list ([#652](https://github.com/nickderobertis/onevcs/pull/652))
+
 ## [0.20.4](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.20.3...onevcs-testing-v0.20.4) - 2026-11-08
 
 ### Fixed
