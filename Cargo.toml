@@ -112,7 +112,7 @@ libz-sys = "1.1.29"
 # planner channel adopted: Cargo treats 0.x minors as incompatible and a consumer
 # has to resolve one copy of the bus, so every sibling `onepipeline` composes has
 # to require the same minor.
-onemessagebus = "0.10.0"
+onemessagebus = "0.11.0"
 # The JSON Schema derive the bus core's `Wire` bound asks of every type a
 # vocabulary puts on the wire. `preserve_order` for the same reason `serde_json`
 # has it: a generated schema lists an envelope's properties in declaration order
