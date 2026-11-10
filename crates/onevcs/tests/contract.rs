@@ -126,7 +126,7 @@ fn a_consumer_of_both_crates_resolves_one_vcs_and_one_bus() {
         .expect("cargo metadata lists packages");
     for (name, version) in [
         ("onevcs", env!("CARGO_PKG_VERSION")),
-        ("onemessagebus", "0.10.0"),
+        ("onemessagebus", "0.11.0"),
     ] {
         let matches: Vec<_> = packages
             .iter()
