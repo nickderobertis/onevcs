@@ -58,6 +58,16 @@ use crate::world::{self, World};
 /// How far a stamp in the record may sit from the moment it is measured against.
 const TOLERANCE_MS: i64 = 500;
 
+/// The format every stamp a hook or the stamping `git` writes is read through:
+/// seconds since the epoch and the nine nanosecond digits, read by [`clock_ms`].
+///
+/// Not `%s%3N`. GNU `date` pads `%3N` to three digits, but uutils coreutils — the
+/// `date` on Ubuntu 26.04, the image CI runs on — drops the nanoseconds' leading
+/// zeros before it takes three, so `.002416356` comes out as `241`: in roughly one
+/// stamp in ten the journey's own clock read up to 900ms late, and the record was
+/// failed for a moment it had recorded correctly. Both spell `%N` whole.
+const CLOCK_FORMAT: &str = "+%s.%N";
+
 /// What the host's clock reads when it merges, in the journeys that tell the host's
 /// merge time from the moment anything observed it: years before any of them runs.
 const HOST_MERGED_AT: &str = "2020-01-02T03:04:05Z";
@@ -221,10 +231,10 @@ impl StampingGit {
                 "#!/bin/sh\n\
                  for argument in \"$@\"; do\n\
                  \x20 if [ \"$argument\" = push ]; then\n\
-                 \x20   started=$(date +%s%3N)\n\
+                 \x20   started=$(date {CLOCK_FORMAT})\n\
                  \x20   '{real}' \"$@\"\n\
                  \x20   status=$?\n\
-                 \x20   returned=$(date +%s%3N)\n\
+                 \x20   returned=$(date {CLOCK_FORMAT})\n\
                  \x20   printf '%s %s %s\\n' \"$started\" \"$returned\" \"$*\" >> '{log}'\n\
                  \x20   exit $status\n\
                  \x20 fi\n\
@@ -256,12 +266,7 @@ impl StampingGit {
             .lines()
             .map(|line| {
                 let mut fields = line.splitn(3, ' ');
-                let mut stamp = || {
-                    fields
-                        .next()
-                        .and_then(|field| field.parse().ok())
-                        .expect("a stamped push")
-                };
+                let mut stamp = || clock_ms(fields.next().expect("a stamped push"));
                 Push {
                     started: stamp(),
                     returned: stamp(),
@@ -275,13 +280,62 @@ impl StampingGit {
     }
 }
 
-/// A milliseconds stamp a hook wrote.
+/// Milliseconds since the epoch of what `date` printed through [`CLOCK_FORMAT`].
+///
+/// The fraction must be all nine digits, so a `date` that spells it any other way
+/// fails here, naming what it printed, rather than being read as another moment.
+fn clock_ms(printed: &str) -> i64 {
+    let printed = printed.trim();
+    let (seconds, nanoseconds) = printed
+        .split_once('.')
+        .filter(|(seconds, nanoseconds)| {
+            !seconds.is_empty()
+                && nanoseconds.len() == 9
+                && seconds
+                    .bytes()
+                    .chain(nanoseconds.bytes())
+                    .all(|byte| byte.is_ascii_digit())
+        })
+        .unwrap_or_else(|| {
+            panic!("{printed:?} is `date {CLOCK_FORMAT}`: seconds, a dot and nine digits")
+        });
+    let seconds: i64 = seconds.parse().expect("checked to be digits");
+    let nanoseconds: i64 = nanoseconds.parse().expect("checked to be digits");
+    seconds * 1000 + nanoseconds / 1_000_000
+}
+
+/// The clock every local-gate journey is measured against reads the millisecond it
+/// was asked about, on this host's own `date`, including the moments whose
+/// milliseconds begin with a zero — the ones uutils' `%3N` misspelled by up to 900ms.
+#[test]
+fn the_clock_the_gate_journeys_read_spells_each_millisecond_it_is_asked_about() {
+    for (moment, millisecond) in [
+        ("1794332914.095412345", 1_794_332_914_095),
+        ("1794336347.002416356", 1_794_336_347_002),
+        ("1794336347.000000001", 1_794_336_347_000),
+        ("1794336347.099999999", 1_794_336_347_099),
+        ("1794336347.500000000", 1_794_336_347_500),
+    ] {
+        let printed = std::process::Command::new("date")
+            .args(["-u", "-d", &format!("@{moment}"), CLOCK_FORMAT])
+            .output()
+            .expect("this host has a `date`");
+        assert!(printed.status.success(), "date -d @{moment}: {printed:?}");
+        let printed = String::from_utf8(printed.stdout).expect("date prints text");
+        assert_eq!(
+            clock_ms(&printed),
+            millisecond,
+            "`date {CLOCK_FORMAT}` at {moment} printed {printed:?}"
+        );
+    }
+}
+
+/// A stamp a hook wrote.
 fn stamped(path: &Path) -> i64 {
-    std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("{} was stamped: {e}", path.display()))
-        .trim()
-        .parse()
-        .expect("a millisecond stamp")
+    clock_ms(
+        &std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("{} was stamped: {e}", path.display())),
+    )
 }
 
 /// A `local-direct` repository whose `pre-push` hook stamps its start, sleeps two
@@ -292,7 +346,7 @@ fn verified_locally(refuses: bool) -> (Fixture, String) {
     let start = fixture.world.path("hook-started");
     let end = fixture.world.path("hook-ended");
     fixture.verified_by(&format!(
-        "date +%s%3N > '{start}'\nsleep 2\ndate +%s%3N > '{end}'\n{verdict}",
+        "date {CLOCK_FORMAT} > '{start}'\nsleep 2\ndate {CLOCK_FORMAT} > '{end}'\n{verdict}",
         start = start.display(),
         end = end.display(),
         verdict = if refuses {
@@ -318,7 +372,7 @@ fn a_local_publication_records_its_pre_push_gate_as_the_push_that_ran_it() {
     let received = world.path("receive-ended");
     world.install_pre_receive(
         &fixture.origin,
-        &format!("sleep 3\ndate +%s%3N > '{}'", received.display()),
+        &format!("sleep 3\ndate {CLOCK_FORMAT} > '{}'", received.display()),
     );
     let stamping = StampingGit::installed(world);
 
