@@ -768,6 +768,110 @@ fn a_pruned_worktree_and_diverged_copies_are_served_warm_with_git_that_does_not_
 }
 
 #[test]
+fn a_copy_passed_over_before_another_answers_is_served_warm_and_rederived_when_reached_moving() {
+    let host = Host::new();
+    for branch in [
+        "work/landed-here",
+        "work/landed-there",
+        "work/reached-here",
+        "work/reached-there",
+    ] {
+        host.branch(branch);
+    }
+    let copy = host.second_checkout();
+    // Each case is built both ways round, so whichever checkout a read reaches first, one
+    // branch of each pair has its first copy passed over and a later copy answering.
+    landed_on_main(&host, "work/landed-here", "squash");
+    landed_on_main(&host, "work/landed-there", "squash");
+    Host::diverge(&copy, "work/landed-here");
+    Host::diverge(&host.repo, "work/landed-there");
+    Host::reach_from_origin(&host.repo, "work/reached-here");
+    Host::diverge(&copy, "work/reached-here");
+    Host::reach_from_origin(&copy, "work/reached-there");
+    Host::diverge(&host.repo, "work/reached-there");
+
+    let everything = || -> Vec<Value> {
+        Git.preserved_matching(Scope::All, &Host::selection())
+            .unwrap()
+            .into_iter()
+            .map(|row| serde_json::to_value(row).unwrap())
+            .collect()
+    };
+    let uncached_everything = || {
+        std::env::set_var("GIT_NAMESPACE", "");
+        let rows = everything();
+        std::env::remove_var("GIT_NAMESPACE");
+        rows
+    };
+    let uncached = host.uncached();
+    let answering = |branch: &str| -> PathBuf {
+        let row = uncached
+            .iter()
+            .find(|row| row["branch"]["branch"] == branch)
+            .unwrap_or_else(|| panic!("{branch} answers a row: {uncached:?}"));
+        PathBuf::from(row["checkout"].as_str().unwrap())
+    };
+    assert_eq!(
+        answering("work/landed-here"),
+        copy,
+        "only the copy holds work"
+    );
+    assert_eq!(answering("work/landed-there"), host.repo);
+    assert_eq!(
+        answering("work/reached-here"),
+        copy,
+        "only the copy is unreached"
+    );
+    assert_eq!(answering("work/reached-there"), host.repo);
+
+    host.read();
+    assert_eq!(
+        host.assert_matches_uncached("nothing moved"),
+        set(&[]),
+        "every branch's answering copy, and each copy passed over before it, is recorded"
+    );
+    host.read();
+    assert_eq!(
+        everything(),
+        uncached_everything(),
+        "the wider report, warm"
+    );
+    assert_eq!(host.derived(), set(&[]));
+
+    // The copy that answers moving re-derives its branch alone, whichever copy it is.
+    Host::diverge(&copy, "work/landed-here");
+    Host::diverge(&host.repo, "work/landed-there");
+    assert_eq!(
+        host.assert_matches_uncached("both answering copies moved"),
+        set(&["work/landed-here", "work/landed-there"])
+    );
+    assert_eq!(host.assert_matches_uncached("served again"), set(&[]));
+}
+
+#[test]
+fn a_record_filed_under_the_branch_name_alone_is_derived_again_and_refiled() {
+    let host = Host::new();
+    host.branch("work/a");
+    host.branch("work/b");
+    host.read();
+    // What an earlier build filed: one record per branch name, whatever checkout.
+    let legacy = host
+        .record_path("work/a")
+        .with_file_name(format!("{}.json", onevcs_digest("work/a")));
+    std::fs::rename(host.record_path("work/a"), &legacy).unwrap();
+    assert_eq!(
+        host.assert_matches_uncached("a record under the earlier name"),
+        set(&["work/a"]),
+        "a record filed under the branch name alone is no record of a copy"
+    );
+    assert!(
+        host.record_path("work/a").exists(),
+        "refiled under its copy"
+    );
+    assert_eq!(host.assert_matches_uncached("refiled"), set(&[]));
+}
+
+#[test]
 fn a_record_of_another_logic_identity_or_shape_is_replaced_not_served() {
     let host = Host::new();
     for branch in ["work/logic", "work/identity", "work/row", "work/ok"] {

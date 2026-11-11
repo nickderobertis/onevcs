@@ -292,10 +292,37 @@ impl Host {
         assert!(run(&self.repo, &["worktree", "list", "--porcelain"]).contains("prunable"));
     }
 
+    /// A remote-tracking ref in `checkout` one commit above its `branch`, so that copy is
+    /// work an origin ref already reaches.
+    pub fn reach_from_origin(checkout: &Path, branch: &str) {
+        let tip = run(checkout, &["rev-parse", branch]);
+        let above = run(
+            checkout,
+            &[
+                "commit-tree",
+                &format!("{tip}^{{tree}}"),
+                "-p",
+                &tip,
+                "-m",
+                "above",
+            ],
+        );
+        run(
+            checkout,
+            &[
+                "update-ref",
+                &format!("refs/remotes/origin/reach/{branch}"),
+                &above,
+            ],
+        );
+    }
+
     /// One commit on `branch` in `checkout`, so that copy stands somewhere no other does.
     pub fn diverge(checkout: &Path, branch: &str) {
         run(checkout, &["checkout", "-q", branch]);
-        std::fs::write(checkout.join("diverged.txt"), format!("{branch}\n")).unwrap();
+        // Above whatever the copy held, so diverging it again moves it again.
+        let below = run(checkout, &["rev-parse", "HEAD"]);
+        std::fs::write(checkout.join("diverged.txt"), format!("{branch} {below}\n")).unwrap();
         run(checkout, &["add", "."]);
         run(
             checkout,
