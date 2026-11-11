@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.65.1](https://github.com/nickderobertis/onevcs/compare/v0.65.0...v0.65.1) - 2026-11-11
+
+### Fixed
+
+- a fetch survives a concurrent update of the refs it writes ([#664](https://github.com/nickderobertis/onevcs/pull/664))
+
 ## [0.65.0](https://github.com/nickderobertis/onevcs/compare/v0.64.0...v0.65.0) - 2026-11-10
 
 ### Added
