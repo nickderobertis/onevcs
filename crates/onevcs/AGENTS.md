@@ -925,7 +925,9 @@ Windows' verbatim paths crossing every git boundary, a captured command's
 collector meeting its pipe empty at the instant the command exits, whether a
 name is a ref name decided in process rather than by a subprocess, and whether a
 fetch hands its checkout's turn back when git fails or is killed — which only a
-process outliving the fetch, as a linking consumer's does, can see — and every view
+process outliving the fetch, as a linking consumer's does, can see — and whether a
+fetch survives a session's close or a push writing that checkout's remote-tracking
+refs while it runs, an interleaving raced many times over rather than arranged — and every view
 a reader's buffered reads can join together while a lender's retention keys are
 added (`git.rs`),
 the *type* side of the status report's serialized contract (`status.rs`), a
