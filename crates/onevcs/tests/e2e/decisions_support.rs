@@ -262,11 +262,46 @@ impl Host {
             .unwrap_or_default()
     }
 
+    /// Where the record of `branch`'s copy in this host's own checkout is filed.
     pub fn record_path(&self, branch: &str) -> PathBuf {
         self.home
             .join("decisions/v1")
             .join(onevcs_digest(&self.key))
-            .join(format!("{}.json", onevcs_digest(branch)))
+            .join(format!(
+                "{}.json",
+                onevcs_digest(&format!("{branch}\0{}", self.repo.display()))
+            ))
+    }
+
+    /// A linked worktree of this host's checkout whose directory is gone: git still
+    /// lists it, as `prunable`, until somebody prunes it.
+    pub fn pruned_worktree(&self) {
+        let gone = self.root.join("gone-worktree");
+        run(
+            &self.repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                gone.to_str().unwrap(),
+                "main",
+            ],
+        );
+        std::fs::remove_dir_all(&gone).unwrap();
+        assert!(run(&self.repo, &["worktree", "list", "--porcelain"]).contains("prunable"));
+    }
+
+    /// One commit on `branch` in `checkout`, so that copy stands somewhere no other does.
+    pub fn diverge(checkout: &Path, branch: &str) {
+        run(checkout, &["checkout", "-q", branch]);
+        std::fs::write(checkout.join("diverged.txt"), format!("{branch}\n")).unwrap();
+        run(checkout, &["add", "."]);
+        run(
+            checkout,
+            &["commit", "-q", "-m", &format!("feat: {branch} here only")],
+        );
+        run(checkout, &["checkout", "-q", "main"]);
     }
 
     pub fn assert_matches_uncached(&self, context: &str) -> BTreeSet<String> {

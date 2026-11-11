@@ -241,26 +241,20 @@ fn session_close_publication_and_landing_leave_their_branchs_record_current() {
             crate::world::worktree_of(&stdout),
         )
     };
+    // The branch's newest record, whichever checkout's copy it decided.
     let record = |branch: &str| -> Option<Value> {
         let home = world.home();
-        let identity = std::fs::read_dir(home.join("decisions/v1"))
+        std::fs::read_dir(home.join("decisions/v1"))
             .ok()?
             .flatten()
-            .find(|entry| {
-                entry
-                    .path()
-                    .join(format!("{}.json", onevcs_digest(branch)))
-                    .exists()
-            })?;
-        serde_json::from_slice(
-            &std::fs::read(
-                identity
-                    .path()
-                    .join(format!("{}.json", onevcs_digest(branch))),
-            )
-            .unwrap(),
-        )
-        .ok()
+            .flat_map(|identity| std::fs::read_dir(identity.path()).into_iter().flatten())
+            .flatten()
+            .filter(|file| file.file_name() != "streams.json")
+            .filter_map(|file| {
+                serde_json::from_slice::<Value>(&std::fs::read(file.path()).ok()?).ok()
+            })
+            .filter(|record| record["branch"] == branch)
+            .max_by(|a, b| a["decided_at"].as_str().cmp(&b["decided_at"].as_str()))
     };
     // A session closed: the branch it holds has a current record.
     let (token, tree) = opened("work/closed");
@@ -693,6 +687,12 @@ fn a_disagreeing_copy_and_a_non_base_origin_ref_answer_the_uncached_read() {
     let (rows, derived) = host.read();
     assert_eq!(rows, host.uncached(), "copies disagree");
     assert!(derived.contains("work/a"), "{derived:?}");
+    // …and while they go on disagreeing with nothing else moving, each copy's own record
+    // answers.
+    assert_eq!(
+        host.assert_matches_uncached("copies still disagree"),
+        set(&[])
+    );
 
     // A non-base origin ref appearing leaves a branch still ahead of everything it has.
     let tip = run(&host.repo, &["rev-parse", "work/b"]);
@@ -718,6 +718,53 @@ fn a_disagreeing_copy_and_a_non_base_origin_ref_answer_the_uncached_read() {
     let (rows, _) = host.read();
     assert_eq!(rows, host.uncached(), "the origin reaches work/b");
     assert!(rows.iter().all(|row| row["branch"]["branch"] != "work/b"));
+}
+
+/// A host shaped like the one whose warm read re-derived every branch: a registered
+/// checkout carrying a linked worktree whose directory is gone, and a second checkout
+/// holding some of the same branch names at tips of its own.
+fn host_with_pruned_worktree_and_diverged_copies(branches: usize) -> Host {
+    let host = Host::new();
+    for n in 0..branches {
+        host.branch(&format!("work/b{n}"));
+    }
+    let copy = host.second_checkout();
+    for n in (0..branches).step_by(3) {
+        Host::diverge(&copy, &format!("work/b{n}"));
+    }
+    host.pruned_worktree();
+    host
+}
+
+#[test]
+fn a_pruned_worktree_and_diverged_copies_are_served_warm_with_git_that_does_not_grow() {
+    let mut started = Vec::new();
+    for branches in [4, 24] {
+        let host = host_with_pruned_worktree_and_diverged_copies(branches);
+        let uncached = host.uncached();
+        assert_eq!(uncached.len(), branches, "every branch is unpublished work");
+        let (cold, _) = host.read();
+        assert_eq!(cold, uncached, "the cold read answers the uncached read");
+        let mut warm = Vec::new();
+        let calls = with_shim(&host, || warm = host.read().0);
+        assert_eq!(warm, uncached, "the warm read answers the uncached read");
+        assert_eq!(
+            host.derived(),
+            set(&[]),
+            "nothing moved, so the warm read over {branches} branches re-derives none"
+        );
+        started.push((branches, calls));
+    }
+    let (small, large) = (&started[0], &started[1]);
+    assert_eq!(
+        small.1.len(),
+        large.1.len(),
+        "a warm read starts as much git over {} branches as over {}: {:?} against {:?}",
+        large.0,
+        small.0,
+        large.1,
+        small.1
+    );
 }
 
 #[test]
