@@ -815,25 +815,26 @@ pub fn adoption_for(repo: &str) -> Result<Adoption> {
 /// host's own configuration — the producer's resolved targets and `default_target`
 /// (the same three layers [`release_targets`] resolves), the adoption rungs, and the
 /// consumer's resolved publication policy — so an engine or a host asks this rather
-/// than restating any rule over them. Four rules, each refusing by its
+/// than restating any rule over them. Two rules, each refusing by its
 /// [`AdoptionRule`] id with a reason naming the consumer, the producer and what to
 /// change:
 ///
 /// - `published-no-target`: the effective rung is `published` behind a releasing
 ///   producer, the query names no `consumes`, and the producer resolves no
 ///   `default_target`;
-/// - `fast-no-change-request`: the effective rung is `fast` behind a releasing
-///   producer and the consumer's publication opens no change request;
-/// - `consumes-without-change-request`: a `consumes` is named while the consumer's
-///   publication opens no change request;
 /// - `consumes-undeclared-target`: the `consumes` names a target the producer does not
 ///   resolve.
 ///
 /// A producer *releases* when it is a different identity from the consumer and
-/// resolves at least one target; the first two rules apply only behind one, and the two
-/// `consumes` rules apply whenever a `consumes` is named, a producer that releases
+/// resolves at least one target; the first rule applies only behind one, and the
+/// `consumes` rule applies whenever a `consumes` is named, a producer that releases
 /// nothing included. With no `consumes` named, a producer that releases nothing answers
 /// [`AdoptionState::Completes`] with `releasing: false`.
+///
+/// The consumer's publication policy decides no rule: a consumer that opens no change
+/// request is held unlanded until its release and then landed, under either adoption.
+/// It is still resolved where `consumer_policy` is `None`, so a rules file that does
+/// not read answers [`AdoptionState::Unanswered`].
 ///
 /// A repository that does not resolve, a release-targets file that does not read, a
 /// producer's own declaration this build cannot read, and a producer whose

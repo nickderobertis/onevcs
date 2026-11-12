@@ -7076,8 +7076,8 @@ exit status, so `signal` stays `null` and `exit_status` holds what git exited wi
 ## Whether a release adoption can ever complete is answered here
 
 A plan that waits on another repository's release can be written so its wait never
-ends — a hold with no target, a draft its own repository refuses, a target the producer
-never publishes. Every fact that decides it is this crate's configuration — the
+ends — a hold with no target, or a target the producer never publishes. Every fact that
+decides it is this crate's configuration — the
 producer's resolved release targets and `default_target`, the adoption rungs, and the
 consumer's publication policy — so the rules are stated once, here, and an engine or a
 host asks this validation and restates none of them.
@@ -7099,8 +7099,7 @@ pub struct AdoptionVerdict { pub schema_version: u32, pub consumer: String, pub 
                              pub refusals: Vec<AdoptionRefusal>, pub unanswered: Option<String> }
 pub enum AdoptionState { Completes, NeverCompletes, Unanswered }
 pub struct AdoptionRefusal { pub rule: AdoptionRule, pub reason: String }
-pub enum AdoptionRule { PublishedNoTarget, FastNoChangeRequest,
-                        ConsumesWithoutChangeRequest, ConsumesUndeclaredTarget }
+pub enum AdoptionRule { PublishedNoTarget, ConsumesUndeclaredTarget }
 
 // `RulesCheck` gains one field, `pub release: ReleaseFacts`: the facts `rules check` prints.
 pub struct ReleaseFacts { pub adoption: Option<ResolvedAdoption>,
@@ -7119,26 +7118,29 @@ exactly as `adoption_for` resolves them; `consumes` to the producer's `default_t
 `consumer_policy` to the consumer repository's resolved `publication`.
 
 A producer **releases** when it is a different identity from the consumer and resolves
-at least one target through the three layers `release_targets` resolves. Four rules,
+at least one target through the three layers `release_targets` resolves. Two rules,
 each refusing by its id with a `reason` naming the consumer, the producer and what to
 change:
 
 - `published-no-target` — the effective rung is `published` behind a releasing
   producer, no `consumes` is named, and the producer resolves no `default_target`:
   nothing can ever release the hold.
-- `fast-no-change-request` — the effective rung is `fast` behind a releasing producer
-  and the consumer's publication opens no change request: the draft that carries an
-  unreleased pin cannot be opened, so the consumer fails at its last step.
-- `consumes-without-change-request` — a `consumes` is named while the consumer's
-  publication opens no change request.
 - `consumes-undeclared-target` — the `consumes` names a target the producer does not
   resolve; the reason lists the targets it does resolve.
 
-The first two apply only behind a releasing producer. The two `consumes` rules apply
+The first applies only behind a releasing producer. The `consumes` rule applies
 whenever a `consumes` is named, a producer that releases nothing included, because a
 wait on a target nobody publishes is no less endless for it. With no `consumes` named, a
 producer that is the consumer's own identity or resolves no target answers `completes`
 with `releasing: false`. Refusals are listed in the order above.
+
+**The consumer's publication policy decides no rule.** A consumer whose publication
+opens no change request (`local-direct`) completes under either adoption and with or
+without a `consumes`: the engine that runs the plan holds its publication unlanded on
+its origin until the release exists and then lands it, so whether a change request
+opens says nothing about whether the wait can end. The policy is still resolved where
+the query states none, so a consumer whose rules file does not read answers
+`unanswered`, and `rules check` still states whether it opens a change request.
 
 **What cannot be read is `unanswered`, never a refusal.** A consumer or producer this
 host has not registered, a release-targets file that does not read, a producer whose own

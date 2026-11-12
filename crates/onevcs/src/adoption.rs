@@ -113,18 +113,18 @@ pub struct AdoptionRefusal {
     pub reason: String,
 }
 
-/// The four rules, by the ids a refusal carries.
+/// The rules, by the ids a refusal carries.
+///
+/// The consumer's publication policy decides none of them: a consumer publishing
+/// where no change request opens is held unlanded until its release exists and then
+/// landed, under either adoption and with or without a `consumes`, so whether it opens
+/// a change request says nothing about whether its wait can end.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum AdoptionRule {
     /// A `published` consumer behind a releasing producer names no target, and the
     /// producer resolves no `default_target`: nothing can ever release the hold.
     PublishedNoTarget,
-    /// A `fast` consumer behind a releasing producer publishes under a policy that
-    /// opens no change request, so the draft carrying an unreleased pin cannot open.
-    FastNoChangeRequest,
-    /// The consumer names a target while its publication opens no change request.
-    ConsumesWithoutChangeRequest,
     /// The consumer names a target the producer does not resolve.
     ConsumesUndeclaredTarget,
 }
@@ -134,8 +134,6 @@ impl AdoptionRule {
     pub fn as_str(&self) -> &'static str {
         match self {
             AdoptionRule::PublishedNoTarget => "published-no-target",
-            AdoptionRule::FastNoChangeRequest => "fast-no-change-request",
-            AdoptionRule::ConsumesWithoutChangeRequest => "consumes-without-change-request",
             AdoptionRule::ConsumesUndeclaredTarget => "consumes-undeclared-target",
         }
     }
@@ -168,7 +166,6 @@ impl std::fmt::Display for AdoptionState {
 struct Consumer {
     identity: String,
     adoption: Adoption,
-    policy: MergePolicy,
 }
 
 /// Answer one query against this host's state root.
@@ -237,23 +234,22 @@ pub(crate) fn check(query: &AdoptionQuery) -> Result<AdoptionVerdict> {
     Ok(decide(query, &consumer, &producer))
 }
 
-/// The consumer's identity, its effective rung, and the policy it publishes under.
+/// The consumer's identity and its effective rung.
+///
+/// No rule reads the consumer's publication any more, but where the query states no
+/// node-level policy the repository's is still resolved, so a rules file that does not
+/// read answers `unanswered` exactly as it did when a rule depended on it: a consumer
+/// whose configuration cannot be read is not one this check vouches for.
 fn consumer(registry: &Registry, query: &AdoptionQuery) -> Result<Consumer> {
     let read = release::facts(registry, &query.consumer)?;
-    let policy = match query.consumer_policy {
-        Some(stated) => stated,
-        None => {
-            let resolution = store::resolve(registry, &query.consumer)?;
-            let (file, source) = policy::load(registry)?;
-            policy::resolve_for(&file, &source, &resolution)
-                .policy
-                .publication
-        }
-    };
+    if query.consumer_policy.is_none() {
+        let resolution = store::resolve(registry, &query.consumer)?;
+        let (file, source) = policy::load(registry)?;
+        policy::resolve_for(&file, &source, &resolution);
+    }
     Ok(Consumer {
         identity: read.releases.identity,
         adoption: query.adoption.unwrap_or(read.releases.adoption),
-        policy,
     })
 }
 
@@ -276,7 +272,7 @@ fn producer(registry: &Registry, repo: &str) -> std::result::Result<RepositoryRe
     Ok(read.releases)
 }
 
-/// The four rules over facts that were all read.
+/// The rules over facts that were all read.
 fn decide(
     query: &AdoptionQuery,
     consumer: &Consumer,
@@ -294,8 +290,6 @@ fn decide(
             .join(", "),
     };
     let (who, from) = (&consumer.identity, &producer.identity);
-    let policy = policy::spell(consumer.policy);
-    let opening = "change-open, change-auto or change-direct";
     let mut refusals = Vec::new();
 
     if consumer.adoption == Adoption::Published
@@ -309,52 +303,24 @@ fn decide(
                 "the consumer {who} adopts `published` behind the producer {from}, which \
                  releases ({targets}), and no target is resolved for that wait: the consumer \
                  names no `consumes` and {from} has no `default_target`, so nothing can ever \
-                 release the hold. Name one of {from}'s targets as the consumer's `consumes` \
-                 (which needs it to publish under a policy that opens a change request), or \
-                 give {from} a `default_target` in this host's releases.yml",
+                 release the hold. Name one of {from}'s targets as the consumer's `consumes`, \
+                 or give {from} a `default_target` in this host's releases.yml",
                 targets = names(),
             ),
         });
     }
-    if consumer.adoption == Adoption::Fast && releasing && !consumer.policy.opens_change_request() {
+    if let Some(named) = query.consumes.as_ref().filter(|named| !resolves(named)) {
         refusals.push(AdoptionRefusal {
-            rule: AdoptionRule::FastNoChangeRequest,
+            rule: AdoptionRule::ConsumesUndeclaredTarget,
             reason: format!(
-                "the consumer {who} adopts `fast` behind the producer {from}, which releases \
-                 ({targets}), while it publishes under {policy}, which opens no change request: \
-                 a `fast` consumer whose release is not out at publication is published as a \
-                 draft carrying an unreleased pin, and {policy} cannot open one, so it fails at \
-                 its last step. Adopt `published` so the consumer waits for the release, or \
-                 publish it under a policy that opens a change request ({opening})",
+                "the consumer {who} consumes the target {named:?} of the producer {from}, \
+                 which resolves no target by that name — it resolves: {targets}. A wait on \
+                 a target the producer does not release is one nothing can answer. Name one \
+                 of the targets it resolves in the consumer's `consumes`, or drop it to take \
+                 {from}'s default target",
                 targets = names(),
             ),
         });
-    }
-    if let Some(named) = &query.consumes {
-        if !consumer.policy.opens_change_request() {
-            refusals.push(AdoptionRefusal {
-                rule: AdoptionRule::ConsumesWithoutChangeRequest,
-                reason: format!(
-                    "the consumer {who} consumes {from}'s target {named:?} while it publishes \
-                     under {policy}, which opens no change request, so the wait on that release \
-                     has no change request to hold. Publish the consumer under a policy that \
-                     opens one ({opening}), or drop its `consumes` for {from}"
-                ),
-            });
-        }
-        if !resolves(named) {
-            refusals.push(AdoptionRefusal {
-                rule: AdoptionRule::ConsumesUndeclaredTarget,
-                reason: format!(
-                    "the consumer {who} consumes the target {named:?} of the producer {from}, \
-                     which resolves no target by that name — it resolves: {targets}. A wait on \
-                     a target the producer does not release is one nothing can answer. Name one \
-                     of the targets it resolves in the consumer's `consumes`, or drop it to take \
-                     {from}'s default target",
-                    targets = names(),
-                ),
-            });
-        }
     }
 
     let target = match releasing {
