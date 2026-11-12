@@ -262,11 +262,73 @@ impl Host {
             .unwrap_or_default()
     }
 
+    /// Where the record of `branch`'s copy in this host's own checkout is filed.
     pub fn record_path(&self, branch: &str) -> PathBuf {
         self.home
             .join("decisions/v1")
             .join(onevcs_digest(&self.key))
-            .join(format!("{}.json", onevcs_digest(branch)))
+            .join(format!(
+                "{}.json",
+                onevcs_digest(&format!("{branch}\0{}", self.repo.display()))
+            ))
+    }
+
+    /// A linked worktree of this host's checkout whose directory is gone: git still
+    /// lists it, as `prunable`, until somebody prunes it.
+    pub fn pruned_worktree(&self) {
+        let gone = self.root.join("gone-worktree");
+        run(
+            &self.repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                gone.to_str().unwrap(),
+                "main",
+            ],
+        );
+        std::fs::remove_dir_all(&gone).unwrap();
+        assert!(run(&self.repo, &["worktree", "list", "--porcelain"]).contains("prunable"));
+    }
+
+    /// A remote-tracking ref in `checkout` one commit above its `branch`, so that copy is
+    /// work an origin ref already reaches.
+    pub fn reach_from_origin(checkout: &Path, branch: &str) {
+        let tip = run(checkout, &["rev-parse", branch]);
+        let above = run(
+            checkout,
+            &[
+                "commit-tree",
+                &format!("{tip}^{{tree}}"),
+                "-p",
+                &tip,
+                "-m",
+                "above",
+            ],
+        );
+        run(
+            checkout,
+            &[
+                "update-ref",
+                &format!("refs/remotes/origin/reach/{branch}"),
+                &above,
+            ],
+        );
+    }
+
+    /// One commit on `branch` in `checkout`, so that copy stands somewhere no other does.
+    pub fn diverge(checkout: &Path, branch: &str) {
+        run(checkout, &["checkout", "-q", branch]);
+        // Above whatever the copy held, so diverging it again moves it again.
+        let below = run(checkout, &["rev-parse", "HEAD"]);
+        std::fs::write(checkout.join("diverged.txt"), format!("{branch} {below}\n")).unwrap();
+        run(checkout, &["add", "."]);
+        run(
+            checkout,
+            &["commit", "-q", "-m", &format!("feat: {branch} here only")],
+        );
+        run(checkout, &["checkout", "-q", "main"]);
     }
 
     pub fn assert_matches_uncached(&self, context: &str) -> BTreeSet<String> {

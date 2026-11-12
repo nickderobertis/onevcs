@@ -935,28 +935,17 @@ fn snapshot(at: &Path) -> Option<Snapshot> {
     }
     drop(head);
     let primary = common.parent()?.to_owned();
-    let primary_head = std::fs::read(common.join("HEAD")).ok()?;
-    canonical_value(&primary_head)?;
-    let branch = std::str::from_utf8(&primary_head)
-        .ok()?
-        .strip_suffix('\n')?
-        .strip_prefix("ref: refs/heads/")
-        .map(str::to_owned);
-    let mut worktrees = vec![(primary, branch)];
+    let mut worktrees = vec![(primary, checked_out(&common.join("HEAD"))?)];
     for name in repo.worktrees().ok()?.iter() {
         let name = name.ok()??;
         let worktree = repo.find_worktree(name).ok()?;
         let path = worktree.path();
         path.to_str()?;
-        let gitdir = common.join("worktrees").join(name);
-        canonical_value(&std::fs::read(gitdir.join("HEAD")).ok()?)?;
-        let linked = git2::Repository::open(path).ok()?;
-        let head = linked.find_reference("HEAD").ok()?;
-        let branch = head
-            .symbolic_target()
-            .ok()?
-            .and_then(|target| target.strip_prefix("refs/heads/"))
-            .map(str::to_owned);
+        // Read from the worktree's own metadata rather than by opening the worktree: a
+        // linked worktree whose directory is gone is still one git lists, with the branch
+        // its HEAD names, and refusing the whole snapshot for it sent every branch of the
+        // identity back to git on every read.
+        let branch = checked_out(&common.join("worktrees").join(name).join("HEAD"))?;
         worktrees.push((path.to_owned(), branch));
     }
     worktrees[1..].sort_by(|a, b| a.0.cmp(&b.0));
@@ -982,6 +971,19 @@ fn canonical_oid(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+/// The branch a canonical `HEAD` file names, or `None` inside for one that is detached
+/// or names a ref outside `refs/heads/`, as `git worktree list` reports it.
+fn checked_out(head: &Path) -> Option<Option<String>> {
+    let raw = std::fs::read(head).ok()?;
+    canonical_value(&raw)?;
+    Some(
+        std::str::from_utf8(&raw)
+            .ok()?
+            .strip_suffix('\n')?
+            .strip_prefix("ref: refs/heads/")
+            .map(str::to_owned),
+    )
 }
 fn canonical_value(raw: &[u8]) -> Option<()> {
     let value = std::str::from_utf8(raw).ok()?;

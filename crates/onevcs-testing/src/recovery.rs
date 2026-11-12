@@ -895,10 +895,21 @@ const HOST_SESSION: &str = "fixture-session-owner";
 /// are not otherwise named by this fixture's aging.
 const MANY_PATH_IDENTITY: usize = 7;
 
+/// The identity carrying the two shapes a real host's warm read was found re-deriving
+/// every read: a linked worktree of its publication checkout whose directory is gone,
+/// and a second checkout holding some of its branch names at tips of their own. One
+/// whose base gains only unrelated commits and whose branches the aging does not move.
+const SHAPED_IDENTITY: usize = 1;
+
+/// How many of that identity's branches its second checkout holds at tips of its own.
+const DIVERGED_COPIES: usize = 3;
+
 /// Build [`HOST`] from an empty root with real git and onevcs's own production types.
 ///
 /// Every preserved branch lives in its identity's publication checkout under a closed
-/// session; each of the other classes is represented once. The returned fixture's
+/// session; each of the other classes is represented once. One identity's publication
+/// checkout also carries a pruned linked worktree, and another of its checkouts holds
+/// some of its branch names at tips of that checkout's own. The returned fixture's
 /// `scale` is [`Scale::One`], which says nothing about this workload's size.
 pub fn build_host(root: &Path) -> Result<Fixture> {
     if root.exists() && std::fs::read_dir(root).map_err(io)?.next().is_some() {
@@ -1277,6 +1288,40 @@ fn build_host_identity(
                 identity: key.clone(),
             },
         );
+    }
+    if at == SHAPED_IDENTITY {
+        // Names the publication checkout also holds, each at a commit only this copy has.
+        // The publication checkout is searched first and answers each of them, so the
+        // copy is never what a row is read from.
+        let copy = root.join(format!("checkouts/h{at}-copy0"));
+        let mut diverged = Import::new(1);
+        for n in 0..DIVERGED_COPIES {
+            let branch = host_branch(at, n);
+            diverged.commit(
+                &branch,
+                Some(&base_commit),
+                &format!("feat: {branch} in another checkout"),
+                &[(
+                    format!("src/{branch}-elsewhere.txt"),
+                    "elsewhere\n".to_owned(),
+                )],
+            );
+        }
+        diverged.run(&copy, &root.join(format!("h{at}-diverged-marks")))?;
+        // A linked worktree whose directory went away: git lists it as prunable.
+        let gone = root.join(format!("pruned/h{at}"));
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                &gone.to_string_lossy(),
+                "main",
+            ],
+        )?;
+        std::fs::remove_dir_all(&gone).map_err(io)?;
     }
 
     let session_record = |branch: &Ref,

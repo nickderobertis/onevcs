@@ -1,7 +1,8 @@
 //! The decision record: what a recovery read decided about each branch, kept so a later
 //! read reuses it rather than re-deriving it.
 //!
-//! One file per branch and one per identity's streams, under
+//! One file per copy of a branch — its name and the checkout holding it — and one per
+//! identity's streams, under
 //! `$ONEVCS_HOME/decisions/v1/`, each written by an atomic rename and read only by this
 //! crate. Deleting the directory loses nothing but time, so anything here that cannot be
 //! read is no record, and a branch is derived again rather than answered from a guess.
@@ -124,13 +125,22 @@ fn identity_directory(identity: &str) -> Result<PathBuf> {
         .join(ids::digest(identity)))
 }
 
-fn branch_path(identity: &str, branch: &str) -> Result<PathBuf> {
-    Ok(identity_directory(identity)?.join(format!("{}.json", ids::digest(branch))))
+/// The name a copy's record is filed under: the branch and the checkout holding it, since
+/// two checkouts of one identity can hold one name at two tips and the derivation decides
+/// each copy on its own. A record filed under the branch name alone (an earlier build's)
+/// matches no stem here, so it is simply absent.
+fn filed_as(branch: &str, checkout: &Path) -> String {
+    ids::digest(&format!("{branch}\0{}", checkout.to_string_lossy()))
 }
 
-/// Every usable record of one identity, by branch name. A file that cannot be read,
-/// names another identity or branch, or is of another shape or logic is simply absent.
-pub(crate) fn load(identity: &str) -> BTreeMap<String, Decision> {
+fn branch_path(identity: &str, branch: &str, checkout: &Path) -> Result<PathBuf> {
+    Ok(identity_directory(identity)?.join(format!("{}.json", filed_as(branch, checkout))))
+}
+
+/// Every usable record of one identity, by branch name and the checkout of the copy it
+/// decided. A file that cannot be read, names another identity, branch or checkout, or is
+/// of another shape or logic is simply absent.
+pub(crate) fn load(identity: &str) -> BTreeMap<(String, PathBuf), Decision> {
     let mut found = BTreeMap::new();
     let Ok(directory) = identity_directory(identity) else {
         return found;
@@ -156,12 +166,15 @@ pub(crate) fn load(identity: &str) -> BTreeMap<String, Decision> {
         if decision.version != VERSION
             || decision.logic != LOGIC
             || decision.identity != identity
-            || ids::digest(&decision.branch) != stem
+            || filed_as(&decision.branch, &decision.listing.checkout) != stem
             || !coherent(&decision)
         {
             continue;
         }
-        found.insert(decision.branch.clone(), decision);
+        found.insert(
+            (decision.branch.clone(), decision.listing.checkout.clone()),
+            decision,
+        );
     }
     found
 }
@@ -225,7 +238,11 @@ pub(crate) fn sessions_digest(
 /// Write one decision, atomically. A record that could not be written costs only its
 /// reuse, so it is never a failure of the read.
 pub(crate) fn write(decision: &Decision) {
-    let Ok(path) = branch_path(&decision.identity, &decision.branch) else {
+    let Ok(path) = branch_path(
+        &decision.identity,
+        &decision.branch,
+        &decision.listing.checkout,
+    ) else {
         return;
     };
     let Ok(text) = serde_json::to_string(decision) else {
