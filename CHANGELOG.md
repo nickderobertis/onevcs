@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.66.0](https://github.com/nickderobertis/onevcs/compare/v0.65.2...v0.66.0) - 2026-11-12
+
+### Fixed
+
+- [**breaking**] stop refusing release adoptions that onepipeline completes ([#670](https://github.com/nickderobertis/onevcs/pull/670))
+
 ## [0.65.2](https://github.com/nickderobertis/onevcs/compare/v0.65.1...v0.65.2) - 2026-11-12
 
 ### Fixed
