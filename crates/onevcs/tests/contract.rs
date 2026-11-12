@@ -11213,6 +11213,7 @@ fn the_adoption_amendment_states_the_surface_the_crate_exports() {
         "pub const ADOPTION_VERDICT_VERSION: u32 = 1;",
         "pub enum AdoptionState { Completes, NeverCompletes, Unanswered }",
         "pub struct AdoptionRefusal { pub rule: AdoptionRule, pub reason: String }",
+        "pub enum AdoptionRule { PublishedNoTarget, ConsumesUndeclaredTarget }",
         "pub enum AdoptionSource { Rule { index: usize, file: PathBuf }, Default { file: PathBuf }, BuiltIn }",
     ] {
         assert!(declarations.contains(declared), "{declared}");
@@ -11221,12 +11222,21 @@ fn the_adoption_amendment_states_the_surface_the_crate_exports() {
         "onevcs release check-adoption <PRODUCER> --consumer <REPO> [--adoption fast|published] \
          [--consumes <TARGET>] [--policy <MERGE_POLICY>] [--json]",
         "`published-no-target`",
-        "`fast-no-change-request`",
-        "`consumes-without-change-request`",
         "`consumes-undeclared-target`",
         "exits `0` for `completes`, `1` for `never-completes` and `3` for `unanswered`",
     ] {
         assert!(section.contains(phrase), "{phrase}");
+    }
+    // The publication policy decides no rule: the engine holds a consumer that opens no
+    // change request unlanded until its release and then lands it, so the two rules that
+    // read it were withdrawn and no document may name them again.
+    let (contract, readme) = (contract(), repo_file("README.md"));
+    for withdrawn in ["fast-no-change-request", "consumes-without-change-request"] {
+        assert!(
+            !contract.contains(withdrawn),
+            "docs/contract.md names {withdrawn}"
+        );
+        assert!(!readme.contains(withdrawn), "README.md names {withdrawn}");
     }
 
     // The code is what the text says: the signatures, each struct's fields in order, and
@@ -11236,6 +11246,10 @@ fn the_adoption_amendment_states_the_surface_the_crate_exports() {
     let _: fn(&onevcs::MergePolicy) -> bool = onevcs::MergePolicy::opens_change_request;
     assert_eq!(onevcs::ADOPTION_VERDICT_VERSION, 1);
     // Exhaustive, so a source the crate adds or reshapes fails to compile here.
+    let _ = |rule: onevcs::AdoptionRule| match rule {
+        onevcs::AdoptionRule::PublishedNoTarget => (),
+        onevcs::AdoptionRule::ConsumesUndeclaredTarget => (),
+    };
     let _ = |source: onevcs::AdoptionSource| match source {
         onevcs::AdoptionSource::Rule { index: _, file: _ } => (),
         onevcs::AdoptionSource::Default { file: _ } => (),
@@ -11329,14 +11343,6 @@ fn the_adoption_amendment_states_the_surface_the_crate_exports() {
         (
             onevcs::AdoptionRule::PublishedNoTarget,
             "published-no-target",
-        ),
-        (
-            onevcs::AdoptionRule::FastNoChangeRequest,
-            "fast-no-change-request",
-        ),
-        (
-            onevcs::AdoptionRule::ConsumesWithoutChangeRequest,
-            "consumes-without-change-request",
         ),
         (
             onevcs::AdoptionRule::ConsumesUndeclaredTarget,

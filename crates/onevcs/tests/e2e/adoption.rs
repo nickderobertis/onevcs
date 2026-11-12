@@ -220,24 +220,18 @@ fn a_published_consumer_with_no_target_to_wait_on_never_completes() {
 }
 
 #[test]
-fn a_fast_consumer_whose_publication_opens_no_change_request_never_completes() {
+fn a_fast_consumer_whose_publication_opens_no_change_request_completes() {
     let host = Host::new();
     host.releases("fast", &[]);
     let producer = spelled(&host.producer);
 
+    // The engine holds a `local-direct` publication unlanded until the release exists
+    // and then lands it, so nothing about its policy stops the wait ending.
     let (code, verdict) = host.check(&producer, &spelled(&host.direct), &["--adoption", "fast"]);
-    refused(
-        code,
-        &verdict,
-        "fast-no-change-request",
-        "Adopt `published`",
-    );
-    assert!(verdict["refusals"][0]["reason"]
-        .as_str()
-        .expect("a reason")
-        .contains("local-direct"));
+    completes(code, &verdict, true, Value::Null);
+    assert_eq!(verdict["adoption"], "fast");
 
-    // The node-level policy beats the repository's resolved publication.
+    // A node-level policy that opens one completes the same way.
     let (code, verdict) = host.check(
         &producer,
         &spelled(&host.direct),
@@ -245,40 +239,67 @@ fn a_fast_consumer_whose_publication_opens_no_change_request_never_completes() {
     );
     completes(code, &verdict, true, Value::Null);
 
-    // A consumer whose own publication opens one is the near miss.
+    // …and so does a consumer whose own publication opens one.
     let (code, verdict) = host.check(
         &producer,
         &spelled(&host.consumer),
         &["--adoption", "fast", "--policy", "change-auto"],
     );
     completes(code, &verdict, true, Value::Null);
+
+    // `rules check` states that the consumer opens no change request, and finds
+    // nothing wrong with it.
+    let (code, stdout, stderr) = host.rules_check(&host.direct);
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    assert!(
+        stdout.contains("opens a change request: no (from publication)"),
+        "{stdout}"
+    );
+    assert!(!stderr.contains("release finding"), "{stderr}");
 }
 
 #[test]
-fn a_consumes_on_a_consumer_that_opens_no_change_request_never_completes() {
+fn a_consumes_on_a_consumer_that_opens_no_change_request_completes_under_either_adoption() {
     let host = Host::new();
     host.releases("fast", &[]);
     let producer = spelled(&host.producer);
 
-    let (code, verdict) = host.check(
-        &producer,
-        &spelled(&host.direct),
-        &["--adoption", "published", "--consumes", "crate"],
-    );
-    refused(
-        code,
-        &verdict,
-        "consumes-without-change-request",
-        "drop its `consumes`",
-    );
+    for adoption in ["published", "fast"] {
+        let (code, verdict) = host.check(
+            &producer,
+            &spelled(&host.direct),
+            &["--adoption", adoption, "--consumes", "crate"],
+        );
+        completes(code, &verdict, true, json!("crate"));
+        assert_eq!(verdict["adoption"], adoption);
 
-    // The same `consumes` on a `change-open` consumer completes.
-    let (code, verdict) = host.check(
-        &producer,
-        &spelled(&host.consumer),
-        &["--adoption", "published", "--consumes", "crate"],
-    );
-    completes(code, &verdict, true, json!("crate"));
+        // The same `consumes` on a `change-open` consumer completes too.
+        let (code, verdict) = host.check(
+            &producer,
+            &spelled(&host.consumer),
+            &["--adoption", adoption, "--consumes", "crate"],
+        );
+        completes(code, &verdict, true, json!("crate"));
+    }
+
+    // Under each repository rung the consumer's configuration checks clean.
+    for rung in ["published", "fast"] {
+        host.releases(
+            "fast",
+            &[(&host.direct, &format!("    adoption: {rung}\n"))],
+        );
+        let (code, stdout, stderr) = host.rules_check(&host.direct);
+        assert_eq!(code, 0, "{stdout}{stderr}");
+        assert!(
+            stdout.contains(&format!("release adoption: {rung} (from rule 1 in ")),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("opens a change request: no (from publication)"),
+            "{stdout}"
+        );
+        assert!(!stderr.contains("release finding"), "{stderr}");
+    }
 }
 
 #[test]
@@ -341,14 +362,10 @@ fn the_node_rung_beats_the_repository_rung_which_beats_the_global_rung() {
     refused(code, &verdict, "published-no-target", "default_target");
     assert_eq!(verdict["adoption"], "published");
 
-    // The repository rung beats the global one.
+    // The repository rung beats the global one: under `fast` there is no hold to
+    // need a target, so the same producer completes.
     let (code, verdict) = host.check(&producer, &spelled(&host.direct), &[]);
-    refused(
-        code,
-        &verdict,
-        "fast-no-change-request",
-        "Adopt `published`",
-    );
+    completes(code, &verdict, true, Value::Null);
     assert_eq!(verdict["adoption"], "fast");
 
     // The node rung beats the repository one.
@@ -449,7 +466,7 @@ fn a_configuration_that_does_not_read_is_unanswered_with_the_rung_still_reported
 }
 
 #[test]
-fn every_rule_that_refuses_is_reported_in_the_stated_order() {
+fn a_local_direct_consumer_naming_an_undeclared_target_is_refused_for_the_target_alone() {
     let host = Host::new();
     host.releases("fast", &[]);
     let (code, verdict) = host.check(
@@ -457,15 +474,7 @@ fn every_rule_that_refuses_is_reported_in_the_stated_order() {
         &spelled(&host.direct),
         &["--adoption", "fast", "--consumes", "wheel"],
     );
-    assert_eq!(code, 1, "{verdict:#}");
-    assert_eq!(
-        rules(&verdict),
-        [
-            "fast-no-change-request",
-            "consumes-without-change-request",
-            "consumes-undeclared-target",
-        ]
-    );
+    refused(code, &verdict, "consumes-undeclared-target", "crate, npm");
     assert_eq!(verdict["target"], Value::Null);
 }
 
@@ -540,18 +549,20 @@ fn the_text_rendering_states_the_same_verdict() {
             "check-adoption",
             &spelled(&host.producer),
             "--consumer",
-            &spelled(&host.direct),
+            &spelled(&host.consumer),
+            "--adoption",
+            "published",
         ])
         .output()
         .expect("the binary runs");
     assert_eq!(output.status.code(), Some(1));
     let text = String::from_utf8_lossy(&output.stdout);
     for line in [
-        "adoption: fast",
+        "adoption: published",
         "releasing: yes",
         "target: none",
         "state: never-completes",
-        "refused: fast-no-change-request: the consumer ",
+        "refused: published-no-target: the consumer ",
     ] {
         assert!(text.contains(line), "{text}\nlacks {line:?}");
     }
@@ -695,24 +706,10 @@ fn the_library_answers_every_case_exactly_as_the_command_line_does() {
     // Global `published`; the local-direct consumer's own rung is `fast`.
     host.releases("published", &[(&host.direct, "    adoption: fast\n")]);
     for (case, expect, rung) in [
-        // The four rules, each refusing its violating case.
+        // The two rules, each refusing its violating case.
         (
             (p, c, &["--adoption", "published"][..]),
             Never(&["published-no-target"]),
-            "published",
-        ),
-        (
-            (p, d, &["--adoption", "fast"][..]),
-            Never(&["fast-no-change-request"]),
-            "fast",
-        ),
-        (
-            (
-                p,
-                d,
-                &["--adoption", "published", "--consumes", "crate"][..],
-            ),
-            Never(&["consumes-without-change-request"]),
             "published",
         ),
         (
@@ -727,11 +724,28 @@ fn the_library_answers_every_case_exactly_as_the_command_line_does() {
         ),
         (
             (p, d, &["--adoption", "fast", "--consumes", "wheel"][..]),
-            Never(&[
-                "fast-no-change-request",
-                "consumes-without-change-request",
-                "consumes-undeclared-target",
-            ]),
+            Never(&["consumes-undeclared-target"]),
+            "fast",
+        ),
+        // A consumer whose publication opens no change request completes: under `fast`,
+        // and naming a `consumes` under either adoption.
+        (
+            (p, d, &["--adoption", "fast"][..]),
+            Completes(true, None),
+            "fast",
+        ),
+        (
+            (
+                p,
+                d,
+                &["--adoption", "published", "--consumes", "crate"][..],
+            ),
+            Completes(true, Some("crate")),
+            "published",
+        ),
+        (
+            (p, d, &["--adoption", "fast", "--consumes", "crate"][..]),
+            Completes(true, Some("crate")),
             "fast",
         ),
         // The near misses, which complete.
@@ -775,7 +789,7 @@ fn the_library_answers_every_case_exactly_as_the_command_line_does() {
             Never(&["published-no-target"]),
             "published",
         ),
-        ((p, d, &[][..]), Never(&["fast-no-change-request"]), "fast"),
+        ((p, d, &[][..]), Completes(true, None), "fast"),
         (
             (p, d, &["--adoption", "published"][..]),
             Never(&["published-no-target"]),
@@ -928,12 +942,7 @@ fn every_printed_verdict_matches_the_schema_generated_from_the_crate_type() {
     );
     assert_eq!(
         refused.into_iter().collect::<Vec<_>>(),
-        [
-            "consumes-undeclared-target",
-            "consumes-without-change-request",
-            "fast-no-change-request",
-            "published-no-target",
-        ]
+        ["consumes-undeclared-target", "published-no-target"]
     );
 }
 
