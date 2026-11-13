@@ -172,13 +172,27 @@ fn declaration_layer(document: &Path) -> String {
     format!("the repository declaration {}", document.display())
 }
 
-/// A repository's declaration as read, with what it declares.
+/// A repository's declaration as read: each state carries exactly what it has, so a
+/// declared document always comes with its policy and no other state can carry one.
 #[derive(Debug, Clone)]
-pub(crate) struct Declaration {
-    /// Its state, as reported.
-    pub(crate) state: PolicyDeclaration,
-    /// What it declares, where it is [`PolicyDeclaration::Declared`].
-    pub(crate) policy: Option<DeclaredPolicy>,
+pub(crate) enum Declaration {
+    /// The document declares a `[policy]`, and this is what it declares.
+    Declared {
+        /// The declaration's document.
+        document: PathBuf,
+        /// What it declares.
+        policy: DeclaredPolicy,
+    },
+    /// No `onevcs.toml` there, or one with no `[policy]`.
+    Undeclared {
+        /// The publication checkout looked in.
+        looked_in: PathBuf,
+    },
+    /// The declaration could not be read.
+    Unreadable {
+        /// Why, naming the document.
+        reason: String,
+    },
 }
 
 impl Declaration {
@@ -191,10 +205,7 @@ impl Declaration {
     /// off its base included — is [`PolicyDeclaration::Unreadable`].
     pub(crate) fn at(checkout: &Path) -> Self {
         let document = checkout.join(repository_config::FILE);
-        let unreadable = |reason: String| Declaration {
-            state: PolicyDeclaration::Unreadable { reason },
-            policy: None,
-        };
+        let unreadable = |reason: String| Declaration::Unreadable { reason };
         if let Err(failure) = std::fs::read_dir(checkout) {
             // A checkout that is gone is named the way every other refusal of a missing
             // working directory names it, since that directory is what to go after.
@@ -211,11 +222,8 @@ impl Declaration {
                 document.display()
             ));
         }
-        let undeclared = || Declaration {
-            state: PolicyDeclaration::Undeclared {
-                looked_in: checkout.to_path_buf(),
-            },
-            policy: None,
+        let undeclared = || Declaration::Undeclared {
+            looked_in: checkout.to_path_buf(),
         };
         match std::fs::symlink_metadata(&document) {
             Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => return undeclared(),
@@ -242,10 +250,7 @@ impl Declaration {
             Err(Error::Invalid { reason }) => unreadable(reason),
             Err(failure) => unreadable(failure.to_string()),
             Ok(None) => undeclared(),
-            Ok(Some(policy)) => Declaration {
-                state: PolicyDeclaration::Declared { document },
-                policy: Some(policy),
-            },
+            Ok(Some(policy)) => Declaration::Declared { document, policy },
         }
     }
 
@@ -253,8 +258,8 @@ impl Declaration {
     /// nothing may resolve, open or publish for its identity as though it declared
     /// nothing.
     pub(crate) fn refuse_unreadable(&self) -> Result<()> {
-        match &self.state {
-            PolicyDeclaration::Unreadable { reason } => Err(Error::Invalid {
+        match self {
+            Declaration::Unreadable { reason } => Err(Error::Invalid {
                 reason: format!(
                     "the repository's own publication policy declaration could not be read, so \
                      no policy resolves for it and nothing publishes under a host rule or the \
@@ -267,11 +272,27 @@ impl Declaration {
 
     /// The layer this declaration contributes, where it declares one.
     fn layer(&self) -> Option<(String, &DeclaredPolicy)> {
-        match (&self.state, &self.policy) {
-            (PolicyDeclaration::Declared { document }, Some(policy)) => {
+        match self {
+            Declaration::Declared { document, policy } => {
                 Some((declaration_layer(document), policy))
             }
-            _ => None,
+            Declaration::Undeclared { .. } | Declaration::Unreadable { .. } => None,
+        }
+    }
+
+    /// Its state, as reported: the document, the directory looked in, or why it
+    /// could not be read.
+    pub(crate) fn state(&self) -> PolicyDeclaration {
+        match self {
+            Declaration::Declared { document, .. } => PolicyDeclaration::Declared {
+                document: document.clone(),
+            },
+            Declaration::Undeclared { looked_in } => PolicyDeclaration::Undeclared {
+                looked_in: looked_in.clone(),
+            },
+            Declaration::Unreadable { reason } => PolicyDeclaration::Unreadable {
+                reason: reason.clone(),
+            },
         }
     }
 }
@@ -1042,7 +1063,7 @@ pub(crate) fn resolve_declared(
             declared_named.and_then(|(name, policy)| policy.checks.as_ref().map(|c| (name, c))),
             default.checks.as_ref(),
         ),
-        declaration: declaration.state.clone(),
+        declaration: declaration.state(),
     })
 }
 

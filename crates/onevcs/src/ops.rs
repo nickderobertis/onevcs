@@ -1077,8 +1077,8 @@ pub fn rules_check(repo: &str) -> Result<RulesCheck> {
     // An unreadable declaration is reported as a value rather than an `Err`, so that
     // the report can say which rule matched and what the declaration's state is; it
     // carries no policy, because none resolves.
-    let (policy, release) = match &declaration.state {
-        PolicyDeclaration::Unreadable { .. } => (None, None),
+    let (policy, release) = match &declaration {
+        policy::Declaration::Unreadable { .. } => (None, None),
         _ => {
             let resolved = policy::resolve_declared(
                 &file,
@@ -1099,7 +1099,7 @@ pub fn rules_check(repo: &str) -> Result<RulesCheck> {
             index: matched.index,
             criteria: matched.criteria,
         }),
-        declaration: declaration.state,
+        declaration: declaration.state(),
         policy,
         trailer_prefix: provenance::from_rules(&file).prefix().to_string(),
         trailer_prefix_source: match file.trailer_prefix.is_some() {
