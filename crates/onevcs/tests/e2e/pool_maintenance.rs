@@ -310,10 +310,10 @@ fn this_repositorys_own_declaration_resolves_to_the_policy_its_host_rule_gives_i
         .expect("the repository's declaration is copied");
     world.git(&checkout, &["add", "onevcs.toml"]);
     world.git(&checkout, &["commit", "-q", "-m", "chore: declare"]);
+    // A local identity: what is asked is the declaration, and no host is involved.
     world
         .onevcs()
         .args(["register", &checkout.to_string_lossy()])
-        .args(["--origin", "https://github.com/acme-corp/onevcs.git"])
         .assert()
         .success();
     crate::registry::configure_rules(
