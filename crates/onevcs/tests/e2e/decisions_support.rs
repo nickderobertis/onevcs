@@ -120,6 +120,7 @@ impl Host {
         let diagnostics = root.join("diagnostics.ndjson");
         std::env::set_var("ONEVCS_DECISION_DIAGNOSTICS", &diagnostics);
         std::env::remove_var("GIT_NAMESPACE");
+        counting_git_on_path();
         Host {
             _root: dir,
             root,
@@ -419,33 +420,46 @@ pub fn landed_state(row: &Value) -> &str {
     row["landed"]["state"].as_str().unwrap()
 }
 
-/// A `git` on `PATH` that logs its arguments and the directory it ran in, then runs the
-/// real one.
-pub fn counting_git(dir: &Path) -> (PathBuf, PathBuf) {
-    let log = dir.join("git.log");
-    let shim = dir.join("git");
-    let real = run(Path::new("/"), &["--exec-path"]);
-    let real = PathBuf::from(real).join("git");
-    std::fs::write(
-        &shim,
-        format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> {log}\nexec {real} \"$@\"\n",
-            log = log.display(),
-            real = real.display(),
-        ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
-    (shim, log)
+/// The variable naming the file the process-wide shim logs to. Not a `GIT_*` name, which
+/// would make every read an uncached one.
+const COUNTED_LOG: &str = "ONEVCS_TEST_COUNTED_GIT_LOG";
+
+/// Put this process's counting `git` first on `PATH`, once, before the library resolves
+/// its git: it resolves the program once per process, so a shim put there after the first
+/// read is never run, and a shim inside one host's scratch directory would be gone by the
+/// next host's read. It logs only while [`with_shim`] names a log, and is the same file
+/// throughout, so what the cache keys git by does not move between a host's reads.
+fn counting_git_on_path() {
+    static SHIM: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    SHIM.get_or_init(|| {
+        let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
+            .join(format!("counting-git-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let real = PathBuf::from(run(Path::new("/"), &["--exec-path"])).join("git");
+        let shim = dir.join("git");
+        std::fs::write(
+            &shim,
+            format!(
+                "#!/bin/sh\nif [ -n \"${COUNTED_LOG}\" ]; then printf '%s\\n' \"$*\" >> \"${COUNTED_LOG}\"; fi\nexec {real} \"$@\"\n",
+                real = real.display(),
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let original = std::env::var_os("PATH").unwrap_or_default();
+        let mut paths = vec![dir];
+        paths.extend(std::env::split_paths(&original));
+        std::env::set_var("PATH", std::env::join_paths(paths).unwrap());
+    });
 }
 
+/// Every git command the library started while `f` ran, one line of arguments each.
 pub fn with_shim(host: &Host, f: impl FnOnce()) -> Vec<String> {
-    let (_shim, log) = counting_git(&host.root);
+    let log = host.root.join("git.log");
     let _ = std::fs::remove_file(&log);
-    let original = std::env::var("PATH").unwrap();
-    std::env::set_var("PATH", format!("{}:{original}", host.root.display()));
+    std::env::set_var(COUNTED_LOG, &log);
     f();
-    std::env::set_var("PATH", original);
+    std::env::remove_var(COUNTED_LOG);
     std::fs::read_to_string(log)
         .unwrap_or_default()
         .lines()
