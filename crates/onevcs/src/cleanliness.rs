@@ -17,7 +17,8 @@
 //! leave a timestamp git's own answer did not see; such an answer is used and not kept.
 //! Every shape whose answer depends on something outside the walk — a submodule or nested
 //! repository, a reftable, a split index, a configuration with includes — is asked of git
-//! every time.
+//! every time, and so is a tree holding a name that is not UTF-8, which git's answer
+//! reaches this crate spelled lossily.
 //!
 //! Deleting the directory loses nothing but time.
 
@@ -121,11 +122,17 @@ mod recorded {
     struct Record {
         version: u32,
         worktree: PathBuf,
-        /// Paths `git status` reported ignored, relative to the worktree, a directory's
-        /// with its trailing `/`.
-        ignored: BTreeSet<String>,
+        ignored: Ignored,
         digest: String,
         dirty: bool,
+    }
+
+    /// What `git status` reported ignored, relative to the worktree: whole directories,
+    /// which the walk does not enter, and single files, which it does not stamp.
+    #[derive(Default, Serialize, Deserialize)]
+    struct Ignored {
+        directories: BTreeSet<PathBuf>,
+        files: BTreeSet<PathBuf>,
     }
 
     pub(super) fn is_dirty(worktree: &Path) -> Result<bool> {
@@ -145,7 +152,9 @@ mod recorded {
             Some(worktree),
         )?;
         let (dirty, ignored) = parse(&output.stdout);
-        if let Some(path) = path {
+        // An answer naming a path that is not UTF-8 reaches here spelled lossily, so what
+        // it reported ignored cannot be held to the paths on disk: it is used, not kept.
+        if let (Some(path), Some(ignored)) = (path, ignored) {
             let settled_before = asked.checked_sub(SETTLED);
             if let Some(digest) = settled_before.and_then(|t| digest(worktree, &ignored, Some(t))) {
                 let record = Record {
@@ -178,14 +187,17 @@ mod recorded {
     }
 
     /// Whether `git status --porcelain -z --ignored` reported anything but ignored
-    /// paths, and the ignored paths it reported.
-    fn parse(stdout: &str) -> (bool, BTreeSet<String>) {
+    /// paths, and the ignored paths it reported — `None` where its output was not text.
+    fn parse(stdout: &str) -> (bool, Option<Ignored>) {
         let mut dirty = false;
-        let mut ignored = BTreeSet::new();
+        let mut ignored = Ignored::default();
         let mut items = stdout.split('\0').filter(|item| !item.is_empty());
         while let Some(item) = items.next() {
             if let Some(path) = item.strip_prefix("!! ") {
-                ignored.insert(path.to_owned());
+                match path.strip_suffix('/') {
+                    Some(directory) => ignored.directories.insert(PathBuf::from(directory)),
+                    None => ignored.files.insert(PathBuf::from(path)),
+                };
                 continue;
             }
             dirty = true;
@@ -194,14 +206,15 @@ mod recorded {
                 items.next();
             }
         }
-        (dirty, ignored)
+        let whole = !stdout.contains(char::REPLACEMENT_CHARACTER);
+        (dirty, whole.then_some(ignored))
     }
 
     /// The digest of everything the answer read, or `None` where something is a shape the
     /// walk cannot stand for — or, with `settled_before`, changed too recently to be kept.
     fn digest(
         worktree: &Path,
-        ignored: &BTreeSet<String>,
+        ignored: &Ignored,
         settled_before: Option<SystemTime>,
     ) -> Option<String> {
         let settled_before = settled_before
@@ -337,11 +350,13 @@ mod recorded {
     /// One digest's walk of a worktree's entries.
     struct Walk<'a> {
         worktree: &'a Path,
-        ignored: &'a BTreeSet<String>,
+        ignored: &'a Ignored,
         settled_before: Option<Duration>,
     }
 
-    type Entries = (Vec<(String, [u8; 64])>, Vec<(String, [u8; 64])>);
+    /// One directory's files and directories, each by its path relative to the worktree,
+    /// with its stamp.
+    type Entries = (Vec<(PathBuf, [u8; 64])>, Vec<(PathBuf, [u8; 64])>);
 
     impl Walk<'_> {
         /// One directory's files and directories, by name, each with its stamp, leaving
@@ -375,16 +390,15 @@ mod recorded {
             let mut directories = Vec::new();
             for (entry, stamped) in listed.iter().zip(stamped.into_iter().flatten()) {
                 let (is_dir, stamp) = stamped?;
-                let spelled = relative
-                    .join(entry.file_name())
-                    .to_string_lossy()
-                    .into_owned();
+                // A name that is not UTF-8 is one git's answer reached this crate spelled
+                // lossily, so no record of it can be matched exactly: such a tree is git's.
+                let path = relative.join(entry.file_name().to_str()?);
                 if is_dir {
-                    if !self.ignored.contains(&format!("{spelled}/")) {
-                        directories.push((spelled, stamp));
+                    if !self.ignored.directories.contains(&path) {
+                        directories.push((path, stamp));
                     }
-                } else if !self.ignored.contains(&spelled) {
-                    files.push((spelled, stamp));
+                } else if !self.ignored.files.contains(&path) {
+                    files.push((path, stamp));
                 }
             }
             files.sort_unstable();
@@ -403,7 +417,7 @@ mod recorded {
                 let mut next = Vec::new();
                 for (relative, entries) in level.into_iter().zip(read) {
                     let entries = entries?;
-                    next.extend(entries.1.iter().map(|(name, _)| PathBuf::from(name)));
+                    next.extend(entries.1.iter().map(|(path, _)| path.clone()));
                     listed.insert(relative, entries);
                 }
                 level = next;
@@ -415,16 +429,16 @@ mod recorded {
         fn subtree(listed: &HashMap<PathBuf, Entries>, relative: &Path) -> [u8; 32] {
             let mut hasher = Sha256::new();
             if let Some((files, directories)) = listed.get(relative) {
-                for (name, stamp) in files {
-                    hasher.update(name.as_bytes());
+                for (path, stamp) in files {
+                    hasher.update(path.as_os_str().as_bytes());
                     hasher.update([0]);
                     hasher.update(stamp);
                 }
-                for (name, stamp) in directories {
-                    hasher.update(name.as_bytes());
+                for (path, stamp) in directories {
+                    hasher.update(path.as_os_str().as_bytes());
                     hasher.update([1]);
                     hasher.update(stamp);
-                    hasher.update(Self::subtree(listed, Path::new(name)));
+                    hasher.update(Self::subtree(listed, path));
                 }
             }
             hasher.finalize().into()

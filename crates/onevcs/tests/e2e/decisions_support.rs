@@ -172,39 +172,6 @@ impl Host {
         copy
     }
 
-    /// The branch's closed session's clone, made real, with its worktree on the branch at
-    /// the checkout's tip: the shape a pool slot or a run clone leaves a preserved branch
-    /// in, and the worktree a recovery read asks whether it holds uncommitted work.
-    pub fn worked_copy(&self, branch: &str) -> PathBuf {
-        let run_root = self.root.join("runs").join(Self::token(branch));
-        let clone = run_root.join("clone");
-        run(
-            &self.root,
-            &[
-                "clone",
-                "-q",
-                "--shared",
-                "--no-checkout",
-                self.repo.to_str().unwrap(),
-                clone.to_str().unwrap(),
-            ],
-        );
-        let worktree = run_root.join("worktree");
-        run(
-            &clone,
-            &[
-                "worktree",
-                "add",
-                "-q",
-                "-b",
-                branch,
-                worktree.to_str().unwrap(),
-                &format!("origin/{branch}"),
-            ],
-        );
-        worktree
-    }
-
     pub fn token(branch: &str) -> String {
         format!("s-{}", branch.replace('/', "-"))
     }

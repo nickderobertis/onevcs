@@ -13,6 +13,7 @@ use sha2::{Digest, Sha256};
 mod boundary;
 mod boundary_sanitize;
 mod churn;
+mod cleanliness_journeys;
 mod counting;
 mod decisions_journeys;
 #[path = "../e2e/decisions_support.rs"]
