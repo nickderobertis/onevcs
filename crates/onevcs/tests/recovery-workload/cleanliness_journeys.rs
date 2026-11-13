@@ -1151,3 +1151,130 @@ fn a_ref_rewritten_in_place_after_its_value_was_kept_is_read_again() {
         "work/a answers at the commit its ref now names: {rows:?}"
     );
 }
+
+/// The kept values of a repository's loose refs, by ref file, as the read wrote them.
+fn kept_refs(host: &Host) -> (PathBuf, std::collections::BTreeMap<String, String>) {
+    let common = host.repo.join(".git");
+    let file = host
+        .home
+        .join("cache/refs-v1")
+        .join(onevcs_digest(&common.display().to_string()));
+    let text = std::fs::read_to_string(&file).unwrap_or_default();
+    let decoded = |hex: &str| {
+        let bytes: Vec<u8> = (0..hex.len())
+            .step_by(2)
+            .map(|at| u8::from_str_radix(&hex[at..at + 2], 16).unwrap())
+            .collect();
+        String::from_utf8(bytes).unwrap()
+    };
+    let entries = text
+        .lines()
+        .skip(1)
+        .filter_map(|line| {
+            let mut fields = line.split('\t');
+            let (path, _stamp, value) = (fields.next()?, fields.next()?, fields.next()?);
+            Some((path.to_owned(), decoded(value)))
+        })
+        .collect();
+    (file, entries)
+}
+
+fn tip_of(rows: &[Value], branch: &str) -> Option<Value> {
+    rows.iter()
+        .find(|row| row["branch"]["branch"] == branch)
+        .map(|row| row["tip"].clone())
+}
+
+#[test]
+fn a_loose_ref_value_is_kept_only_once_settled_and_read_again_whenever_its_file_moves() {
+    let _exclusive = exclusive();
+    let host = Host::new();
+    let a = host.branch("work/a");
+    let b = host.branch("work/b");
+    let ref_a = host
+        .repo
+        .join(".git/refs/heads/work/a")
+        .display()
+        .to_string();
+    let ref_b = host
+        .repo
+        .join(".git/refs/heads/work/b")
+        .display()
+        .to_string();
+    settle();
+    host.read();
+    let (file, kept) = kept_refs(&host);
+    assert_eq!(kept.get(&ref_a), Some(&format!("{a}\n")), "{kept:?}");
+    assert_eq!(kept.get(&ref_b), Some(&format!("{b}\n")));
+
+    // Reused while the file stands as it was read: a kept value forged under the same
+    // stamp is what the read answers, which only a read that did not open the file can.
+    let original = std::fs::read_to_string(&file).unwrap();
+    let hex = |text: &str| {
+        text.bytes()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    std::fs::write(
+        &file,
+        original.replace(&hex(&format!("{a}\n")), &hex(&format!("{b}\n"))),
+    )
+    .unwrap();
+    let (rows, _) = host.read();
+    assert_eq!(
+        tip_of(&rows, "work/a"),
+        Some(json!(b)),
+        "the kept value answered"
+    );
+    std::fs::write(&file, &original).unwrap();
+    let (rows, _) = host.read();
+    assert_eq!(rows, host.uncached(), "the true value back");
+
+    // A ref moved moments ago is read and not kept until it has stood a second.
+    let main = run(&host.repo, &["rev-parse", "main"]);
+    run(&host.repo, &["update-ref", "refs/heads/work/b", &main]);
+    let (rows, _) = host.read();
+    assert_eq!(rows, host.uncached(), "the moved ref is read");
+    assert_ne!(kept_refs(&host).1.get(&ref_b), Some(&format!("{main}\n")));
+    settle();
+    host.read();
+    assert_eq!(kept_refs(&host).1.get(&ref_b), Some(&format!("{main}\n")));
+
+    // A file stamped later than now is never kept.
+    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
+    std::fs::File::options()
+        .write(true)
+        .open(host.repo.join(".git/refs/heads/work/a"))
+        .unwrap()
+        .set_modified(later)
+        .unwrap();
+    let (rows, _) = host.read();
+    assert_eq!(rows, host.uncached());
+    assert_eq!(kept_refs(&host).1.get(&ref_a), None);
+
+    // A kept file that is not one this build wrote, or that cannot be written, keeps
+    // nothing and costs only the reads it would have saved.
+    for (fault, text) in [
+        ("corrupt", "not refs\n"),
+        ("another version", "onevcs loose refs 0\n"),
+    ] {
+        std::fs::write(&file, text).unwrap();
+        let (rows, _) = host.read();
+        assert_eq!(rows, host.uncached(), "{fault}");
+        let rewritten = std::fs::read_to_string(&file).unwrap();
+        assert!(
+            rewritten.starts_with("onevcs loose refs 1\n"),
+            "{fault}: {rewritten}"
+        );
+    }
+    let store = host.home.join("cache/refs-v1");
+    std::fs::remove_dir_all(&store).unwrap();
+    std::fs::write(&store, "not a directory").unwrap();
+    for read in ["unwritable", "still unwritable"] {
+        let (rows, _) = host.read();
+        assert_eq!(rows, host.uncached(), "{read}");
+    }
+    std::fs::remove_file(&store).unwrap();
+    host.read();
+    assert!(file.exists(), "kept again once writable");
+}
