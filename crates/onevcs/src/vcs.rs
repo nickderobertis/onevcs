@@ -667,6 +667,9 @@ fn collected(
     let branch_filter = narrowed
         .as_ref()
         .is_some_and(|only| !matches!(only.selecting, Selecting::Sessions));
+    // The exact checks of open sessions' worktrees begin now, beside the stream reads.
+    let _early =
+        (reusing && narrowed.is_none()).then(|| crate::cleanliness::Early::begin(&sessions));
     let (streams, answers, moved) = if reusing && narrowed.is_none() {
         let answers = crate::decisions::host_streams()?;
         let streams = answers.streams.clone();
@@ -1768,10 +1771,14 @@ pub(crate) fn concurrently_on<T: Sync, R: Send>(
     items: &[T],
     work: impl Fn(&T) -> R + Sync,
 ) -> Vec<R> {
-    let workers = std::thread::available_parallelism()
-        .map_or(1, std::num::NonZeroUsize::get)
-        .min(most)
-        .min(items.len());
+    // Asked once per process: on Linux the answer reads the cgroup's CPU quota, four
+    // files, and a read that walks a large tree calls this once per directory.
+    static PARALLELISM: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let workers = (*PARALLELISM.get_or_init(|| {
+        std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
+    }))
+    .min(most)
+    .min(items.len());
     if workers <= 1 {
         return items.iter().map(&work).collect();
     }

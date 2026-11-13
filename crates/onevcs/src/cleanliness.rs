@@ -42,6 +42,109 @@ thread_local! {
     static ANSWERED: RefCell<HashMap<PathBuf, bool>> = RefCell::new(HashMap::new());
 }
 
+/// Exact answers a host read began before its identities are scanned, by worktree: `None`
+/// while one is still being made. Shared by every thread of the read, and emptied when the
+/// read's [`Early`] ends.
+static EARLY: std::sync::Mutex<Option<HashMap<PathBuf, Option<bool>>>> =
+    std::sync::Mutex::new(None);
+static EARLY_MADE: std::sync::Condvar = std::sync::Condvar::new();
+
+/// Exact checks of the worktrees open sessions name, begun as a host read starts so they
+/// run beside its stream and record reads rather than after them: every one is a worktree
+/// the read checks exactly whenever it asks, so beginning early changes when the check is
+/// made within the read and nothing about what it answers. Ended — and waited for — when
+/// dropped.
+pub(crate) struct Early(Option<std::thread::JoinHandle<()>>);
+
+impl Early {
+    pub(crate) fn begin(sessions: &[crate::workspace::Record]) -> Self {
+        #[cfg(unix)]
+        if crate::decisions::enabled() {
+            let worktrees: Vec<PathBuf> = sessions
+                .iter()
+                .filter(|record| {
+                    record.state == crate::Lifecycle::Open
+                        && !record.owner_is_running()
+                        && record.worktree.is_dir()
+                })
+                .map(|record| resolved(&record.worktree))
+                .collect();
+            if let Ok(mut early) = EARLY.lock() {
+                *early = Some(
+                    worktrees
+                        .iter()
+                        .map(|worktree| (worktree.clone(), None))
+                        .collect(),
+                );
+            }
+            let handle = std::thread::spawn(move || {
+                crate::vcs::concurrently_on(PREFETCHED, &worktrees, |worktree| {
+                    // Whatever ends this check, a reader waiting on it is let go.
+                    struct Settled<'a>(&'a Path);
+                    impl Drop for Settled<'_> {
+                        fn drop(&mut self) {
+                            if let Ok(mut early) = EARLY.lock() {
+                                if let Some(early) = early.as_mut() {
+                                    if early.get(self.0) == Some(&None) {
+                                        early.remove(self.0);
+                                    }
+                                }
+                            }
+                            EARLY_MADE.notify_all();
+                        }
+                    }
+                    let _settled = Settled(worktree);
+                    let dirty = crate::checkout_reads::unturned(|| {
+                        crate::recovery_cache::scope(|| recorded::is_dirty(worktree).ok())
+                    });
+                    if let Ok(mut early) = EARLY.lock() {
+                        if let Some(early) = early.as_mut() {
+                            match dirty {
+                                Some(dirty) => early.insert(worktree.clone(), Some(dirty)),
+                                // Unanswered here: the read's own check is made as usual.
+                                None => early.remove(worktree),
+                            };
+                        }
+                    }
+                });
+            });
+            return Self(Some(handle));
+        }
+        let _ = sessions;
+        Self(None)
+    }
+
+    /// The early answer for a worktree, waiting for it where it is still being made.
+    #[cfg(unix)]
+    fn answer(worktree: &Path) -> Option<bool> {
+        let worktree = resolved(worktree);
+        let mut early = EARLY.lock().ok()?;
+        loop {
+            match early.as_ref()?.get(&worktree) {
+                None => return None,
+                Some(Some(dirty)) => return Some(*dirty),
+                Some(None) => early = EARLY_MADE.wait(early).ok()?,
+            }
+        }
+    }
+}
+
+impl Drop for Early {
+    fn drop(&mut self) {
+        if let Some(handle) = self.0.take() {
+            let _ = handle.join();
+        }
+        if let Ok(mut early) = EARLY.lock() {
+            *early = None;
+        }
+    }
+}
+
+/// A worktree's path resolved, so a session record's spelling and git's listing meet.
+fn resolved(worktree: &Path) -> PathBuf {
+    std::fs::canonicalize(worktree).unwrap_or_else(|_| worktree.to_owned())
+}
+
 /// Called with `recovery_cache::clear`, so an answer lasts exactly as long as the read's
 /// other memos and goes with them when the read writes anything.
 pub(crate) fn clear() {
@@ -125,7 +228,10 @@ fn answer(worktree: &Path, lookup: &Lookup) -> Result<bool> {
         // stands: the first read at rest again checks it exactly.
         Lookup::Exact => {
             rest::forget(worktree);
-            recorded::is_dirty(worktree)
+            match Early::answer(worktree) {
+                Some(dirty) => Ok(dirty),
+                None => recorded::is_dirty(worktree),
+            }
         }
     }
 }
@@ -461,9 +567,8 @@ mod recorded {
     /// repository's `HEAD`, index and excludes.
     fn fixed(worktree: &Path, hasher: &mut Sha256, settled_before: Option<Duration>) -> Option<()> {
         hasher.update(crate::recovery_cache::git_semantics()?.as_bytes());
-        let configuration = crate::native_refs::configuration(worktree)?;
+        let ((directory, common), configuration) = crate::native_refs::worktree_setting(worktree)?;
         hasher.update(configuration.as_bytes());
-        let (directory, common) = crate::native_refs::layout(worktree)?;
         if common.join("reftable").exists()
             || std::fs::symlink_metadata(worktree.join(".gitmodules")).is_ok()
             || std::fs::read_dir(&directory)

@@ -1116,3 +1116,38 @@ fn an_open_session_naming_a_worktree_by_another_spelling_of_its_path_still_names
     let (rows, _) = counted_read(&host, "put back while open");
     assert_ne!(retirement_reason(&rows, "work/w0"), json!("dirty-worktree"));
 }
+
+#[test]
+fn a_ref_rewritten_in_place_after_its_value_was_kept_is_read_again() {
+    let _exclusive = exclusive();
+    let host = Host::new();
+    let a = host.branch("work/a");
+    let b = host.branch("work/b");
+    host.read();
+    // The branches' refs stand settled, so the read keeps what each loose ref file held.
+    settle();
+    assert_eq!(host.assert_matches_uncached("kept"), set(&[]));
+    let file = host.repo.join(".git/refs/heads/work/a");
+    let held = std::fs::metadata(&file).unwrap().modified().unwrap();
+    assert_eq!(std::fs::read_to_string(&file).unwrap().trim(), a);
+
+    // Written in place, the same length, its modification time put back: only its change
+    // time says it moved, and the read after it answers from what the file holds now.
+    std::fs::write(&file, format!("{b}\n")).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(held)
+        .unwrap();
+    let (rows, _) = host.read();
+    assert_eq!(rows, host.uncached(), "the ref moved in place");
+    let tip = rows
+        .iter()
+        .find(|row| row["branch"]["branch"] == "work/a")
+        .map(|row| row["tip"].clone());
+    assert!(
+        tip.is_none() || tip == Some(json!(b)),
+        "work/a answers at the commit its ref now names: {rows:?}"
+    );
+}

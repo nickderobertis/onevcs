@@ -139,32 +139,50 @@ pub(crate) fn layout(repo: &Path) -> Option<(PathBuf, PathBuf)> {
 pub(crate) fn configuration(repo: &Path) -> Option<String> {
     read(repo, |snapshot| {
         let _ = snapshot;
-        let mut output = String::new();
-        frozen(repo, |configuration| {
-            let mut entries = configuration.entries(None).ok()?;
-            while let Some(entry) = entries.next() {
-                let entry = entry.ok()?;
-                let name = entry.name().ok()?;
-                if name.starts_with("include.") || name.starts_with("includeif.") {
-                    return None;
-                }
-                // A valueless entry is rendered as `git config --null --list` renders
-                // one: its name alone, with no newline, so the two renderings agree and
-                // the entry still moves the fingerprint.
-                if entry.has_value() {
-                    output.push_str(&format!(
-                        "native:{:?}\0{name}\n{}\0",
-                        entry.level(),
-                        entry.value().ok()?
-                    ));
-                } else {
-                    output.push_str(&format!("native:{:?}\0{name}\0", entry.level()));
-                }
-            }
-            Some(())
-        })?;
-        Some(output)
+        frozen(repo, rendered)
     })
+}
+
+/// A configuration as [`configuration`] renders it, or `None` where it includes another
+/// file.
+#[cfg(unix)]
+fn rendered(configuration: &git2::Config) -> Option<String> {
+    let mut output = String::new();
+    let mut entries = configuration.entries(None).ok()?;
+    while let Some(entry) = entries.next() {
+        let entry = entry.ok()?;
+        let name = entry.name().ok()?;
+        if name.starts_with("include.") || name.starts_with("includeif.") {
+            return None;
+        }
+        // A valueless entry is rendered as `git config --null --list` renders
+        // one: its name alone, with no newline, so the two renderings agree and
+        // the entry still moves the fingerprint.
+        if entry.has_value() {
+            output.push_str(&format!(
+                "native:{:?}\0{name}\n{}\0",
+                entry.level(),
+                entry.value().ok()?
+            ));
+        } else {
+            output.push_str(&format!("native:{:?}\0{name}\0", entry.level()));
+        }
+    }
+    Some(output)
+}
+
+/// A worktree's git directory and common directory, and its configuration rendered as
+/// [`configuration`] renders it, read without a snapshot of its refs: for a question
+/// about the worktree's files, which no ref answers.
+#[cfg(unix)]
+pub(crate) fn worktree_setting(worktree: &Path) -> Option<((PathBuf, PathBuf), String)> {
+    let repo = git2::Repository::open(worktree).ok()?;
+    if repo.is_bare() || canonical(repo.workdir()?)? != canonical(worktree)? {
+        return None;
+    }
+    let layout = (canonical(repo.path())?, canonical(repo.commondir())?);
+    let configuration = rendered(&repo.config().ok()?.snapshot().ok()?)?;
+    Some((layout, configuration))
 }
 /// `read` asked of the configuration a repository's snapshot froze.
 fn frozen<T>(repo: &Path, read: impl FnOnce(&git2::Config) -> Option<T>) -> Option<T> {
@@ -869,10 +887,24 @@ fn snapshot(at: &Path) -> Option<Snapshot> {
     }
     let mut names = BTreeSet::new();
     let mut loose = BTreeMap::new();
-    canonical_loose(&common.join("refs"), &common, &mut names, &mut loose)?;
+    let mut kept = LooseRefs::load(&common);
+    canonical_loose(
+        &common.join("refs"),
+        &common,
+        &mut names,
+        &mut loose,
+        &mut kept,
+    )?;
     if common != directory {
-        canonical_loose(&directory.join("refs"), &directory, &mut names, &mut loose)?;
+        canonical_loose(
+            &directory.join("refs"),
+            &directory,
+            &mut names,
+            &mut loose,
+            &mut kept,
+        )?;
     }
+    kept.save();
     canonical_value(&std::fs::read(directory.join("HEAD")).ok()?)?;
     let mut packed_tips: BTreeMap<String, git2::Oid> = BTreeMap::new();
     if common.join("packed-refs").exists() {
@@ -1094,6 +1126,7 @@ fn canonical_loose(
     directory: &Path,
     names: &mut BTreeSet<String>,
     values: &mut BTreeMap<String, RefValue>,
+    kept: &mut LooseRefs,
 ) -> Option<()> {
     if !path.exists() {
         return Some(());
@@ -1102,7 +1135,7 @@ fn canonical_loose(
         let entry = entry.ok()?;
         let metadata = entry.file_type().ok()?;
         if metadata.is_dir() {
-            canonical_loose(&entry.path(), directory, names, values)?;
+            canonical_loose(&entry.path(), directory, names, values, kept)?;
         } else if metadata.is_file() {
             let path = entry.path();
             let name = path.strip_prefix(directory).ok()?.to_str()?;
@@ -1110,12 +1143,180 @@ fn canonical_loose(
                 return None;
             }
             names.insert(name.to_owned());
-            values.insert(name.to_owned(), RefValue::of(&std::fs::read(&path).ok()?)?);
+            values.insert(name.to_owned(), RefValue::of(&kept.read(&entry)?)?);
         } else {
             return None;
         }
     }
     Some(())
+}
+
+/// What a repository's loose ref files held when last read, each kept under the stamp of
+/// the file it was read from — inode identity, size, mode, and modification and change
+/// times — in `$ONEVCS_HOME/cache/refs-v1/`, one file per git directory.
+///
+/// A read stats a loose ref rather than opening it while the file stands as it was read:
+/// git writes a ref by renaming a lock file onto it, which is a new inode, and any write in
+/// place moves its change time. A value is kept only where the file last changed at least
+/// [`SETTLED`] before it was read, so a write in the same clock tick as a read is never
+/// hidden behind an unchanged stamp. Deleting the directory loses nothing but time.
+struct LooseRefs {
+    #[cfg(unix)]
+    path: Option<PathBuf>,
+    #[cfg(unix)]
+    before: HashMap<PathBuf, ([u8; 64], Vec<u8>)>,
+    #[cfg(unix)]
+    after: HashMap<PathBuf, ([u8; 64], Vec<u8>)>,
+    #[cfg(unix)]
+    settled_before: Option<std::time::Duration>,
+}
+
+/// How long before a read a ref file must last have changed for its value to be kept.
+#[cfg(unix)]
+const SETTLED: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The kept file's first line: a file of any other shape keeps nothing.
+#[cfg(unix)]
+const LOOSE_REFS_VERSION: &str = "onevcs loose refs 1";
+
+impl LooseRefs {
+    #[cfg(unix)]
+    fn load(common: &Path) -> Self {
+        use sha2::{Digest, Sha256};
+        use std::os::unix::ffi::OsStrExt;
+        let path = crate::home::root().ok().map(|root| {
+            root.join("cache/refs-v1").join(format!(
+                "{:x}",
+                Sha256::digest(common.as_os_str().as_bytes())
+            ))
+        });
+        let before = path
+            .as_deref()
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .map(|text| parse_loose_refs(&text))
+            .unwrap_or_default();
+        let settled_before = std::time::SystemTime::now()
+            .checked_sub(SETTLED)
+            .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok());
+        Self {
+            path,
+            before,
+            after: HashMap::new(),
+            settled_before,
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn load(_: &Path) -> Self {
+        Self {}
+    }
+
+    /// A ref file's bytes: kept ones where its stamp is the one they were read under.
+    #[cfg(unix)]
+    fn read(&mut self, entry: &std::fs::DirEntry) -> Option<Vec<u8>> {
+        use std::os::unix::fs::MetadataExt;
+        let path = entry.path();
+        let metadata = entry.metadata().ok()?;
+        let fields: [u64; 8] = [
+            metadata.dev(),
+            metadata.ino(),
+            metadata.len(),
+            u64::from(metadata.mode()),
+            metadata.mtime().cast_unsigned(),
+            metadata.mtime_nsec().cast_unsigned(),
+            metadata.ctime().cast_unsigned(),
+            metadata.ctime_nsec().cast_unsigned(),
+        ];
+        let mut stamp = [0; 64];
+        for (at, field) in fields.iter().enumerate() {
+            stamp[at * 8..at * 8 + 8].copy_from_slice(&field.to_le_bytes());
+        }
+        if let Some((kept, value)) = self.before.get(&path) {
+            if *kept == stamp {
+                let value = value.clone();
+                self.after.insert(path, (stamp, value.clone()));
+                return Some(value);
+            }
+        }
+        let value = std::fs::read(&path).ok()?;
+        let at = |seconds: i64, nanos: i64| {
+            std::time::Duration::new(
+                u64::try_from(seconds).unwrap_or(u64::MAX),
+                u32::try_from(nanos).unwrap_or(0),
+            )
+        };
+        let settled = self.settled_before.is_some_and(|before| {
+            at(metadata.mtime(), metadata.mtime_nsec()) < before
+                && at(metadata.ctime(), metadata.ctime_nsec()) < before
+        });
+        if settled {
+            self.after.insert(path, (stamp, value.clone()));
+        }
+        Some(value)
+    }
+
+    #[cfg(not(unix))]
+    fn read(&mut self, entry: &std::fs::DirEntry) -> Option<Vec<u8>> {
+        std::fs::read(entry.path()).ok()
+    }
+
+    /// Keep what this read found, where it differs from what was kept.
+    fn save(self) {
+        #[cfg(unix)]
+        if self.after != self.before {
+            if let Some(path) = &self.path {
+                let mut text = String::from(LOOSE_REFS_VERSION);
+                text.push('\n');
+                for (file, (stamp, value)) in &self.after {
+                    let Some(file) = file.to_str() else { continue };
+                    if file.contains(['\t', '\n']) {
+                        continue;
+                    }
+                    text.push_str(file);
+                    text.push('\t');
+                    text.push_str(&hex(stamp));
+                    text.push('\t');
+                    text.push_str(&hex(value));
+                    text.push('\n');
+                }
+                let _ = crate::home::atomic_write(path, &text);
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+#[cfg(unix)]
+fn unhex(text: &str) -> Option<Vec<u8>> {
+    if !text.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..text.len())
+        .step_by(2)
+        .map(|at| u8::from_str_radix(text.get(at..at + 2)?, 16).ok())
+        .collect()
+}
+
+/// A kept file's entries; any line that is not one is left out, and a file of another
+/// version keeps nothing.
+#[cfg(unix)]
+fn parse_loose_refs(text: &str) -> HashMap<PathBuf, ([u8; 64], Vec<u8>)> {
+    let mut lines = text.lines();
+    if lines.next() != Some(LOOSE_REFS_VERSION) {
+        return HashMap::new();
+    }
+    lines
+        .filter_map(|line| {
+            let mut fields = line.split('\t');
+            let (file, stamp, value) = (fields.next()?, fields.next()?, fields.next()?);
+            let stamp: [u8; 64] = unhex(stamp)?.try_into().ok()?;
+            Some((PathBuf::from(file), (stamp, unhex(value)?)))
+        })
+        .collect()
 }
 
 #[cfg(all(test, unix))]
