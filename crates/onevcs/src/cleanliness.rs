@@ -1,6 +1,13 @@
 //! Whether a worktree holds changes nobody committed, answered from the last `git status`
 //! while nothing that answer read has moved.
 //!
+//! Only a worktree something may be using is checked at all: one an open session, a lease
+//! or a maintenance claim names (see [`at_rest`]). One nothing names is answered from what
+//! was recorded of it at rest, with no walk of its tree, until a session opens there or a
+//! maintenance run claims its slot. A hand edit made inside an idle slot outside onevcs is
+//! therefore not seen until then: that is the rule's accepted gap. No answer is reused by
+//! age.
+//!
 //! A recovery read asks it of every worktree over a branch it classifies, and on a host's
 //! larger trees `git status` spends half a second listing untracked files. What the answer
 //! reads is the worktree's own entries, its index and `HEAD`, its excludes and its
@@ -44,21 +51,23 @@ pub(crate) fn clear() {
 /// Answer several worktrees at once, ahead of a read that asks them one by one: each
 /// answer joins this read's, so the read's own asking finds it answered. A worktree this
 /// cannot answer is left to that asking.
-pub(crate) fn prefetch(worktrees: &[PathBuf]) {
+pub(crate) fn prefetch(worktrees: &[(PathBuf, Option<String>)]) {
     #[cfg(unix)]
     if crate::decisions::enabled() {
-        let unanswered: Vec<&PathBuf> = worktrees
+        let unanswered: Vec<&(PathBuf, Option<String>)> = worktrees
             .iter()
-            .filter(|worktree| ANSWERED.with(|answered| !answered.borrow().contains_key(*worktree)))
+            .filter(|(worktree, _)| {
+                ANSWERED.with(|answered| !answered.borrow().contains_key(worktree))
+            })
             .collect();
-        let found = crate::vcs::concurrently_on(PREFETCHED, &unanswered, |worktree| {
+        let found = crate::vcs::concurrently_on(PREFETCHED, &unanswered, |(worktree, at_rest)| {
             crate::checkout_reads::unturned(|| {
-                crate::recovery_cache::scope(|| recorded::is_dirty(worktree).ok())
+                crate::recovery_cache::scope(|| answer(worktree, at_rest.as_deref()).ok())
             })
         });
         ANSWERED.with(|answered| {
             let mut answered = answered.borrow_mut();
-            for (worktree, dirty) in unanswered.into_iter().zip(found) {
+            for ((worktree, _), dirty) in unanswered.into_iter().zip(found) {
                 if let Some(dirty) = dirty {
                     answered.insert(worktree.clone(), dirty);
                 }
@@ -72,19 +81,166 @@ pub(crate) fn prefetch(worktrees: &[PathBuf]) {
 #[cfg(unix)]
 const PREFETCHED: usize = 4;
 
-/// Asked of git on every read where reuse is not on, and from the record where it is.
-pub(crate) fn is_dirty(worktree: &Path, reuse: bool) -> Result<bool> {
+/// Asked of git on every read where reuse is not on. Where it is, a worktree something
+/// may be using — `at_rest` is `None`, see [`at_rest`] — is checked exactly, from the
+/// record of its last `git status` while nothing that answer read has moved; one nothing
+/// names is answered from what was recorded of it at rest, with no walk of its tree.
+pub(crate) fn is_dirty(worktree: &Path, reuse: bool, at_rest: Option<&str>) -> Result<bool> {
     #[cfg(unix)]
     if reuse && crate::decisions::enabled() {
         if let Some(known) = ANSWERED.with(|answered| answered.borrow().get(worktree).copied()) {
             return Ok(known);
         }
-        let dirty = recorded::is_dirty(worktree)?;
+        let dirty = answer(worktree, at_rest)?;
         ANSWERED.with(|answered| answered.borrow_mut().insert(worktree.to_owned(), dirty));
         return Ok(dirty);
     }
-    let _ = reuse;
+    let _ = (reuse, at_rest);
     git::is_dirty(worktree)
+}
+
+#[cfg(unix)]
+fn answer(worktree: &Path, at_rest: Option<&str>) -> Result<bool> {
+    match at_rest {
+        Some(lifecycle) => rest::answer(worktree, lifecycle),
+        // Whatever uses it now may change it, so what was recorded at rest no longer
+        // stands: the first read at rest again checks it exactly.
+        None => {
+            rest::forget(worktree);
+            recorded::is_dirty(worktree)
+        }
+    }
+}
+
+/// Whether a worktree is at rest, and if so the lifecycle it rests under: `None` while an
+/// open session names it, a lease is held on its run root, or a maintenance run claims its
+/// slot — while something may be using it, so its every read is checked exactly.
+///
+/// At rest, its cleanliness is what was recorded the first time it was checked exactly at
+/// rest, kept under a digest of the lifecycle records that name it: each session record's
+/// token and state, and the slot's maintenance fields. A session opening there, closing, or
+/// a maintenance run claiming the slot moves that digest, so the read after it checks the
+/// worktree exactly again. **Nothing else does**, and that is the rule's accepted gap: a hand
+/// edit made inside an idle slot outside onevcs is not seen until one of those events. No
+/// answer is reused by age. Watching the tree's files would close the gap.
+pub(crate) fn at_rest(worktree: &Path, sessions: &[crate::workspace::Record]) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    // A record may spell the path another way; only one ending as this one does — slot or
+    // run root, then the worktree — is resolved to find out.
+    fn tail(path: &Path) -> Vec<std::path::Component<'_>> {
+        path.components().rev().take(3).collect()
+    }
+    let canonical = std::fs::canonicalize(worktree).ok();
+    let names = |record: &crate::workspace::Record| {
+        record.worktree == worktree
+            || (tail(&record.worktree) == tail(worktree)
+                && canonical.is_some()
+                && std::fs::canonicalize(&record.worktree).ok() == canonical)
+    };
+    let mut naming: Vec<&crate::workspace::Record> =
+        sessions.iter().filter(|record| names(record)).collect();
+    naming.sort_by_key(|record| record.token.to_string());
+    if naming
+        .iter()
+        .any(|record| record.state == crate::Lifecycle::Open)
+    {
+        return None;
+    }
+    let run_root = naming
+        .first()
+        .map(|record| record.run_root.clone())
+        .or_else(|| worktree.parent().map(Path::to_path_buf))?;
+    if !matches!(
+        crate::lock::is_occupied(&crate::workspace::occupancy_identity(&run_root)),
+        Ok(false)
+    ) {
+        return None;
+    }
+    let mut digest = Sha256::new();
+    for record in &naming {
+        digest.update(record.token.to_string().as_bytes());
+        digest.update([0]);
+        digest.update(format!("{:?}", record.state).as_bytes());
+        digest.update([0]);
+    }
+    match std::fs::read(run_root.join("slot.json")) {
+        Ok(bytes) => {
+            let slot: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+            if !slot["maintaining"].is_null() {
+                return None;
+            }
+            digest.update(slot["last_maintained"].to_string().as_bytes());
+            digest.update([0]);
+            digest.update(slot["last_outcome"].to_string().as_bytes());
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => digest.update(b"no slot"),
+        Err(_) => return None,
+    }
+    Some(format!("{:x}", digest.finalize()))
+}
+
+/// What a worktree at rest was found to hold, and the lifecycle it was found under.
+#[cfg(unix)]
+mod rest {
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::{Path, PathBuf};
+
+    use serde::{Deserialize, Serialize};
+    use sha2::{Digest, Sha256};
+
+    use crate::error::Result;
+
+    /// The record's shape. A record of any other is checked exactly again.
+    const VERSION: u32 = 1;
+
+    #[derive(Serialize, Deserialize)]
+    struct Record {
+        version: u32,
+        worktree: PathBuf,
+        lifecycle: String,
+        dirty: bool,
+    }
+
+    fn record_path(worktree: &Path) -> Option<PathBuf> {
+        crate::home::root().ok().map(|root| {
+            root.join("cache/cleanliness/rest-v1").join(format!(
+                "{:x}.json",
+                Sha256::digest(worktree.as_os_str().as_bytes())
+            ))
+        })
+    }
+
+    pub(super) fn forget(worktree: &Path) {
+        if let Some(path) = record_path(worktree) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    pub(super) fn answer(worktree: &Path, lifecycle: &str) -> Result<bool> {
+        let path = record_path(worktree);
+        let kept = path
+            .as_deref()
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .and_then(|text| serde_json::from_str::<Record>(&text).ok());
+        if let Some(kept) = kept {
+            if kept.version == VERSION && kept.worktree == worktree && kept.lifecycle == lifecycle {
+                return Ok(kept.dirty);
+            }
+        }
+        let dirty = super::recorded::is_dirty(worktree)?;
+        if let Some(path) = path {
+            let record = Record {
+                version: VERSION,
+                worktree: worktree.to_owned(),
+                lifecycle: lifecycle.to_owned(),
+                dirty,
+            };
+            if let Ok(text) = serde_json::to_string(&record) {
+                let _ = crate::home::atomic_write(&path, &text);
+            }
+        }
+        Ok(dirty)
+    }
 }
 
 /// How far before the `git status` an answer came from every entry it is kept under must

@@ -14,7 +14,7 @@ use std::path::PathBuf;
 
 use serde_json::{json, Value};
 
-use super::decisions_support::{counting_git, run, set, with_shim, Host};
+use super::decisions_support::{counting_git, onevcs_digest, run, set, with_shim, Host};
 use super::exclusive;
 
 /// Long enough after a write that a read's own `git status` answer may be kept under it.
@@ -55,9 +55,9 @@ fn worked_copy(host: &Host, branch: &str) -> PathBuf {
     worktree
 }
 
-/// A host whose every branch is also held by a closed session's worktree, as pool slots
-/// and run clones hold the branches a host preserves.
-fn host_with_worked_copies(branches: usize) -> (Host, Vec<PathBuf>) {
+/// A host whose every branch is also held by a session's worktree, as pool slots and run
+/// clones hold the branches a host preserves, each session closed: at rest.
+fn host_with_idle_copies(branches: usize) -> (Host, Vec<PathBuf>) {
     let host = Host::new();
     let worktrees = (0..branches)
         .map(|n| {
@@ -67,6 +67,31 @@ fn host_with_worked_copies(branches: usize) -> (Host, Vec<PathBuf>) {
         })
         .collect();
     (host, worktrees)
+}
+
+/// The same, each session open — so something may be using its worktree, and every read
+/// checks it exactly — but with no process left working in it, so its branch is not
+/// held live and the read goes on to ask about the worktree at all.
+fn host_with_worked_copies(branches: usize) -> (Host, Vec<PathBuf>) {
+    let (host, worktrees) = host_with_idle_copies(branches);
+    for n in 0..branches {
+        set_state(&host, &format!("work/w{n}"), "open");
+    }
+    (host, worktrees)
+}
+
+/// Rewrite a branch's session record into `state`, owned by no running process: an open
+/// session whose command has exited, or the same session closed.
+fn set_state(host: &Host, branch: &str, state: &str) {
+    let path = host
+        .home
+        .join("sessions")
+        .join(format!("{}.json", Host::token(branch)));
+    let mut record: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    record["state"] = json!(state);
+    record["owner_pid"] = json!(0);
+    record["owner_started"] = Value::Null;
+    std::fs::write(&path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
 }
 
 /// One change to a worktree, by name, and the retirement reason the read after it gives.
@@ -778,4 +803,123 @@ fn a_retirement_asks_git_whatever_a_kept_answer_says() {
         !reasons.is_empty() && reasons.iter().all(|reason| **reason == not_dirty),
         "{report}"
     );
+}
+
+#[test]
+fn idle_copies_are_answered_at_rest_with_no_walk_however_many_there_are() {
+    let _exclusive = exclusive();
+    let mut started = Vec::new();
+    for copies in [2, 10] {
+        let (host, worktrees) = host_with_idle_copies(copies);
+        let uncached = host.uncached();
+        assert_eq!(uncached.len(), copies, "every branch is unpublished work");
+        let (first, _) = host.read();
+        assert_eq!(first, uncached, "the read that records them at rest");
+        let (warm, asked) = counted_read(&host, "at rest");
+        assert_eq!(warm, uncached);
+        assert_eq!(asked, 0, "nothing at rest is asked of git");
+        // The accepted gap, which is also the proof that nothing walks a tree at rest: a
+        // hand edit no lifecycle event follows is not seen. A walk would have seen the
+        // file's new stamp and asked git.
+        let before = retirement_reason(&warm, "work/w0");
+        std::fs::write(worktrees[0].join("seed.txt"), "edited by hand\n").unwrap();
+        let mut rows = Vec::new();
+        let calls = with_shim(&host, || rows = host.read().0);
+        assert_eq!(statuses(&calls), 0, "{calls:?}");
+        assert_eq!(retirement_reason(&rows, "work/w0"), before);
+        started.push((copies, calls));
+    }
+    let (small, large) = (&started[0], &started[1]);
+    assert_eq!(
+        small.1.len(),
+        large.1.len(),
+        "a read at rest starts as much git over {} idle copies as over {}: {:?} against {:?}",
+        large.0,
+        small.0,
+        large.1,
+        small.1
+    );
+}
+
+#[test]
+fn a_session_opening_or_a_maintenance_claim_makes_the_next_read_check_exactly() {
+    let _exclusive = exclusive();
+    let (host, worktrees) = host_with_idle_copies(2);
+    host.read();
+    assert_eq!(counted_read(&host, "at rest").1, 0);
+    let reason = |rows: &[Value], branch: &str| retirement_reason(rows, branch);
+
+    // A session opening over an edit made at rest: the read after it checks exactly.
+    std::fs::write(worktrees[0].join("seed.txt"), "edited at rest\n").unwrap();
+    set_state(&host, "work/w0", "open");
+    let (rows, asked) = counted_read(&host, "a session opened there");
+    assert!(asked >= 1, "the worktree is checked");
+    assert_eq!(reason(&rows, "work/w0"), json!("dirty-worktree"));
+    // While it stays open, every change is seen on the read after it.
+    run(&worktrees[0], &["checkout", "--", "seed.txt"]);
+    let (rows, asked) = counted_read(&host, "put back while open");
+    assert!(
+        asked >= 1,
+        "an open session's worktree is checked every read"
+    );
+    assert_ne!(reason(&rows, "work/w0"), json!("dirty-worktree"));
+    std::fs::write(worktrees[0].join("seed.txt"), "edited while open\n").unwrap();
+    let (rows, _) = counted_read(&host, "edited while open");
+    assert_eq!(reason(&rows, "work/w0"), json!("dirty-worktree"));
+    // Closed again, it is checked once more and then rests.
+    set_state(&host, "work/w0", "closed");
+    let (rows, asked) = counted_read(&host, "the session closed");
+    assert_eq!(asked, 1);
+    assert_eq!(reason(&rows, "work/w0"), json!("dirty-worktree"));
+    assert_eq!(counted_read(&host, "at rest again").1, 0);
+
+    // A maintenance run claiming the slot over an edit made at rest.
+    let run_root = worktrees[1].parent().unwrap().to_path_buf();
+    let slot = |maintaining: Value, last: Value| {
+        let record = json!({"maintaining": maintaining, "last_maintained": last});
+        std::fs::write(run_root.join("slot.json"), record.to_string()).unwrap();
+    };
+    slot(Value::Null, Value::Null);
+    host.read();
+    assert_eq!(counted_read(&host, "a slot at rest").1, 0);
+    std::fs::write(worktrees[1].join("seed.txt"), "edited at rest\n").unwrap();
+    slot(
+        json!({"pid": 1, "started": null, "since": "2026-01-01T00:00:00Z"}),
+        Value::Null,
+    );
+    let (rows, asked) = counted_read(&host, "claimed");
+    assert!(asked >= 1, "the claimed worktree is checked");
+    assert_eq!(reason(&rows, "work/w1"), json!("dirty-worktree"));
+    // The claim over, its outcome recorded: checked once more, then at rest.
+    slot(Value::Null, json!("2026-01-01T00:05:00Z"));
+    assert_eq!(counted_read(&host, "the claim over").1, 1);
+    assert_eq!(counted_read(&host, "at rest again").1, 0);
+}
+
+#[test]
+fn a_lease_on_a_run_root_makes_its_worktree_checked_exactly_while_it_is_held() {
+    let _exclusive = exclusive();
+    let (host, worktrees) = host_with_idle_copies(2);
+    host.read();
+    assert_eq!(counted_read(&host, "at rest").1, 0);
+    std::fs::write(worktrees[0].join("seed.txt"), "edited under a lease\n").unwrap();
+    // A command working in the run root holds its occupancy lease shared, as every
+    // command inside one does: the lock file onevcs keeps for `run:<run root>`.
+    let run_root = worktrees[0].parent().unwrap();
+    let locks = host.home.join("locks");
+    std::fs::create_dir_all(&locks).unwrap();
+    let identity = format!("run:{}", run_root.display());
+    let lease =
+        std::fs::File::create(locks.join(format!("{}.lock", onevcs_digest(&identity)))).unwrap();
+    fs4::fs_std::FileExt::lock_shared(&lease).unwrap();
+    let (rows, asked) = counted_read(&host, "leased");
+    assert!(asked >= 1, "the leased worktree is checked");
+    assert_eq!(retirement_reason(&rows, "work/w0"), json!("dirty-worktree"));
+    // Released, it is checked exactly once more, since what used it may have changed it,
+    // and then rests.
+    drop(lease);
+    let (rows, asked) = counted_read(&host, "released");
+    assert_eq!(asked, 1);
+    assert_eq!(retirement_reason(&rows, "work/w0"), json!("dirty-worktree"));
+    assert_eq!(counted_read(&host, "at rest again").1, 0);
 }

@@ -1542,9 +1542,17 @@ impl<'a> Census<'a> {
                     continue;
                 }
                 let dirty = worktree.is_dir()
-                    && crate::cleanliness::is_dirty(&worktree, recorded_cleanliness).map_err(
-                        |failure| UnknownCause::new("worked-in", worktree.display(), failure),
-                    )?;
+                    && crate::cleanliness::is_dirty(
+                        &worktree,
+                        recorded_cleanliness,
+                        recorded_cleanliness
+                            .then(|| crate::cleanliness::at_rest(&worktree, self.sessions))
+                            .flatten()
+                            .as_deref(),
+                    )
+                    .map_err(|failure| {
+                        UnknownCause::new("worked-in", worktree.display(), failure)
+                    })?;
                 if dirty {
                     return Ok(Some(worktree));
                 }
@@ -2896,7 +2904,7 @@ pub(crate) fn prefetch_cleanliness<'b>(
     branches: impl IntoIterator<Item = &'b String>,
 ) {
     let ask = Ask::offline();
-    let mut worktrees: Vec<PathBuf> = Vec::new();
+    let mut worktrees: Vec<(PathBuf, Option<String>)> = Vec::new();
     for branch in branches {
         let copies = census.copies(branch, &ask);
         for place in census.holding(&copies) {
@@ -2910,9 +2918,10 @@ pub(crate) fn prefetch_cleanliness<'b>(
                 if on.as_deref() == Some(branch.as_str())
                     && worktree != place.repo
                     && worktree.is_dir()
-                    && !worktrees.contains(&worktree)
+                    && !worktrees.iter().any(|(seen, _)| *seen == worktree)
                 {
-                    worktrees.push(worktree);
+                    let at_rest = crate::cleanliness::at_rest(&worktree, census.sessions);
+                    worktrees.push((worktree, at_rest));
                 }
             }
         }
