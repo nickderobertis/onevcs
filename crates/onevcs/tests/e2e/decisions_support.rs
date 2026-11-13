@@ -432,8 +432,7 @@ const COUNTED_LOG: &str = "ONEVCS_TEST_COUNTED_GIT_LOG";
 fn counting_git_on_path() {
     static SHIM: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     SHIM.get_or_init(|| {
-        let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
-            .join(format!("counting-git-{}", std::process::id()));
+        let dir = counting_git().parent().unwrap().to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         let real = PathBuf::from(run(Path::new("/"), &["--exec-path"])).join("git");
         let shim = dir.join("git");
@@ -451,6 +450,13 @@ fn counting_git_on_path() {
         paths.extend(std::env::split_paths(&original));
         std::env::set_var("PATH", std::env::join_paths(paths).unwrap());
     });
+}
+
+/// The counting `git` this process runs, put first on `PATH` as a host is built.
+pub fn counting_git() -> PathBuf {
+    Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("counting-git-{}", std::process::id()))
+        .join("git")
 }
 
 /// Every git command the library started while `f` ran, one line of arguments each.

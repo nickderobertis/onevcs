@@ -14,7 +14,7 @@ use std::path::PathBuf;
 
 use serde_json::{json, Value};
 
-use super::decisions_support::{run, set, with_shim, Host};
+use super::decisions_support::{counting_git, run, set, with_shim, Host};
 use super::exclusive;
 
 /// Long enough after a write that a read's own `git status` answer may be kept under it.
@@ -716,4 +716,67 @@ fn a_worktree_git_cannot_read_answers_unknown_alone_and_is_read_again_once_repai
     let (rows, _) = counted_read(&host, "repaired");
     assert_eq!(rows, before, "the answer from before it broke");
     assert_eq!(counted_read(&host, "kept again").1, 0);
+}
+
+#[test]
+fn another_git_asks_every_kept_answer_again() {
+    let _exclusive = exclusive();
+    let (host, _) = host_with_worked_copies(2);
+    settle();
+    host.read();
+    assert_eq!(counted_read(&host, "kept").1, 0);
+    // The git this process runs, rebuilt: what it does is unchanged, but nothing kept
+    // says what a different git would answer.
+    let git = counting_git();
+    let mut program = std::fs::read_to_string(&git).unwrap();
+    program.push_str("# rebuilt\n");
+    std::fs::write(&git, program).unwrap();
+    settle();
+    assert_eq!(counted_read(&host, "another git").1, 2);
+    assert_eq!(counted_read(&host, "kept again").1, 0);
+}
+
+#[test]
+fn a_retirement_asks_git_whatever_a_kept_answer_says() {
+    let _exclusive = exclusive();
+    let (host, worktrees) = host_with_worked_copies(1);
+    settle();
+    host.read();
+    let not_dirty = retirement_reason(&host.rows(), "work/w0");
+    assert_ne!(not_dirty, json!("dirty-worktree"));
+    // A kept answer that says what git would not: the recovery read answers from it, which
+    // is how this journey knows the answer is kept at all…
+    let kept = host.home.join("cache/cleanliness/v1");
+    let record = std::fs::read_dir(&kept)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let mut forged: Value = serde_json::from_slice(&std::fs::read(&record).unwrap()).unwrap();
+    assert_eq!(forged["worktree"], json!(worktrees[0]));
+    forged["dirty"] = json!(true);
+    std::fs::write(&record, serde_json::to_vec(&forged).unwrap()).unwrap();
+    assert_eq!(
+        retirement_reason(&host.rows(), "work/w0"),
+        json!("dirty-worktree"),
+        "the recovery read answers from the kept answer"
+    );
+    // …while a retirement, which goes on to act, asks git, and is not misled.
+    let output = host
+        .binary()
+        .args(["retire", "--dry-run", "--json", "work/w0"])
+        .output()
+        .unwrap();
+    let report: Value = serde_json::from_slice(&output.stdout)
+        .unwrap_or_else(|_| panic!("{}", String::from_utf8_lossy(&output.stderr)));
+    let reasons: Vec<&Value> = report
+        .pointer("/retirement/reason")
+        .into_iter()
+        .chain(report.pointer("/reason"))
+        .collect();
+    assert!(
+        !reasons.is_empty() && reasons.iter().all(|reason| **reason == not_dirty),
+        "{report}"
+    );
 }
