@@ -497,6 +497,16 @@ fn each_input_git_reads_beside_the_tree_asks_again_when_it_moves() {
             2,
         ),
         (
+            "what that link points at gone, leaving it dangling",
+            Box::new(|| std::fs::remove_file(&linked_excludes).unwrap()),
+            2,
+        ),
+        (
+            "what that link points at back, ignoring again",
+            Box::new(|| std::fs::write(&linked_excludes, "*.log\n").unwrap()),
+            2,
+        ),
+        (
             "the worktree's sparse-checkout patterns",
             Box::new(|| std::fs::write(git_path("info/sparse-checkout"), "/*\n").unwrap()),
             1,

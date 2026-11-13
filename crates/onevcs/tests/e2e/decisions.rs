@@ -766,6 +766,77 @@ fn origin_tips_a_branch_was_checked_against_are_not_asked_about_again_while_unmo
     assert!(rows.iter().any(|row| row["branch"]["branch"] == "work/a"));
 }
 
+#[test]
+fn one_read_that_moves_a_record_on_three_counts_keeps_all_three() {
+    let host = Host::new();
+    host.branch("work/a");
+    host.branch("work/b");
+    host.read();
+    let record = || -> Value {
+        serde_json::from_slice(&std::fs::read(host.record_path("work/a")).unwrap()).unwrap()
+    };
+    let before = record();
+
+    // At once: the base gains what names no branch, origin gains a ref that reaches none,
+    // and a closed session's clone comes to hold work/a at its tip.
+    gain_unrelated(&host, 2);
+    let main = run(&host.repo, &["rev-parse", "main"]);
+    run(
+        &host.repo,
+        &["update-ref", "refs/remotes/origin/elsewhere", &main],
+    );
+    let clone = host
+        .root
+        .join("runs")
+        .join(Host::token("work/a"))
+        .join("clone");
+    run(
+        &host.root,
+        &[
+            "clone",
+            "-q",
+            "--shared",
+            "--no-checkout",
+            host.repo.to_str().unwrap(),
+            clone.to_str().unwrap(),
+        ],
+    );
+    run(&clone, &["branch", "work/a", "origin/work/a"]);
+    let (rows, derived) = host.read();
+    assert_eq!(rows, host.uncached(), "all three moved");
+    assert_eq!(derived, set(&[]), "none of the three is a reason to derive");
+
+    let after = record();
+    assert_ne!(
+        after["decided_against"], before["decided_against"],
+        "{after}"
+    );
+    assert_ne!(
+        after["listing"]["origin"], before["listing"]["origin"],
+        "{after}"
+    );
+    let holders = |record: &Value| {
+        record["listing"]["verdict"]["retirement"]["holders"]
+            .as_array()
+            .map(Vec::len)
+    };
+    assert_eq!(holders(&before), Some(1), "{before}");
+    assert_eq!(holders(&after), Some(2), "{after}");
+
+    // So the read after it asks neither the base nor origin again.
+    let mut again = Vec::new();
+    let asked = with_shim(&host, || again = host.read().0);
+    assert_eq!(again, rows, "nothing moved since");
+    assert_eq!(host.derived(), set(&[]));
+    assert!(
+        asked.iter().all(|call| !call.contains("--no-merged")
+            && !call.starts_with("merge-base --octopus")
+            && !call.starts_with("log --format=%H%x00%B%x00 ")),
+        "{asked:?}"
+    );
+    assert_eq!(record(), after, "the read after it rewrites nothing");
+}
+
 /// A host shaped like the one whose warm read re-derived every branch: a registered
 /// checkout carrying a linked worktree whose directory is gone, and a second checkout
 /// holding some of the same branch names at tips of its own.
