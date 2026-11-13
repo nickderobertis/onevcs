@@ -1,9 +1,12 @@
 //! The rules engine: which policy a repository publishes under, and why.
 //!
 //! The rules file is YAML and **first match wins**. A rule contributes whichever
-//! of the two policy fields it sets; anything it leaves unset comes from the
-//! file's `default`. A registry with no rules file resolves against a built-in
-//! default that is the one the contract spells.
+//! policy fields it sets; anything it leaves unset comes from the repository's own
+//! declaration (`[policy]` in the `onevcs.toml` at its publication checkout's root)
+//! where that sets it, and from the file's `default` otherwise. A registry with no
+//! rules file resolves against a built-in default that is the one the contract
+//! spells. A declaration that cannot be read stops the resolution: it is never read
+//! as a repository that declared nothing.
 //!
 //! A per-run explicit policy may **narrow** — ask for more review than the rules
 //! chose — and never widen. That direction is not symmetric and cannot be made so:
@@ -14,6 +17,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 use crate::registry::Registry;
+use crate::repository_config::{self, DeclaredPolicy};
 use crate::rules::{
     Approvals, BaseMerge, Checks, DeclaredVisibility, Drafts, MergePolicy, Policy, RuleMatch,
     RulesFile, WaitSeconds,
@@ -124,22 +128,173 @@ pub struct Resolved {
     pub policy: Policy,
     /// Where the rules came from: a file, or the built-in default.
     pub source: String,
-    /// The rule that matched, if any did.
-    pub matched: Option<Matched>,
-    /// Where each field came from: the matched rule, or the default.
+    /// Where each field came from: the matched rule, the repository declaration, or
+    /// the default.
     pub publication_from: String,
     /// Where `approvals` came from.
     pub approvals_from: String,
     /// How the draft lifecycle resolved, key by key.
     pub drafts: DraftLifecycle,
-    /// The visibility the matched rule declares, which overrides the host's answer.
-    pub visibility: Option<DeclaredVisibility>,
     /// When a moved base is merged into a branch that already exists, and which layer
     /// decided it.
     pub base_merge: Decided<BaseMerge>,
     /// How long a publication watches its checks, in seconds, before the process-wide
     /// `ONEVCS_CHECKS_TIMEOUT_SECONDS` is asked, and which layer decided it.
     pub checks_wait: Decided<WaitSeconds>,
+    /// What the repository's own declaration was: the document a resolution read, or
+    /// the directory that holds none. Never unreadable — that resolution fails.
+    pub declaration: PolicyDeclaration,
+}
+
+/// Where a repository's own publication-policy declaration stands: the `[policy]`
+/// of the `onevcs.toml` at its registered publication checkout's root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PolicyDeclaration {
+    /// The document declares a `[policy]`, and this is it.
+    Declared {
+        /// The declaration's document.
+        document: PathBuf,
+    },
+    /// No `onevcs.toml` there, or one with no `[policy]`.
+    Undeclared {
+        /// The publication checkout looked in.
+        looked_in: PathBuf,
+    },
+    /// The declaration could not be read, so nothing resolves for this identity.
+    Unreadable {
+        /// Why, naming the document.
+        reason: String,
+    },
+}
+
+/// The one way a field the declaration decided is named in every `(from …)`.
+fn declaration_layer(document: &Path) -> String {
+    format!("the repository declaration {}", document.display())
+}
+
+/// A repository's declaration as read: each state carries exactly what it has, so a
+/// declared document always comes with its policy and no other state can carry one.
+#[derive(Debug, Clone)]
+pub(crate) enum Declaration {
+    /// The document declares a `[policy]`, and this is what it declares.
+    Declared {
+        /// The declaration's document.
+        document: PathBuf,
+        /// What it declares.
+        policy: DeclaredPolicy,
+    },
+    /// No `onevcs.toml` there, or one with no `[policy]`.
+    Undeclared {
+        /// The publication checkout looked in.
+        looked_in: PathBuf,
+    },
+    /// The declaration could not be read.
+    Unreadable {
+        /// Why, naming the document.
+        reason: String,
+    },
+}
+
+impl Declaration {
+    /// Read the declaration at a registered publication checkout's root.
+    ///
+    /// Read from the publication checkout on its base and nowhere else, as the pool
+    /// maintenance declaration is, so a session's or slot's branch cannot rewrite the
+    /// policy its own publication resolves. A checkout with no document asks git
+    /// nothing; every reason a document that is there cannot be read — the checkout
+    /// off its base included — is [`PolicyDeclaration::Unreadable`].
+    pub(crate) fn at(checkout: &Path) -> Self {
+        let document = checkout.join(repository_config::FILE);
+        let unreadable = |reason: String| Declaration::Unreadable { reason };
+        if let Err(failure) = std::fs::read_dir(checkout) {
+            // A checkout that is gone is named the way every other refusal of a missing
+            // working directory names it, since that directory is what to go after.
+            let detail = match failure.kind() {
+                std::io::ErrorKind::NotFound => {
+                    format!("in {}: that directory does not exist", checkout.display())
+                }
+                _ => failure.to_string(),
+            };
+            return unreadable(format!(
+                "the publication checkout {} cannot be read, so whether {} declares a policy \
+                 is unknown: {detail}",
+                checkout.display(),
+                document.display()
+            ));
+        }
+        let undeclared = || Declaration::Undeclared {
+            looked_in: checkout.to_path_buf(),
+        };
+        match std::fs::symlink_metadata(&document) {
+            Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => return undeclared(),
+            Err(failure) => {
+                return unreadable(format!("cannot read {}: {failure}", document.display()))
+            }
+            Ok(_) => {}
+        }
+        if let crate::probe::Checkout::None(reason) =
+            crate::release::probe_checkout(Some(checkout.to_path_buf()))
+        {
+            return unreadable(format!(
+                "{} is read on the publication checkout's base, and cannot be: {reason}",
+                document.display()
+            ));
+        }
+        let text = match std::fs::read_to_string(&document) {
+            Ok(text) => text,
+            Err(failure) => {
+                return unreadable(format!("cannot read {}: {failure}", document.display()))
+            }
+        };
+        match repository_config::read_policy(&text, &document.display().to_string()) {
+            Err(Error::Invalid { reason }) => unreadable(reason),
+            Err(failure) => unreadable(failure.to_string()),
+            Ok(None) => undeclared(),
+            Ok(Some(policy)) => Declaration::Declared { document, policy },
+        }
+    }
+
+    /// Refuse a declaration that could not be read, naming the document and why:
+    /// nothing may resolve, open or publish for its identity as though it declared
+    /// nothing.
+    pub(crate) fn refuse_unreadable(&self) -> Result<()> {
+        match self {
+            Declaration::Unreadable { reason } => Err(Error::Invalid {
+                reason: format!(
+                    "the repository's own publication policy declaration could not be read, so \
+                     no policy resolves for it and nothing publishes under a host rule or the \
+                     default in its place; fix the document or remove its [policy]: {reason}"
+                ),
+            }),
+            _ => Ok(()),
+        }
+    }
+
+    /// The layer this declaration contributes, where it declares one.
+    fn layer(&self) -> Option<(String, &DeclaredPolicy)> {
+        match self {
+            Declaration::Declared { document, policy } => {
+                Some((declaration_layer(document), policy))
+            }
+            Declaration::Undeclared { .. } | Declaration::Unreadable { .. } => None,
+        }
+    }
+
+    /// Its state, as reported: the document, the directory looked in, or why it
+    /// could not be read.
+    pub(crate) fn state(&self) -> PolicyDeclaration {
+        match self {
+            Declaration::Declared { document, .. } => PolicyDeclaration::Declared {
+                document: document.clone(),
+            },
+            Declaration::Undeclared { looked_in } => PolicyDeclaration::Undeclared {
+                looked_in: looked_in.clone(),
+            },
+            Declaration::Unreadable { reason } => PolicyDeclaration::Unreadable {
+                reason: reason.clone(),
+            },
+        }
+    }
 }
 
 /// One resolved value, beside the layer that decided it — in the words every
@@ -182,18 +337,21 @@ pub(crate) fn derived_base_merge(publication: MergePolicy) -> BaseMerge {
     }
 }
 
-/// Resolve `base_merge`: the matched rule's, then the default's, then what the
-/// resolved publication implies.
+/// Resolve `base_merge`: the matched rule's, then the declaration's, then the
+/// default's, then what the resolved publication implies.
 fn resolve_base_merge(
     rule: Option<(&str, Option<BaseMerge>)>,
+    declared: Option<(&str, Option<BaseMerge>)>,
     default: Option<BaseMerge>,
     publication: MergePolicy,
 ) -> Decided<BaseMerge> {
-    if let Some((named, Some(value))) = rule {
-        return Decided {
-            value,
-            from: named.to_owned(),
-        };
+    for (named, value) in [rule, declared].into_iter().flatten() {
+        if let Some(value) = value {
+            return Decided {
+                value,
+                from: named.to_owned(),
+            };
+        }
     }
     if let Some(value) = default {
         return Decided {
@@ -207,16 +365,20 @@ fn resolve_base_merge(
     }
 }
 
-/// Resolve `checks.wait_seconds`: the matched rule's, then the default's, then shipped.
+/// Resolve `checks.wait_seconds`: the matched rule's, then the declaration's, then
+/// the default's, then shipped.
 fn resolve_checks_wait(
     rule: Option<(&str, &Checks)>,
+    declared: Option<(&str, &Checks)>,
     default: Option<&Checks>,
 ) -> Decided<WaitSeconds> {
-    if let Some((named, Some(wait))) = rule.map(|(named, checks)| (named, checks.wait_seconds)) {
-        return Decided {
-            value: wait,
-            from: named.to_owned(),
-        };
+    for (named, checks) in [rule, declared].into_iter().flatten() {
+        if let Some(wait) = checks.wait_seconds {
+            return Decided {
+                value: wait,
+                from: named.to_owned(),
+            };
+        }
     }
     if let Some(wait) = default.and_then(|checks| checks.wait_seconds) {
         return Decided {
@@ -279,10 +441,15 @@ impl GreenDraft {
     }
 }
 
-/// Resolve each `drafts:` key: the matched rule's, then the default's, then shipped.
-fn resolve_drafts(rule: Option<(&str, &Drafts)>, default: Option<&Drafts>) -> DraftLifecycle {
+/// Resolve each `drafts:` key: the matched rule's, then the declaration's, then the
+/// default's, then shipped.
+fn resolve_drafts(
+    rule: Option<(&str, &Drafts)>,
+    declared: Option<(&str, &Drafts)>,
+    default: Option<&Drafts>,
+) -> DraftLifecycle {
     let pick = |key: fn(&Drafts) -> Option<bool>, shipped: bool| -> (bool, String) {
-        if let Some((named, drafts)) = rule {
+        for (named, drafts) in [rule, declared].into_iter().flatten() {
             if let Some(value) = key(drafts) {
                 return (value, named.to_owned());
             }
@@ -738,79 +905,181 @@ pub(crate) fn validate(path: &Path, file: &RulesFile) -> Result<()> {
     Ok(())
 }
 
-/// Resolve the policy for one repository: first matching rule wins.
+/// The first rule of the file that matches this repository, with its one-based
+/// position.
+fn matching_rule<'f>(
+    file: &'f RulesFile,
+    identity: &Normalized,
+    checkout: &Path,
+) -> Option<(usize, &'f crate::rules::Rule)> {
+    file.rules
+        .iter()
+        .enumerate()
+        .find(|(_, rule)| matches(&rule.r#match, identity, checkout))
+        .map(|(index, rule)| (index + 1, rule))
+}
+
+/// The rule a repository matches, where one does.
+pub(crate) fn matched_rule(
+    file: &RulesFile,
+    identity: &Normalized,
+    checkout: &Path,
+) -> Option<Matched> {
+    matching_rule(file, identity, checkout).map(|(index, rule)| Matched {
+        index,
+        criteria: rule.r#match.clone(),
+    })
+}
+
+/// The visibility the first matching rule declares, which comes from the rules alone:
+/// a repository's own declaration cannot say how visible it is.
+pub(crate) fn declared_visibility(
+    file: &RulesFile,
+    identity: &Normalized,
+    checkout: &Path,
+) -> Option<DeclaredVisibility> {
+    matching_rule(file, identity, checkout).and_then(|(_, rule)| rule.visibility)
+}
+
+/// Resolve the policy for one repository: per field, the first matching rule's value
+/// where it sets one, else the repository declaration's, else the file's `default`,
+/// else the shipped default where the key has one.
+///
+/// `checkout` is the registered publication checkout, which is both what a rule's
+/// `path:` matches and where the declaration is read. A declaration that cannot be
+/// read fails the resolution, naming the document: routing it as a repository that
+/// declared nothing is exactly the silent misrouting the declaration exists to end.
 pub fn resolve(
     file: &RulesFile,
     source: &RulesSource,
     identity: &Normalized,
     checkout: &Path,
-) -> Resolved {
-    for (index, rule) in file.rules.iter().enumerate() {
-        if !matches(&rule.r#match, identity, checkout) {
-            continue;
-        }
-        let named = format!("rule {}", index + 1);
-        let publication = rule.publication.unwrap_or(file.default.publication);
-        return Resolved {
-            policy: Policy {
-                publication,
-                approvals: rule.approvals.unwrap_or(file.default.approvals),
-                drafts: rule.drafts.or(file.default.drafts),
-                base_merge: rule.base_merge.or(file.default.base_merge),
-                checks: rule.checks.or(file.default.checks),
-            },
-            base_merge: resolve_base_merge(
-                Some((named.as_str(), rule.base_merge)),
-                file.default.base_merge,
-                publication,
-            ),
-            checks_wait: resolve_checks_wait(
-                rule.checks.as_ref().map(|checks| (named.as_str(), checks)),
-                file.default.checks.as_ref(),
-            ),
-            drafts: resolve_drafts(
-                rule.drafts.as_ref().map(|drafts| (named.as_str(), drafts)),
-                file.default.drafts.as_ref(),
-            ),
-            source: source.to_string(),
-            matched: Some(Matched {
-                index: index + 1,
-                criteria: rule.r#match.clone(),
-            }),
-            publication_from: field_source(&named, rule.publication.is_some()),
-            approvals_from: field_source(&named, rule.approvals.is_some()),
-            visibility: rule.visibility,
-        };
+) -> Result<Resolved> {
+    resolve_declared(file, source, identity, checkout, &Declaration::at(checkout))
+}
+
+/// [`resolve`] over a declaration its caller already read.
+pub(crate) fn resolve_declared(
+    file: &RulesFile,
+    source: &RulesSource,
+    identity: &Normalized,
+    checkout: &Path,
+    declaration: &Declaration,
+) -> Result<Resolved> {
+    declaration.refuse_unreadable()?;
+    let rule = matching_rule(file, identity, checkout);
+    let named = rule.map(|(index, rule)| (format!("rule {index}"), rule));
+    let declared = declaration.layer();
+    let default = &file.default;
+    // One field: the rule's where it sets it, then the declaration's, then `default`.
+    fn pick<T: Copy>(
+        rule: Option<(&str, Option<T>)>,
+        declared: Option<(&str, Option<T>)>,
+        default: T,
+    ) -> (T, String) {
+        [rule, declared]
+            .into_iter()
+            .flatten()
+            .find_map(|(named, value)| value.map(|value| (value, named.to_owned())))
+            .unwrap_or_else(|| (default, "the default".to_owned()))
     }
-    Resolved {
-        policy: file.default.clone(),
+    let rule_named = named.as_ref().map(|(name, rule)| (name.as_str(), *rule));
+    let declared_named = declared
+        .as_ref()
+        .map(|(name, policy)| (name.as_str(), *policy));
+    let (publication, publication_from) = pick(
+        rule_named.map(|(name, rule)| (name, rule.publication)),
+        declared_named.map(|(name, policy)| (name, policy.publication)),
+        default.publication,
+    );
+    let (approvals, approvals_from) = pick(
+        rule_named.map(|(name, rule)| (name, rule.approvals)),
+        declared_named.map(|(name, policy)| (name, policy.approvals)),
+        default.approvals,
+    );
+    if approvals == Approvals::Required
+        && review_rank(publication) < review_rank(MergePolicy::ChangeAuto)
+    {
+        return Err(Error::Invalid {
+            reason: format!(
+                "this repository resolves publication: {} (from {publication_from}) with \
+                 approvals: required (from {approvals_from}), which merges without the host \
+                 ever evaluating an approval; set approvals where the publication is set",
+                spell(publication)
+            ),
+        });
+    }
+    // The policy carried whole, for the readers that take it as one value.
+    fn first<T: Copy>(
+        rule: Option<(&str, Option<T>)>,
+        declared: Option<(&str, Option<T>)>,
+        default: Option<T>,
+    ) -> Option<T> {
+        [rule, declared]
+            .into_iter()
+            .flatten()
+            .find_map(|(_, value)| value)
+            .or(default)
+    }
+    let drafts = first(
+        rule_named.map(|(name, rule)| (name, rule.drafts)),
+        declared_named.map(|(name, policy)| (name, policy.drafts)),
+        default.drafts,
+    );
+    let base_merge = first(
+        rule_named.map(|(name, rule)| (name, rule.base_merge)),
+        declared_named.map(|(name, policy)| (name, policy.base_merge)),
+        default.base_merge,
+    );
+    let checks = first(
+        rule_named.map(|(name, rule)| (name, rule.checks)),
+        declared_named.map(|(name, policy)| (name, policy.checks)),
+        default.checks,
+    );
+    Ok(Resolved {
+        policy: Policy {
+            publication,
+            approvals,
+            drafts,
+            base_merge,
+            checks,
+        },
         source: source.to_string(),
-        matched: None,
-        publication_from: "the default".to_owned(),
-        approvals_from: "the default".to_owned(),
-        drafts: resolve_drafts(None, file.default.drafts.as_ref()),
-        visibility: None,
-        base_merge: resolve_base_merge(None, file.default.base_merge, file.default.publication),
-        checks_wait: resolve_checks_wait(None, file.default.checks.as_ref()),
-    }
+        publication_from,
+        approvals_from,
+        drafts: resolve_drafts(
+            rule_named.and_then(|(name, rule)| rule.drafts.as_ref().map(|d| (name, d))),
+            declared_named.and_then(|(name, policy)| policy.drafts.as_ref().map(|d| (name, d))),
+            default.drafts.as_ref(),
+        ),
+        base_merge: resolve_base_merge(
+            rule_named.map(|(name, rule)| (name, rule.base_merge)),
+            declared_named.map(|(name, policy)| (name, policy.base_merge)),
+            default.base_merge,
+            publication,
+        ),
+        checks_wait: resolve_checks_wait(
+            rule_named.and_then(|(name, rule)| rule.checks.as_ref().map(|c| (name, c))),
+            declared_named.and_then(|(name, policy)| policy.checks.as_ref().map(|c| (name, c))),
+            default.checks.as_ref(),
+        ),
+        declaration: declaration.state(),
+    })
 }
 
 /// Resolve the policy for one resolved repository argument.
 ///
 /// The same question [`resolve`] answers, asked of a [`Resolution`] rather than of
 /// its parts: the identity's origin is what a rule's `host`/`owner`/`name` match
-/// against, and its publication checkout is what a `path` matches against.
-pub fn resolve_for(file: &RulesFile, source: &RulesSource, resolution: &Resolution) -> Resolved {
+/// against, and its publication checkout is what a `path` matches against and where
+/// the repository's own declaration is read.
+pub fn resolve_for(
+    file: &RulesFile,
+    source: &RulesSource,
+    resolution: &Resolution,
+) -> Result<Resolved> {
     let normalized = crate::store::normalize(&resolution.identity.origin);
     resolve(file, source, &normalized, &resolution.publication)
-}
-
-fn field_source(named: &str, from_rule: bool) -> String {
-    if from_rule {
-        named.to_owned()
-    } else {
-        "the default".to_owned()
-    }
 }
 
 /// Whether every field a rule sets matches this repository.

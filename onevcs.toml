@@ -12,7 +12,18 @@
 # and keeps each unit's newest build and every build modified within those 2
 # days, so a slot's rebuild stays warm. `just bootstrap` installs the pinned
 # release the recipe runs.
-schema_version = 1
+#
+# `[policy]` is this repository's own default publication policy, read from the same
+# checkout and base: a host whose rules file matches no rule for this repository
+# publishes it under this, and a host rule overrides it field by field.
+schema_version = 2
+
+[policy]
+publication = "change-auto"
+approvals = "none"
+
+[policy.checks]
+wait_seconds = 8700 # recorded max 6738 s (run 39445587713) + 25% margin
 
 [pool.maintain]
 command = ["just", "pool-maintenance"]

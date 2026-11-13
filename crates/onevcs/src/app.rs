@@ -36,6 +36,7 @@ use crate::ops::{
     BasePush, BranchPublishRequest, GateAudit, ImportRequest, IntegrateRequest, MergePathCoverage,
     RecoverRequest, RequiredChecksAnswer, ResolvedPolicy, Sweeping, TrailerPrefixSource,
 };
+use crate::policy::PolicyDeclaration;
 use crate::preserve::Preservation;
 use crate::providers::Providers;
 use crate::publish::{DraftReason, PublishOutcome, PublishRequest, Retention, Subject};
@@ -2638,9 +2639,29 @@ fn rules_check(args: &RulesCheckArgs) -> Result<u8> {
         ),
         None => println!("matched: no rule; the default applies"),
     }
-    print_policy("", &checked.policy);
-    print_drafts(&checked.policy);
-    print_base_merge_and_wait(&checked.policy);
+    match &checked.declaration {
+        PolicyDeclaration::Declared { document } => {
+            println!("declaration: declared in {}", document.display())
+        }
+        PolicyDeclaration::Undeclared { looked_in } => {
+            println!("declaration: none in {}", looked_in.display())
+        }
+        PolicyDeclaration::Unreadable { reason } => println!("declaration: unreadable: {reason}"),
+    }
+    let (Some(policy), Some(release)) = (&checked.policy, &checked.release) else {
+        // Nothing resolved, so no field is printed: a value here would be a rule's or
+        // the default's, which is exactly what this identity does not publish under.
+        eprintln!(
+            "onevcs: {}'s own publication policy declaration could not be read, so no policy \
+             resolves for it and every publication of it refuses; fix the document the \
+             `declaration:` line names",
+            checked.identity
+        );
+        return Ok(1);
+    };
+    print_policy("", policy);
+    print_drafts(policy);
+    print_base_merge_and_wait(policy);
     // Not part of the matched policy: one vocabulary reads and writes every
     // repository's provenance, so it is reported once, from the file or the default.
     println!(
@@ -2651,15 +2672,15 @@ fn rules_check(args: &RulesCheckArgs) -> Result<u8> {
             TrailerPrefixSource::BuiltIn => "the default",
         }
     );
-    print_release_facts(&checked.release);
-    if checked.release.findings.is_empty() {
+    print_release_facts(release);
+    if release.findings.is_empty() {
         return Ok(0);
     }
     eprintln!(
         "onevcs: {} has {} release configuration finding(s) a release verb refuses when it is \
          used; fix each `release finding` above",
         checked.identity,
-        checked.release.findings.len()
+        release.findings.len()
     );
     Ok(1)
 }

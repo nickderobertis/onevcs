@@ -245,7 +245,7 @@ fn consumer(registry: &Registry, query: &AdoptionQuery) -> Result<Consumer> {
     if query.consumer_policy.is_none() {
         let resolution = store::resolve(registry, &query.consumer)?;
         let (file, source) = policy::load(registry)?;
-        policy::resolve_for(&file, &source, &resolution);
+        policy::resolve_for(&file, &source, &resolution)?;
     }
     Ok(Consumer {
         identity: read.releases.identity,

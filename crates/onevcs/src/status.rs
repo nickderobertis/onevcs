@@ -1592,7 +1592,7 @@ fn reported(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resu
     let (file, source) = policy::load(registry)?;
     let trailers = provenance::from_rules(&file);
     let normalized = store::normalize(&resolution.identity.origin);
-    let resolved = policy::resolve(&file, &source, &normalized, &resolution.publication);
+    let resolved = policy::resolve(&file, &source, &normalized, &resolution.publication)?;
     // Named by git itself, off the remote's own advertised head, so it is a branch
     // name git's parser has already accepted.
     let base = Ref::from_git(git::default_branch(&resolution.publication, "origin")?);

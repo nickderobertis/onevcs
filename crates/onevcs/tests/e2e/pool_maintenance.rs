@@ -1,4 +1,5 @@
-//! This repository's declared pool maintenance, and the script that measures it.
+//! This repository's declared pool maintenance, and the script that measures it —
+//! and, beside it in the same `onevcs.toml`, the publication policy it declares.
 //!
 //! `onevcs.toml` names the justfile's `pool-maintenance` recipe, and
 //! `pool-maintenance/measure.sh` is the command of the budget that times one
@@ -293,5 +294,71 @@ fn the_declared_recipe_prunes_every_target_dir_cargo_writes_with_a_two_day_windo
     assert!(
         declaration.contains("command = [\"just\", \"pool-maintenance\"]"),
         "onevcs.toml runs the recipe:\n{declaration}"
+    );
+}
+
+#[test]
+fn this_repositorys_own_declaration_resolves_to_the_policy_its_host_rule_gives_it() {
+    // The repository's own `onevcs.toml`, registered on a scratch host whose rules file
+    // matches no rule for it, so the declaration is the whole of its policy: what the
+    // tracked host rule gave it before the repository could say so itself.
+    let root = workspace_root();
+    let world = crate::world::World::new();
+    let origin = world.bare_origin("onevcs");
+    let checkout = world.clone_of(&origin, "onevcs");
+    std::fs::copy(root.join("onevcs.toml"), checkout.join("onevcs.toml"))
+        .expect("the repository's declaration is copied");
+    world.git(&checkout, &["add", "onevcs.toml"]);
+    world.git(&checkout, &["commit", "-q", "-m", "chore: declare"]);
+    // A local identity: what is asked is the declaration, and no host is involved.
+    world
+        .onevcs()
+        .args(["register", &checkout.to_string_lossy()])
+        .assert()
+        .success();
+    crate::registry::configure_rules(
+        &world,
+        "version: 4\nrules: []\ndefault: {publication: change-open, approvals: required}\n",
+    );
+    let output = world
+        .onevcs()
+        .env_remove("ONEVCS_CHECKS_TIMEOUT_SECONDS")
+        .args(["rules", "check", "onevcs"])
+        .output()
+        .expect("rules check runs");
+    assert!(output.status.success(), "{}", stderr(&output));
+    let said = String::from_utf8_lossy(&output.stdout);
+    let line = |prefix: &str| {
+        said.lines()
+            .find(|line| line.starts_with(prefix))
+            .unwrap_or_else(|| panic!("no {prefix:?} line in:\n{said}"))
+            .to_owned()
+    };
+    let registered = PathBuf::from(line("checkout: ").trim_start_matches("checkout: "));
+    let from = format!(
+        "(from the repository declaration {})",
+        registered.join("onevcs.toml").display()
+    );
+    assert_eq!(
+        line("publication: "),
+        format!("publication: change-auto {from}")
+    );
+    assert_eq!(line("approvals: "), format!("approvals: none {from}"));
+    assert_eq!(line("checks wait: "), format!("checks wait: 8700 s {from}"));
+
+    // …and its maintenance is the recipe it always named.
+    let output = world
+        .onevcs()
+        .args(["pool", "declaration"])
+        .arg(&root)
+        .arg("--json")
+        .output()
+        .expect("pool declaration runs");
+    assert!(output.status.success(), "{}", stderr(&output));
+    let maintenance: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("the declaration as JSON");
+    assert_eq!(
+        maintenance["command"],
+        serde_json::json!(["just", "pool-maintenance"])
     );
 }

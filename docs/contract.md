@@ -3079,10 +3079,12 @@ pub struct EventLine { pub text: String, pub envelope: Option<Envelope> }
 pub fn read_artifact(id: &ArtifactId) -> Result<String>;
 pub fn rules_check(repo: &str) -> Result<RulesCheck>;
 pub struct RulesCheck { pub identity: String, pub checkout: PathBuf, pub rules: String,
-                        pub matched: Option<MatchedRule>, pub policy: ResolvedPolicy,
+                        pub matched: Option<MatchedRule>,
+                        pub declaration: PolicyDeclaration,  // the repository-declared policy amendment's
+                        pub policy: Option<ResolvedPolicy>,
                         pub trailer_prefix: String,
                         pub trailer_prefix_source: TrailerPrefixSource,
-                        pub release: ReleaseFacts }   // the adoption amendment's
+                        pub release: Option<ReleaseFacts> }   // the adoption amendment's
 pub struct MatchedRule { pub index: usize, pub criteria: RuleMatch }
 pub enum TrailerPrefixSource { RulesFile, BuiltIn }
 
@@ -6853,6 +6855,107 @@ pub enum MaintenanceSource {
     Unreadable { reason: String },
 }
 pub struct SlotDisk { pub before_bytes: u64, pub after_bytes: u64 }
+```
+
+## Repository-declared publication policy
+
+A repository may state its own default publication policy in the same `onevcs.toml`
+at its root, so that a newly registered repository publishes the way its owner
+intends on every host, with a host's rules-file rule left as the override where one
+host must differ. This section is the statement every consumer restates from.
+
+```toml
+schema_version = 2
+
+[policy]
+publication = "change-auto"   # local-direct | change-open | change-auto | change-direct
+approvals = "none"            # none | required
+base_merge = "on-conflict"    # optional: always | on-conflict
+
+[policy.drafts]               # optional
+disabled = false
+warn_on_early_lift = true
+
+[policy.checks]               # optional
+wait_seconds = 3900           # above 0, at most 1000000000
+```
+
+**Parsing.** `[policy]` is read at `schema_version = 2` and later. Every key is
+optional, and each is spelled, and admits, exactly what the same key admits on a
+rules-file rule, because each is read into the type that rule's field is read into:
+`publication` is a `MergePolicy` (`local-direct`, `change-open`, `change-auto`,
+`change-direct`), `approvals` an `Approvals` (`none`, `required`), `base_merge` a
+`BaseMerge` (`always`, `on-conflict`), `[policy.drafts]` a `Drafts` (`disabled` and
+`warn_on_early_lift`, each a boolean), and `[policy.checks]` a `Checks` whose
+`wait_seconds` is a `WaitSeconds` (finite, above 0, at most 1000000000). Inside
+`[policy]` and its subtables an unknown key is refused by name with the document and
+line, and so is a value the field's type refuses. `visibility` and `match` are refused
+by name, with the document and line, as keys only a host's rule may carry. A
+version-1 document keeps version 1's strictness, so `[policy]` there is refused as an
+unknown key, with the document and line. The `[pool.maintain]` reading is unchanged at
+every version: a version-2 document with both tables maintains exactly as the same
+document without `[policy]`, and onevcs releases that predate this section read a
+version-2 document as version 1 with unknown keys ignored.
+
+**Where it is read.** From the identity's registered publication checkout root, on its
+base branch — the place the pool-maintenance declaration is read — and never from a
+session's or slot's branch, so a session that edits `onevcs.toml` does not change the
+policy its own publication resolves. No `onevcs.toml` there, or one with no
+`[policy]`, is *undeclared*. Every other failure is *unreadable*: a document or
+publication checkout that cannot be read, a publication checkout that is not on its
+base, and a TOML or schema refusal.
+
+**Precedence, per field.** For `publication`, `approvals`, `base_merge`,
+`drafts.disabled`, `drafts.warn_on_early_lift` and `checks.wait_seconds`, the value is
+the first matching rule's where it sets the field, else the declaration's where it
+sets it, else the rules file's `default:`, else the shipped default where the key has
+one. A rule naming only some fields decides only those, so a declaration setting
+`publication` and a rule setting `approvals` resolve each from its own layer. Where
+neither a rule, the declaration nor `default:` sets `base_merge` it is derived from the
+resolved `publication`, and the green-draft row is derived from the resolved
+`publication` and `approvals`, as before. A resolved pair of `approvals: required` with
+a publication that merges without an approval (`local-direct`, `change-direct`) is
+refused, naming the layer each came from. `visibility` still comes from the rules
+alone. `ONEVCS_CHECKS_TIMEOUT_SECONDS` still outranks every layer of the wait.
+
+**Unreadable never falls back.** Every resolution of an identity whose declaration is
+unreadable fails, naming the document and the reason: a publication, a
+`publish-branch` and a session open refuse rather than publish under a rule or the
+default, and so do `register`, `resolve` and `repos --audit-gates`.
+
+**Reporting.** `onevcs rules check <repo>` keeps every line it printed before and each
+field line's shape `<field>: <value> (from <source>)`. A field the declaration decided
+reads `(from the repository declaration <absolute path of onevcs.toml>)`; the other
+sources are unchanged (`rule <n>`, `the default`, `the shipped default`, `publication
+<policy>`, `ONEVCS_CHECKS_TIMEOUT_SECONDS`). Right after `matched:` it prints one line:
+
+```text
+declaration: declared in <absolute path of onevcs.toml>
+declaration: none in <publication checkout directory>
+declaration: unreadable: <reason, naming the document>
+```
+
+In the unreadable case it prints no field line — any value would be one this identity
+does not publish under — says on stderr that every publication of it refuses, and
+exits `1`. Consumers parsing the field lines read the value as the first word and
+accept any one parenthesised source after it.
+
+**Library surface.** `ResolvedPolicy` carries the declaration a resolution read, and
+each `*_from` string names it in the words above. `RulesCheck` reports the declaration
+in every state, and carries no policy or release facts where it is unreadable.
+
+```rust
+// onevcs::PolicyDeclaration
+pub enum PolicyDeclaration {
+    Declared { document: PathBuf },
+    Undeclared { looked_in: PathBuf },
+    Unreadable { reason: String },
+}
+// onevcs::ResolvedPolicy gains:
+//   pub declaration: PolicyDeclaration,      // never Unreadable: that resolution fails
+// onevcs::RulesCheck gains `pub declaration: PolicyDeclaration`, and its
+//   pub policy: Option<ResolvedPolicy>,      // None exactly where Unreadable
+//   pub release: Option<ReleaseFacts>,       // None exactly where Unreadable
 ```
 
 ## Read-only host queries: `onevcs host`

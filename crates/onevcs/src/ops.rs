@@ -23,6 +23,7 @@ use crate::boundary::TermScope;
 use crate::error::{Error, Result};
 use crate::import::Imported;
 use crate::integrate::Outcome as Integration;
+use crate::policy::PolicyDeclaration;
 use crate::providers::Providers;
 use crate::publish::{PublishOutcome, Subject};
 use crate::registry::Registry;
@@ -316,8 +317,12 @@ pub struct ResolvedPolicy {
     /// How long a publication watches its change request's checks.
     pub checks_wait: Duration,
     /// What decided `checks_wait`: `ONEVCS_CHECKS_TIMEOUT_SECONDS`, a numbered rule,
-    /// the default, or the shipped default.
+    /// the repository declaration, the default, or the shipped default.
     pub checks_wait_from: String,
+    /// The repository's own declaration this resolved against: the document, or the
+    /// directory that holds none. Never [`PolicyDeclaration::Unreadable`], because a
+    /// resolution against an unreadable declaration fails rather than answering.
+    pub declaration: PolicyDeclaration,
 }
 
 impl ResolvedPolicy {
@@ -339,6 +344,7 @@ impl ResolvedPolicy {
             drafts_disabled_from: resolved.drafts.disabled_from.clone(),
             warn_on_early_lift: resolved.drafts.warn_on_early_lift,
             warn_on_early_lift_from: resolved.drafts.warn_on_early_lift_from.clone(),
+            declaration: resolved.declaration.clone(),
         })
     }
 }
@@ -380,7 +386,7 @@ pub fn register_checkout(path: &Path, origin: Option<&Url>) -> Result<Registrati
     // path the identity will actually take.
     let registry = store::load()?;
     let (file, source) = policy::load(&registry)?;
-    let resolved = policy::resolve_for(&file, &source, &resolution);
+    let resolved = policy::resolve_for(&file, &source, &resolution)?;
     let coverage = store::merge_path_coverage(
         &resolution,
         &resolution.publication,
@@ -509,7 +515,7 @@ pub fn repositories(
                 alias: checkout.alias.clone(),
                 publication: checkout.path.clone(),
             };
-            let resolved = policy::resolve_for(&file, &source, &resolution);
+            let resolved = policy::resolve_for(&file, &source, &resolution)?;
             let coverage = store::merge_path_coverage(
                 &resolution,
                 &checkout.path,
@@ -630,7 +636,7 @@ pub fn resolve_repository(providers: &Providers<'_>, repo: &str) -> Result<Resol
     let identity = providers.vcs.resolve_identity(repo)?;
     debug_assert_eq!(identity, resolution.identity);
     let (file, source) = policy::load(&registry)?;
-    let resolved = policy::resolve_for(&file, &source, &resolution);
+    let resolved = policy::resolve_for(&file, &source, &resolution)?;
     Ok(ResolvedRepository {
         identity: resolution.key,
         alias: resolution.alias,
@@ -959,8 +965,11 @@ pub struct RulesCheck {
     pub rules: String,
     /// The rule that decided it, where one did; none means the default applies.
     pub matched: Option<MatchedRule>,
-    /// What it resolved to.
-    pub policy: ResolvedPolicy,
+    /// Where the repository's own publication-policy declaration stands.
+    pub declaration: PolicyDeclaration,
+    /// What it resolved to — `None` exactly where `declaration` is
+    /// [`PolicyDeclaration::Unreadable`], since nothing resolves then.
+    pub policy: Option<ResolvedPolicy>,
     /// The git trailer key provenance is written and read under.
     pub trailer_prefix: String,
     /// What set that prefix. It is not part of the matched policy: one vocabulary
@@ -968,8 +977,9 @@ pub struct RulesCheck {
     /// the file or the default.
     pub trailer_prefix_source: TrailerPrefixSource,
     /// The release facts an adoption of or by this repository depends on, and what
-    /// about them this crate refuses when they are used.
-    pub release: ReleaseFacts,
+    /// about them this crate refuses when they are used — `None` where the policy did
+    /// not resolve, since they are decided from its publication.
+    pub release: Option<ReleaseFacts>,
 }
 
 /// The release configuration one repository resolves to, as `rules check` states it.
@@ -1062,17 +1072,35 @@ pub fn rules_check(repo: &str) -> Result<RulesCheck> {
     let resolution = store::resolve(&registry, repo)?;
     let (file, source) = policy::load(&registry)?;
     let normalized = store::normalize(&resolution.identity.origin);
-    let resolved = policy::resolve(&file, &source, &normalized, &resolution.publication);
-    let release = ReleaseFacts::of(&registry, repo, resolved.policy.publication);
+    let declaration = policy::Declaration::at(&resolution.publication);
+    let matched = policy::matched_rule(&file, &normalized, &resolution.publication);
+    // An unreadable declaration is reported as a value rather than an `Err`, so that
+    // the report can say which rule matched and what the declaration's state is; it
+    // carries no policy, because none resolves.
+    let (policy, release) = match &declaration {
+        policy::Declaration::Unreadable { .. } => (None, None),
+        _ => {
+            let resolved = policy::resolve_declared(
+                &file,
+                &source,
+                &normalized,
+                &resolution.publication,
+                &declaration,
+            )?;
+            let release = ReleaseFacts::of(&registry, repo, resolved.policy.publication);
+            (Some(ResolvedPolicy::of(&resolved)?), Some(release))
+        }
+    };
     Ok(RulesCheck {
         identity: resolution.key,
         checkout: resolution.publication,
-        rules: resolved.source.clone(),
-        matched: resolved.matched.as_ref().map(|matched| MatchedRule {
+        rules: source.to_string(),
+        matched: matched.map(|matched| MatchedRule {
             index: matched.index,
-            criteria: matched.criteria.clone(),
+            criteria: matched.criteria,
         }),
-        policy: ResolvedPolicy::of(&resolved)?,
+        declaration: declaration.state(),
+        policy,
         trailer_prefix: provenance::from_rules(&file).prefix().to_string(),
         trailer_prefix_source: match file.trailer_prefix.is_some() {
             true => TrailerPrefixSource::RulesFile,

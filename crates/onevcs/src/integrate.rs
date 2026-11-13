@@ -135,7 +135,7 @@ pub fn run(
     // from.
     let registry = store::load()?;
     let (file, source) = policy::load(&registry)?;
-    let resolved = policy::resolve_for(&file, &source, resolution);
+    let resolved = policy::resolve_for(&file, &source, resolution)?;
     let publication = resolved.policy.publication;
     if publication != MergePolicy::LocalDirect {
         return Err(Error::Invalid {

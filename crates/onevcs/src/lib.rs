@@ -173,6 +173,7 @@ pub use ops::{
     ResolvedPolicy, ResolvedRepository, RulesCheck, StatusReport, Sweeping, Synced,
     TrailerPrefixSource,
 };
+pub use policy::PolicyDeclaration;
 pub use pool::{
     pool_maintain, pool_prune, pool_status, workspace_capacity, IdentityMaintenance,
     IdentityOutcome, Ineligibility, IneligibleSlot, MaintainReport, MaintenanceOutcome, PoolStatus,

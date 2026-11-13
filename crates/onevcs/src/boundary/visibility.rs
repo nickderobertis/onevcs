@@ -27,14 +27,14 @@ use crate::store;
 /// The visibility a rule declares for one identity, where one does.
 pub fn declared(
     file: &RulesFile,
-    source: &RulesSource,
+    _source: &RulesSource,
     key: &str,
     checkout: &Path,
 ) -> Option<Visibility> {
     let normalized = store::normalize(key);
-    policy::resolve(file, source, &normalized, checkout)
-        .visibility
-        .map(Visibility::from)
+    // From the rules alone, so a repository's own declaration — readable or not —
+    // can neither set nor withhold what the host says about its visibility.
+    policy::declared_visibility(file, &normalized, checkout).map(Visibility::from)
 }
 
 /// An identity's visibility as this host currently holds it: a rule's, else the
