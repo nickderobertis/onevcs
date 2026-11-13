@@ -241,7 +241,7 @@ pub fn prepare(
         });
     }
     let normalized = store::normalize(&resolution.identity.origin);
-    let resolved = policy::resolve(&file, &rules_source, &normalized, &resolution.publication);
+    let resolved = policy::resolve(&file, &rules_source, &normalized, &resolution.publication)?;
     let rules_file = rules_source.file()?;
     let effective = publish::effective_policy(&resolved.policy, requested)?;
     let base = Ref::from_git(git::default_branch(&resolution.publication, "origin")?);

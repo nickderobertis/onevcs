@@ -143,7 +143,10 @@ fn resumable(
     };
     let trailers = provenance::from_rules(&file);
     let normalized = store::normalize(&resolution.identity.origin);
-    let resolved = policy::resolve(&file, &rules_source, &normalized, &resolution.publication);
+    let Ok(resolved) = policy::resolve(&file, &rules_source, &normalized, &resolution.publication)
+    else {
+        return Ok(None);
+    };
     let Ok(effective) = publish::effective_policy(&resolved.policy, requested) else {
         return Ok(None);
     };

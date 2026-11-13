@@ -714,7 +714,7 @@ pub fn run_for_session(
     let resolution = store::resolve(&registry, &record.identity)?;
     let (file, source) = policy::load(&registry)?;
     let normalized = store::normalize(&resolution.identity.origin);
-    let resolved = policy::resolve(&file, &source, &normalized, &resolution.publication);
+    let resolved = policy::resolve(&file, &source, &normalized, &resolution.publication)?;
     let effective = effective_policy(&resolved.policy, request.policy)?;
     // Before anything is preserved or pushed: a deferred publication is refused whole
     // or not at all.

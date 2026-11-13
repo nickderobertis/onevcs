@@ -956,12 +956,13 @@ fn only_local_direct_opens_no_change_request() {
 }
 
 /// The lines `rules check` printed before it had a release section, in order.
-const POLICY_LINES: [&str; 13] = [
+const POLICY_LINES: [&str; 14] = [
     "repo: ",
     "identity: ",
     "checkout: ",
     "rules: ",
     "matched: ",
+    "declaration: ",
     "publication: ",
     "approvals: ",
     "drafts: ",

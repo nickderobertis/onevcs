@@ -242,6 +242,10 @@ mod maintain;
 #[cfg(unix)]
 mod open_conflict;
 mod packaging;
+// Unix only: the declaration journeys publish through `world.rs`'s POSIX fixture and
+// remove permissions with Unix modes. Its own header carries the boundary it doubles.
+#[cfg(unix)]
+mod policy_declaration;
 // Unix only: it runs this repository's bash measurement script over a one-crate slot.
 // Its own header carries the reason.
 #[cfg(unix)]

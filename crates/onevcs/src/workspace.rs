@@ -1207,6 +1207,10 @@ pub(crate) fn open_with(
     base_merge: BaseMerge,
 ) -> Result<Opening> {
     let resolution = store::resolve(registry, &request.repo)?;
+    // A session is opened to be published, and a publication of an identity whose own
+    // policy declaration cannot be read refuses — so the open refuses first, rather
+    // than cutting work nothing can land.
+    crate::policy::Declaration::at(&resolution.publication).refuse_unreadable()?;
     let execution =
         execution_checkout(registry, &resolution, request.execution_checkout.as_deref())?;
     // Held for the whole open, before the first read of the checkout's configuration —
@@ -2483,7 +2487,7 @@ fn decide_base_merge(
 /// The identity's resolved `base_merge`.
 fn base_merge_for(registry: &Registry, resolution: &Resolution) -> Result<RulesBaseMerge> {
     let (file, source) = crate::policy::load(registry)?;
-    Ok(crate::policy::resolve_for(&file, &source, resolution)
+    Ok(crate::policy::resolve_for(&file, &source, resolution)?
         .base_merge
         .value)
 }

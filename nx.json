@@ -88,7 +88,8 @@
       "{workspaceRoot}/oneharness.toml",
       "{workspaceRoot}/shots/baseline/**/*",
       "{workspaceRoot}/docs/screenshots/**/*",
-      "{workspaceRoot}/pool-maintenance/**/*"
+      "{workspaceRoot}/pool-maintenance/**/*",
+      "{workspaceRoot}/onevcs.toml"
     ],
     "contractInputs": [
       "crateSource",

@@ -1794,3 +1794,15 @@ Keep `PoolStatus.maintenance`'s source and `IdentityOutcome::MaintenanceUnreadab
 Measurement failures warn and leave disk null without changing command outcomes; `duration_ms` is command time alone.
 The human line appends `, worktree <before> → <after>` in sweep's byte format; never teach maintenance a build tool's layout.
 <!-- llmlint: ignore-end[agents_md_durable_and_terse, no_redundant_instruction_pointers] -->
+
+## Repository-declared publication policy
+
+[The contract](../../docs/contract.md)'s section of that name is the whole statement; five
+repositories' declarations are written against it. `repository_config::read_policy` reads
+`[policy]` (version 2 on) into the rules file's own types, so a key admits exactly what the
+rule's does; `policy::Declaration::at` reads it from the publication checkout on its base
+and asks git nothing when no `onevcs.toml` is there. Two things are easy to undo:
+**`policy::resolve` is the only place the layers meet** (rule, then declaration, then
+`default:`, field by field — `visibility` from the rules alone), and **unreadable is an
+`Err` on every path that routes work** (a publication, `publish-branch`, a session open),
+reported as a value only by `rules check`, which prints no field line for it.

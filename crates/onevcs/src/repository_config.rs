@@ -242,6 +242,128 @@ pub fn validate_repository_config(document: &str, origin: &str) -> Result<Option
     Ok(config.pool.and_then(|pool| pool.maintain))
 }
 
+/// The version from which `onevcs.toml` may carry `[policy]`.
+///
+/// A bump rather than a key admitted at version 1, because version 1 refuses an
+/// unknown key: a version-1 document naming `[policy]` is refused here exactly as
+/// every build that reads version 1 refuses it. The onevcs releases already on hosts
+/// read a version-2 document as version 1 with unknown keys ignored, so a document
+/// declaring a policy stays readable to them and its `[pool.maintain]` unchanged.
+pub(crate) const POLICY_VERSION: i64 = 2;
+
+/// A repository's own default publication policy: the `[policy]` table of its
+/// `onevcs.toml`.
+///
+/// Every key is optional and is read into the very type the same key of a rules-file
+/// rule is read into, so one definition decides what each admits. Which layer wins
+/// per field is [`crate::policy`]'s question, not this one's.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct DeclaredPolicy {
+    /// `publication`.
+    pub(crate) publication: Option<crate::rules::MergePolicy>,
+    /// `approvals`.
+    pub(crate) approvals: Option<crate::rules::Approvals>,
+    /// `base_merge`.
+    pub(crate) base_merge: Option<crate::rules::BaseMerge>,
+    /// `[policy.drafts]`.
+    pub(crate) drafts: Option<crate::rules::Drafts>,
+    /// `[policy.checks]`.
+    pub(crate) checks: Option<crate::rules::Checks>,
+}
+
+/// The line a byte offset of `document` is on, counted from one.
+fn line_of(document: &str, offset: usize) -> usize {
+    document[..offset.min(document.len())]
+        .bytes()
+        .filter(|byte| *byte == b'\n')
+        .count()
+        + 1
+}
+
+/// Read the `[policy]` a repository configuration declares, if it declares one.
+///
+/// A version-1 document is held to version 1's whole strictness, so `[policy]` there
+/// is refused as an unknown key, by line. From [`POLICY_VERSION`] on, everything
+/// inside `[policy]` and its subtables is refused unless it is a key that table
+/// has — by name, with the document and line — and `visibility` and `match` are
+/// refused by name as keys only a host's rule may carry. Nothing outside `[policy]`
+/// is read here, so the `[pool.maintain]` reading is untouched at every version.
+pub(crate) fn read_policy(document: &str, origin: &str) -> Result<Option<DeclaredPolicy>> {
+    #[derive(Deserialize)]
+    struct Version {
+        schema_version: i64,
+    }
+    // One line, naming the document and the line, so the refusal reads whole wherever
+    // it is printed — `rules check` reports it on the line that states the declaration.
+    let failure = |failure: toml::de::Error| {
+        error::invalid(match failure.span() {
+            Some(span) => format!(
+                "{origin}, line {}: {}",
+                line_of(document, span.start),
+                failure.message().trim()
+            ),
+            None => format!("{origin}: {}", failure.message().trim()),
+        })
+    };
+    let version: Version = toml::from_str(document).map_err(failure)?;
+    if version.schema_version < POLICY_VERSION {
+        // Version 1's top level, refused in this function's one-line words — `[policy]`
+        // is an unknown key there — before the whole of version 1 is held to it.
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct VersionOne {
+            #[serde(rename = "schema_version")]
+            _schema_version: i64,
+            #[serde(rename = "pool")]
+            _pool: Option<toml::Value>,
+        }
+        toml::from_str::<VersionOne>(document).map_err(failure)?;
+        validate_repository_config(document, origin)?;
+        return Ok(None);
+    }
+    #[derive(Deserialize)]
+    struct Config {
+        policy: Option<Policy>,
+    }
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Policy {
+        publication: Option<crate::rules::MergePolicy>,
+        approvals: Option<crate::rules::Approvals>,
+        base_merge: Option<crate::rules::BaseMerge>,
+        drafts: Option<crate::rules::Drafts>,
+        checks: Option<crate::rules::Checks>,
+        // Named so that each is refused as what it is rather than as a typo.
+        visibility: Option<toml::Spanned<toml::Value>>,
+        #[serde(rename = "match")]
+        criteria: Option<toml::Spanned<toml::Value>>,
+    }
+    let config: Config = toml::from_str(document).map_err(failure)?;
+    let Some(policy) = config.policy else {
+        return Ok(None);
+    };
+    for (key, spanned) in [
+        ("visibility", &policy.visibility),
+        ("match", &policy.criteria),
+    ] {
+        if let Some(spanned) = spanned {
+            return Err(error::invalid(format!(
+                "{origin}, line {}: [policy] names `{key}`, which only a host's rules-file rule \
+                 may carry; a repository declares how it publishes, and which repositories a \
+                 policy applies to and how visible they are is the host's to say. Delete the key",
+                line_of(document, spanned.span().start)
+            )));
+        }
+    }
+    Ok(Some(DeclaredPolicy {
+        publication: policy.publication,
+        approvals: policy.approvals,
+        base_merge: policy.base_merge,
+        drafts: policy.drafts,
+        checks: policy.checks,
+    }))
+}
+
 pub(crate) fn resolve(
     resolution: &crate::store::Resolution,
     host: &crate::workspaces::Resolved,

@@ -987,12 +987,16 @@ fn supported(session: &SessionToken) -> (BTreeSet<Phase>, Option<String>) {
         return every();
     };
     let mut phases = BTreeSet::from([Phase::Development, Phase::Integrate]);
-    let resolved = policy::resolve(
+    // A declaration this build cannot read resolves nothing, and widens like every
+    // other answer this cannot reach.
+    let Ok(resolved) = policy::resolve(
         &rules,
         &source,
         &store::normalize(&resolution.identity.origin),
         &resolution.publication,
-    );
+    ) else {
+        return every();
+    };
     // The one policy that opens no change request, so the one that leaves this
     // session with nothing to review.
     if resolved.policy.publication != MergePolicy::LocalDirect {
