@@ -35,7 +35,8 @@ thread_local! {
     static ANSWERED: RefCell<HashMap<PathBuf, bool>> = RefCell::new(HashMap::new());
 }
 
-/// Forget this read's answers.
+/// Called with `recovery_cache::clear`, so an answer lasts exactly as long as the read's
+/// other memos and goes with them when the read writes anything.
 pub(crate) fn clear() {
     ANSWERED.with(|answered| answered.borrow_mut().clear());
 }
@@ -406,8 +407,8 @@ mod recorded {
             Some((files, directories))
         }
 
-        /// Every directory's entries, read a level at a time, each level's directories
-        /// at once.
+        /// Every directory's entries. Breadth first, because a level's directories can be
+        /// read at once only when every one of them is already known.
         fn everything(&self) -> Option<HashMap<PathBuf, Entries>> {
             let mut listed = HashMap::new();
             let mut level = vec![PathBuf::new()];
@@ -425,7 +426,8 @@ mod recorded {
             Some(listed)
         }
 
-        /// One directory's digest: its files, then each directory under it with its own.
+        /// Kept as a tree rather than one flat list, so a digest never depends on the order
+        /// the parallel walk happened to read the directories in.
         fn subtree(listed: &HashMap<PathBuf, Entries>, relative: &Path) -> [u8; 32] {
             let mut hasher = Sha256::new();
             if let Some((files, directories)) = listed.get(relative) {

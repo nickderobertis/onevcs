@@ -72,6 +72,9 @@ fn host_with_worked_copies(branches: usize) -> (Host, Vec<PathBuf>) {
 /// One change to a worktree, by name, and the retirement reason the read after it gives.
 type Step<'a> = (&'a str, Box<dyn Fn() + 'a>, &'a str);
 
+/// One input git reads beside a worktree, how to move it, and how many worktrees read it.
+type Input<'a> = (&'a str, Box<dyn Fn() + 'a>, usize);
+
 fn retirement_reason(rows: &[Value], branch: &str) -> Value {
     rows.iter()
         .find(|row| row["branch"]["branch"] == branch)
@@ -334,7 +337,7 @@ fn a_kept_answer_that_is_corrupt_foreign_gone_or_unwritable_is_asked_of_git_agai
 #[test]
 fn a_tree_no_kept_answer_can_stand_for_is_asked_of_git_every_read() {
     let _exclusive = exclusive();
-    let (host, worktrees) = host_with_worked_copies(4);
+    let (host, worktrees) = host_with_worked_copies(6);
     // A repository inside the tree, which answers for itself.
     run(&worktrees[0], &["init", "-q", "vendor/inner"]);
     // A submodule declaration, ignored here so the tree reads clean.
@@ -357,7 +360,14 @@ fn a_tree_no_kept_answer_can_stand_for_is_asked_of_git_every_read() {
         std::fs::write(worktrees[3].join(name), "bytes\n").unwrap();
         exclude(&worktrees[3], "*.bin\n");
     }
-    let asked_every_time = if cfg!(target_vendor = "apple") { 3 } else { 4 };
+    // An index split into a shared part, whose entries a record's stamps do not cover.
+    run(&worktrees[4], &["update-index", "--split-index"]);
+    // A clone whose refs are kept in a reftable, which a record's stamps of loose and
+    // packed refs do not cover. Only the marker a reftable repository carries is put in
+    // place, so the clone stays readable by whichever git runs this.
+    let common = worktrees[5].parent().unwrap().join("clone/.git");
+    std::fs::create_dir_all(common.join("reftable")).unwrap();
+    let asked_every_time = if cfg!(target_vendor = "apple") { 5 } else { 6 };
     settle();
     host.read();
     for read in ["settled", "settled, again"] {
@@ -430,4 +440,95 @@ fn an_answer_whose_tree_changed_within_the_settling_span_is_used_and_never_kept(
     settle();
     assert_eq!(counted_read(&host, "stamped back, settled").1, 1);
     assert_eq!(counted_read(&host, "kept again").1, 0);
+}
+
+#[test]
+fn each_input_git_reads_beside_the_tree_asks_again_when_it_moves() {
+    let _exclusive = exclusive();
+    let (host, worktrees) = host_with_worked_copies(2);
+    let worktree = &worktrees[0];
+    let git_path = |path: &str| {
+        let path = worktree.join(run(worktree, &["rev-parse", "--git-path", path]));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        path
+    };
+    // An untracked file, so what ignores it decides the answer.
+    std::fs::write(worktree.join("build.log"), "log\n").unwrap();
+    let named_excludes = host.root.join("ignores");
+    // Each input, how to move it, and how many worktrees read it: the user's files are
+    // every worktree's, the rest this one's alone.
+    let steps: Vec<Input<'_>> = vec![
+        (
+            "the repository's attributes",
+            Box::new(|| std::fs::write(git_path("info/attributes"), "*.txt text\n").unwrap()),
+            1,
+        ),
+        (
+            "the user's attributes",
+            Box::new(|| {
+                let path = host.root.join(".config/git/attributes");
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, "*.log binary\n").unwrap();
+            }),
+            2,
+        ),
+        (
+            "the worktree's sparse-checkout patterns",
+            Box::new(|| std::fs::write(git_path("info/sparse-checkout"), "/*\n").unwrap()),
+            1,
+        ),
+        (
+            "an excludes file the configuration names under the home directory",
+            Box::new(|| {
+                std::fs::write(&named_excludes, "*.log\n").unwrap();
+                run(worktree, &["config", "core.excludesFile", "~/ignores"]);
+            }),
+            1,
+        ),
+        (
+            "that excludes file emptied",
+            Box::new(|| std::fs::write(&named_excludes, "").unwrap()),
+            1,
+        ),
+        (
+            "the worktree's own configuration",
+            Box::new(|| {
+                run(worktree, &["config", "extensions.worktreeConfig", "true"]);
+                run(
+                    worktree,
+                    &["config", "--worktree", "status.showUntrackedFiles", "no"],
+                );
+            }),
+            1,
+        ),
+        (
+            "the worktree's own configuration rewritten",
+            Box::new(|| {
+                std::fs::write(
+                    git_path("config.worktree"),
+                    "[status]\n\tshowUntrackedFiles = normal\n",
+                )
+                .unwrap();
+            }),
+            1,
+        ),
+    ];
+    for (input, change, readers) in steps {
+        settle();
+        host.read();
+        assert_eq!(counted_read(&host, input).1, 0, "kept before {input}");
+        change();
+        let (rows, asked) = counted_read(&host, input);
+        assert_eq!(
+            asked, readers,
+            "{input} moved, so what reads it is asked again"
+        );
+        settle();
+        let (again, asked) = counted_read(&host, input);
+        assert_eq!(again, rows, "{input}, then nothing moved");
+        assert!(
+            asked <= readers,
+            "{input}: asked again at most once, to keep it"
+        );
+    }
 }
