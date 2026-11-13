@@ -308,6 +308,15 @@ fn a_kept_answer_that_is_corrupt_foreign_gone_or_unwritable_is_asked_of_git_agai
     assert_eq!(counted_read(&host, "corrupt").1, 2);
     assert_eq!(counted_read(&host, "kept again").1, 0);
 
+    // Another shape's: a record whose version is not this build's.
+    for record in records() {
+        let mut kept: Value = serde_json::from_slice(&std::fs::read(&record).unwrap()).unwrap();
+        kept["version"] = json!(999);
+        std::fs::write(record, serde_json::to_vec(&kept).unwrap()).unwrap();
+    }
+    assert_eq!(counted_read(&host, "another version").1, 2);
+    assert_eq!(counted_read(&host, "kept again").1, 0);
+
     // Foreign: each worktree's file holding the other's answer.
     let [first, second] = <[PathBuf; 2]>::try_from(records()).unwrap();
     let (a, b) = (
@@ -455,6 +464,7 @@ fn each_input_git_reads_beside_the_tree_asks_again_when_it_moves() {
     // An untracked file, so what ignores it decides the answer.
     std::fs::write(worktree.join("build.log"), "log\n").unwrap();
     let named_excludes = host.root.join("ignores");
+    let linked_excludes = host.root.join("dotfiles-ignore");
     // Each input, how to move it, and how many worktrees read it: the user's files are
     // every worktree's, the rest this one's alone.
     let steps: Vec<Input<'_>> = vec![
@@ -470,6 +480,20 @@ fn each_input_git_reads_beside_the_tree_asks_again_when_it_moves() {
                 std::fs::create_dir_all(path.parent().unwrap()).unwrap();
                 std::fs::write(path, "*.log binary\n").unwrap();
             }),
+            2,
+        ),
+        (
+            "the user's excludes file, a link to a file a dotfile manager keeps",
+            Box::new(|| {
+                std::fs::write(&linked_excludes, "*.log\n").unwrap();
+                let path = host.root.join(".config/git/ignore");
+                std::os::unix::fs::symlink(&linked_excludes, path).unwrap();
+            }),
+            2,
+        ),
+        (
+            "what that link points at emptied, the link itself untouched",
+            Box::new(|| std::fs::write(&linked_excludes, "").unwrap()),
             2,
         ),
         (
@@ -531,4 +555,39 @@ fn each_input_git_reads_beside_the_tree_asks_again_when_it_moves() {
             "{input}: asked again at most once, to keep it"
         );
     }
+}
+
+#[test]
+fn a_worktree_git_cannot_read_answers_unknown_alone_and_is_read_again_once_repaired() {
+    let _exclusive = exclusive();
+    let (host, worktrees) = host_with_worked_copies(2);
+    settle();
+    host.read();
+    assert_eq!(counted_read(&host, "kept").1, 0);
+    let before = host.rows();
+
+    // An index git refuses to read: the worktree's answer is the uncached read's, and the
+    // other worktree is still answered from what was kept.
+    let index = worktrees[0].join(run(&worktrees[0], &["rev-parse", "--git-path", "index"]));
+    let whole = std::fs::read(&index).unwrap();
+    std::fs::write(&index, b"not an index").unwrap();
+    let (rows, asked) = counted_read(&host, "an index git cannot read");
+    assert!(asked >= 1, "the broken worktree is asked");
+    assert_eq!(
+        retirement_reason(&rows, "work/w1"),
+        retirement_reason(&before, "work/w1"),
+        "the other worktree's answer stands"
+    );
+    assert_eq!(
+        counted_read(&host, "still unreadable").1,
+        asked,
+        "asked each read"
+    );
+
+    // Repaired, it is answered again, and kept.
+    std::fs::write(&index, whole).unwrap();
+    settle();
+    let (rows, _) = counted_read(&host, "repaired");
+    assert_eq!(rows, before, "the answer from before it broke");
+    assert_eq!(counted_read(&host, "kept again").1, 0);
 }

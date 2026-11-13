@@ -148,10 +148,14 @@ mod recorded {
             }
         }
         let asked = SystemTime::now();
-        let output = git::checked(
+        // A worktree git cannot read is asked as an uncached read asks it, so what it
+        // answers — the refusal included, word for word — is that read's.
+        let Ok(output) = git::checked(
             &["status", "--porcelain", "-z", "--ignored"],
             Some(worktree),
-        )?;
+        ) else {
+            return git::is_dirty(worktree);
+        };
         let (dirty, ignored) = parse(&output.stdout);
         // An answer naming a path that is not UTF-8 reaches here spelled lossily, so what
         // it reported ignored cannot be held to the paths on disk: it is used, not kept.
@@ -278,15 +282,29 @@ mod recorded {
         for file in files {
             hasher.update(file.as_os_str().as_bytes());
             hasher.update([0]);
-            match std::fs::symlink_metadata(&file) {
-                Ok(metadata) => hasher.update(stamp(&metadata, settled_before)?),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    hasher.update(b"absent");
-                }
-                Err(_) => return None,
+            // Git reads these through a link — a dotfile manager's, often — so a link is
+            // stamped with what it points at as well as itself.
+            let link = optional_stamp(std::fs::symlink_metadata(&file), settled_before)?;
+            hasher.update(link.as_ref().map_or(&b"absent"[..], |stamp| &stamp[..]));
+            if link.is_some() && file.is_symlink() {
+                let target = optional_stamp(std::fs::metadata(&file), settled_before)?;
+                hasher.update(target.as_ref().map_or(&b"dangling"[..], |stamp| &stamp[..]));
             }
         }
         Some(())
+    }
+
+    /// A file's stamp, `Some(None)` where there is no such file, and `None` where it could
+    /// not be read or changed too recently.
+    fn optional_stamp(
+        metadata: std::io::Result<std::fs::Metadata>,
+        settled_before: Option<Duration>,
+    ) -> Option<Option<[u8; 64]>> {
+        match metadata {
+            Ok(metadata) => Some(Some(stamp(&metadata, settled_before)?)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(None),
+            Err(_) => None,
+        }
     }
 
     fn xdg_config() -> Option<PathBuf> {
