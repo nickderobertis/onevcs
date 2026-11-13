@@ -952,9 +952,18 @@ fn a_slot_record_this_build_cannot_read_is_no_proof_its_worktree_is_idle() {
     let whole = std::fs::read(&slot).unwrap();
 
     // Malformed, then unreadable: every edit made meanwhile is seen on the read after it.
-    for (fault, edit) in [("malformed", "edited\n"), ("unreadable", "seed\n")] {
+    for (fault, edit) in [
+        ("malformed", "edited\n"),
+        ("another version", "seed\n"),
+        ("unreadable", "edited\n"),
+    ] {
         match fault {
             "malformed" => std::fs::write(&slot, "[]").unwrap(),
+            "another version" => {
+                let mut record: Value = serde_json::from_slice(&whole).unwrap();
+                record["version"] = json!(2);
+                std::fs::write(&slot, record.to_string()).unwrap();
+            }
             _ => {
                 use std::os::unix::fs::PermissionsExt;
                 std::fs::write(&slot, &whole).unwrap();
@@ -1060,4 +1069,34 @@ fn a_rest_record_that_is_corrupt_another_version_foreign_or_unwritable_is_checke
     std::fs::remove_file(&rest).unwrap();
     counted_read(&host, "writable again");
     assert_eq!(counted_read(&host, "at rest again").1, 0);
+}
+
+#[test]
+fn an_open_session_naming_a_worktree_by_another_spelling_of_its_path_still_names_it() {
+    let _exclusive = exclusive();
+    let (host, worktrees) = host_with_idle_copies(1);
+    host.read();
+    assert_eq!(counted_read(&host, "at rest").1, 0);
+    // The session's record reaches the run root through a link, as a record written under
+    // a home reached through one does.
+    let alias = host.root.join("runs-alias");
+    std::os::unix::fs::symlink(host.root.join("runs"), &alias).unwrap();
+    std::fs::write(worktrees[0].join("seed.txt"), "edited at rest\n").unwrap();
+    set_state(&host, "work/w0", "open");
+    let path = host
+        .home
+        .join("sessions")
+        .join(format!("{}.json", Host::token("work/w0")));
+    let mut record: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let spelled = alias.join(Host::token("work/w0")).join("worktree");
+    assert_ne!(spelled, worktrees[0]);
+    record["worktree"] = json!(spelled);
+    std::fs::write(&path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+    let (rows, asked) = counted_read(&host, "an open session by another spelling");
+    assert!(asked >= 1, "the worktree is checked");
+    assert_eq!(retirement_reason(&rows, "work/w0"), json!("dirty-worktree"));
+    // And while it stays open, a change is seen on the very next read.
+    run(&worktrees[0], &["checkout", "--", "seed.txt"]);
+    let (rows, _) = counted_read(&host, "put back while open");
+    assert_ne!(retirement_reason(&rows, "work/w0"), json!("dirty-worktree"));
 }

@@ -125,10 +125,10 @@ fn answer(worktree: &Path, at_rest: Option<&str>) -> Result<bool> {
 /// answer is reused by age. Watching the tree's files would close the gap.
 pub(crate) fn at_rest(worktree: &Path, sessions: &[crate::workspace::Record]) -> Option<String> {
     use sha2::{Digest, Sha256};
-    // A record may spell the path another way; only one ending as this one does — slot or
-    // run root, then the worktree — is resolved to find out.
+    // A record may spell the path another way; only one ending as this one does — the slot
+    // or run root's own name, then the worktree's — is resolved to find out.
     fn tail(path: &Path) -> Vec<std::path::Component<'_>> {
-        path.components().rev().take(3).collect()
+        path.components().rev().take(2).collect()
     }
     let canonical = std::fs::canonicalize(worktree).ok();
     let names = |record: &crate::workspace::Record| {
