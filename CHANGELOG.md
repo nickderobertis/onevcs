@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.67.0](https://github.com/nickderobertis/onevcs/compare/v0.66.0...v0.67.0) - 2026-11-13
+
+### Added
+
+- *(rules)* [**breaking**] resolve a repository's default publication policy from its onevcs.toml ([#675](https://github.com/nickderobertis/onevcs/pull/675))
+
 ## [0.66.0](https://github.com/nickderobertis/onevcs/compare/v0.65.2...v0.66.0) - 2026-11-12
 
 ### Fixed
