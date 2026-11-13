@@ -443,6 +443,10 @@ mod recorded {
     /// Directories read at once: past a few the walk is waiting on one filesystem.
     const WALKERS: usize = 16;
 
+    /// Directories of one level each walker reads: a level of fewer is one walker's, since
+    /// starting a thread costs more than reading a few directories.
+    const DIRECTORIES_EACH: usize = 32;
+
     /// Entries of one directory one walker stamps: a directory smaller than this is one
     /// walker's alone.
     const STAMPED_TOGETHER: usize = 2048;
@@ -775,8 +779,11 @@ mod recorded {
             let mut listed = HashMap::new();
             let mut level = vec![PathBuf::new()];
             while !level.is_empty() {
-                let read =
-                    crate::vcs::concurrently_on(WALKERS, &level, |relative| self.entries(relative));
+                let read = crate::vcs::concurrently_on(
+                    level.len().div_ceil(DIRECTORIES_EACH).min(WALKERS),
+                    &level,
+                    |relative| self.entries(relative),
+                );
                 let mut next = Vec::new();
                 for (relative, entries) in level.into_iter().zip(read) {
                     let entries = entries?;
