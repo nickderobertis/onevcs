@@ -58,6 +58,7 @@ mod branch;
 pub mod branches;
 mod change;
 mod checkout_reads;
+mod cleanliness;
 pub mod cli;
 mod closing;
 mod decisions;

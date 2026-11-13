@@ -766,6 +766,175 @@ fn origin_tips_a_branch_was_checked_against_are_not_asked_about_again_while_unmo
     assert!(rows.iter().any(|row| row["branch"]["branch"] == "work/a"));
 }
 
+/// Long enough after a write that a read's own `git status` answer may be kept under it.
+fn settle() {
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+}
+
+/// A host whose every branch is also held by a closed session's worktree, as pool slots
+/// and run clones hold the branches a host preserves.
+fn host_with_worked_copies(branches: usize) -> (Host, Vec<PathBuf>) {
+    let host = Host::new();
+    let worktrees = (0..branches)
+        .map(|n| {
+            let branch = format!("work/w{n}");
+            host.branch(&branch);
+            host.worked_copy(&branch)
+        })
+        .collect();
+    (host, worktrees)
+}
+
+/// One change to a worktree, by name, and the retirement reason the read after it gives.
+type Step<'a> = (&'a str, Box<dyn Fn() + 'a>, &'a str);
+
+fn retirement_reason(rows: &[Value], branch: &str) -> Value {
+    rows.iter()
+        .find(|row| row["branch"]["branch"] == branch)
+        .map(|row| row["retirement"]["reason"].clone())
+        .unwrap_or(Value::Null)
+}
+
+#[test]
+fn worked_copies_are_asked_no_git_status_warm_however_many_there_are() {
+    let mut started = Vec::new();
+    for copies in [2, 10] {
+        let (host, _) = host_with_worked_copies(copies);
+        let uncached = host.uncached();
+        assert_eq!(uncached.len(), copies, "every branch is unpublished work");
+        settle();
+        let (cold, _) = host.read();
+        assert_eq!(cold, uncached, "the cold read answers the uncached read");
+        let mut warm = Vec::new();
+        let calls = with_shim(&host, || warm = host.read().0);
+        assert_eq!(warm, uncached, "the warm read answers the uncached read");
+        assert_eq!(
+            host.derived(),
+            set(&[]),
+            "nothing moved over {copies} copies"
+        );
+        started.push((copies, calls));
+    }
+    let statuses = |calls: &[String]| calls.iter().filter(|c| c.starts_with("status")).count();
+    let (small, large) = (&started[0], &started[1]);
+    assert_eq!(
+        (statuses(&small.1), small.1.len()),
+        (statuses(&large.1), large.1.len()),
+        "a warm read starts as much git over {} worked copies as over {}: {:?} against {:?}",
+        large.0,
+        small.0,
+        large.1,
+        small.1
+    );
+    assert_eq!(statuses(&large.1), 0, "{:?}", large.1);
+}
+
+#[test]
+fn a_worked_copy_that_changes_between_reads_is_read_afresh() {
+    let (host, worktrees) = host_with_worked_copies(3);
+    let worktree = &worktrees[0];
+    settle();
+    host.read();
+    let clean = host.assert_matches_uncached("nothing moved");
+    assert_eq!(clean, set(&[]));
+    let reason = |rows: &[Value]| retirement_reason(rows, "work/w0");
+    let not_dirty = reason(&host.rows());
+    assert_ne!(not_dirty, json!("dirty-worktree"));
+
+    // Each way a worktree comes to hold uncommitted work, and each way back, is answered
+    // as the uncached read answers it on the very next read.
+    let tracked = worktree.join("seed.txt");
+    let steps: Vec<Step<'_>> = vec![
+        (
+            "a tracked file rewritten in place",
+            Box::new(|| std::fs::write(&tracked, "edited\n").unwrap()),
+            "dirty-worktree",
+        ),
+        (
+            "the edit put back",
+            Box::new(|| {
+                run(worktree, &["checkout", "--", "seed.txt"]);
+            }),
+            "clean",
+        ),
+        (
+            "an untracked file in a new directory",
+            Box::new(|| {
+                std::fs::create_dir_all(worktree.join("notes/deep")).unwrap();
+                std::fs::write(worktree.join("notes/deep/draft.txt"), "draft\n").unwrap();
+            }),
+            "dirty-worktree",
+        ),
+        (
+            "the untracked file removed",
+            Box::new(|| std::fs::remove_dir_all(worktree.join("notes")).unwrap()),
+            "clean",
+        ),
+        (
+            "a change staged and the worktree put back",
+            Box::new(|| {
+                std::fs::write(&tracked, "staged\n").unwrap();
+                run(worktree, &["add", "seed.txt"]);
+                std::fs::write(&tracked, "seed\n").unwrap();
+            }),
+            "dirty-worktree",
+        ),
+        (
+            "the index put back",
+            Box::new(|| {
+                run(worktree, &["reset", "-q"]);
+            }),
+            "clean",
+        ),
+        (
+            "an ignored file, after an exclude that ignores it",
+            Box::new(|| {
+                let exclude = run(worktree, &["rev-parse", "--git-path", "info/exclude"]);
+                std::fs::write(worktree.join(exclude), "*.log\n").unwrap();
+                std::fs::write(worktree.join("build.log"), "log\n").unwrap();
+            }),
+            "clean",
+        ),
+        (
+            "the exclude withdrawn, leaving the file untracked",
+            Box::new(|| {
+                let exclude = run(worktree, &["rev-parse", "--git-path", "info/exclude"]);
+                std::fs::write(worktree.join(exclude), "").unwrap();
+            }),
+            "dirty-worktree",
+        ),
+    ];
+    for (step, change, expected) in steps {
+        // Each step starts from a settled tree, so the record of the last one is what a
+        // stale answer would come from.
+        settle();
+        host.read();
+        change();
+        let (rows, _) = host.read();
+        assert_eq!(rows, host.uncached(), "{step}");
+        let answered = reason(&rows);
+        if expected == "clean" {
+            assert_eq!(answered, not_dirty, "{step}");
+        } else {
+            assert_eq!(answered, json!(expected), "{step}");
+        }
+        // The read after it, with nothing moved in between, answers the same.
+        settle();
+        let (again, _) = host.read();
+        assert_eq!(again, rows, "{step}, then nothing moved");
+    }
+
+    // Switching the worktree to another branch leaves the one it was on held by nothing
+    // that works in it, and is answered as the uncached read answers it.
+    settle();
+    host.read();
+    std::fs::write(&tracked, "edited\n").unwrap();
+    run(worktree, &["switch", "-q", "--detach", "--discard-changes"]);
+    let (rows, _) = host.read();
+    assert_eq!(rows, host.uncached(), "the worktree left the branch");
+    assert_ne!(reason(&rows), json!("dirty-worktree"));
+}
+
 /// A host shaped like the one whose warm read re-derived every branch: a registered
 /// checkout carrying a linked worktree whose directory is gone, and a second checkout
 /// holding some of the same branch names at tips of its own.

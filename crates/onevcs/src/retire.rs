@@ -963,6 +963,10 @@ pub(crate) struct Ask<'a> {
     /// What becomes of a merge a session's worktree over the branch left in progress,
     /// once no live session holds it.
     merges: LeftMerges,
+    /// Whether a worktree's cleanliness may be answered from its last `git status` while
+    /// nothing that answer read has moved (`cleanliness.rs`): the read `recoverable`
+    /// makes, and never one that goes on to act.
+    recorded_cleanliness: bool,
 }
 
 /// What a census does with a merge a session left in progress in a worktree over a
@@ -987,6 +991,7 @@ impl<'a> Ask<'a> {
             verdicts: None,
             recorded: None,
             merges: LeftMerges::Leave,
+            recorded_cleanliness: false,
         }
     }
 
@@ -1000,6 +1005,7 @@ impl<'a> Ask<'a> {
             verdicts: None,
             recorded: None,
             merges: LeftMerges::Leave,
+            recorded_cleanliness: false,
         }
     }
 
@@ -1016,6 +1022,7 @@ impl<'a> Ask<'a> {
                 true => LeftMerges::Leave,
                 false => LeftMerges::Abort,
             },
+            recorded_cleanliness: false,
         }
     }
 }
@@ -1522,6 +1529,7 @@ impl<'a> Census<'a> {
         &self,
         branch: &str,
         copies: &Copies,
+        recorded_cleanliness: bool,
     ) -> std::result::Result<Option<PathBuf>, UnknownCause> {
         for place in self.holding(copies) {
             if place.kind == BranchHolderKind::Checkout {
@@ -1534,9 +1542,9 @@ impl<'a> Census<'a> {
                     continue;
                 }
                 let dirty = worktree.is_dir()
-                    && git::is_dirty(&worktree).map_err(|failure| {
-                        UnknownCause::new("worked-in", worktree.display(), failure)
-                    })?;
+                    && crate::cleanliness::is_dirty(&worktree, recorded_cleanliness).map_err(
+                        |failure| UnknownCause::new("worked-in", worktree.display(), failure),
+                    )?;
                 if dirty {
                     return Ok(Some(worktree));
                 }
@@ -1612,7 +1620,7 @@ impl<'a> Census<'a> {
         }
         // Every read below that fails is a proof that did not hold, and the answer to
         // that is `unknown` — never a class a read that was not made decided.
-        let retirement = match self.worked_in(branch, &copies) {
+        let retirement = match self.worked_in(branch, &copies, ask.recorded_cleanliness) {
             Ok(Some(reason)) => Retirement::kept(self, branch, reason, &copies),
             Ok(None) => verdict.retirement,
             Err(cause) => Retirement::unknown(self, branch, cause, &copies),
@@ -1629,11 +1637,12 @@ impl<'a> Census<'a> {
         &self,
         branch: &str,
         copies: &Copies,
+        recorded_cleanliness: bool,
     ) -> std::result::Result<Option<KeepReason>, UnknownCause> {
         if self.checked_out(branch, copies)?.is_some() {
             return Ok(Some(KeepReason::CheckedOut));
         }
-        if self.dirty(branch, copies)?.is_some() {
+        if self.dirty(branch, copies, recorded_cleanliness)?.is_some() {
             return Ok(Some(KeepReason::DirtyWorktree));
         }
         Ok(None)
@@ -1650,9 +1659,15 @@ impl<'a> Census<'a> {
         copies: &Copies,
         ask: &Ask<'_>,
     ) -> (crate::verdict::Verdict, Derivation) {
+        // A derivation that reached the change request but had no host to ask answered
+        // it from the records alone, as a pass with no host answers it again: only a
+        // verdict the host spoke to is the host's to confirm.
         if let Some(kept) = ask
             .recorded
-            .filter(|kept| !kept.consulted)
+            .filter(|kept| {
+                !kept.consulted
+                    || (ask.host.is_none() && kept.host == crate::verdict::HostAnswer::not_asked())
+            })
             .filter(|kept| self.describes(&kept.retirement, branch, base, copies))
         {
             return (kept.clone(), Derivation::Reused);
@@ -2865,12 +2880,44 @@ pub(crate) fn classify_offline_kept(
 ) -> Option<(Retirement, Option<crate::verdict::Verdict>)> {
     let ask = Ask {
         recorded,
+        recorded_cleanliness: true,
         ..Ask::offline()
     };
     census
         .classify(branch, census.copies(branch, &ask), &ask)
         .ok()
         .map(|classified| (classified.retirement, classified.verdict))
+}
+
+/// Read at once the cleanliness of every worktree [`classify_offline_kept`] may ask about
+/// for these branches, so that its asking, one branch at a time, finds each answered.
+pub(crate) fn prefetch_cleanliness<'b>(
+    census: &Census<'_>,
+    branches: impl IntoIterator<Item = &'b String>,
+) {
+    let ask = Ask::offline();
+    let mut worktrees: Vec<PathBuf> = Vec::new();
+    for branch in branches {
+        let copies = census.copies(branch, &ask);
+        for place in census.holding(&copies) {
+            if place.kind == BranchHolderKind::Checkout {
+                continue;
+            }
+            let Ok(heads) = worktrees_of(&place.repo) else {
+                continue;
+            };
+            for (worktree, on) in heads {
+                if on.as_deref() == Some(branch.as_str())
+                    && worktree != place.repo
+                    && worktree.is_dir()
+                    && !worktrees.contains(&worktree)
+                {
+                    worktrees.push(worktree);
+                }
+            }
+        }
+    }
+    crate::cleanliness::prefetch(&worktrees);
 }
 
 /// The offline census sweep judges one identity's records against: the same read
@@ -4038,7 +4085,7 @@ mod unknown_causes {
         let copies = census.copies(BRANCH, &Ask::offline());
         assert!(copies.unreadable.is_empty(), "{copies:?}");
         let worktree = landed.stale.worktree.clone();
-        let read = closed(&worktree, || census.worked_in(BRANCH, &copies));
+        let read = closed(&worktree, || census.worked_in(BRANCH, &copies, false));
         says(
             &read.expect_err("a worktree nobody can read answers no state"),
             "worked-in",

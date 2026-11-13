@@ -1,0 +1,413 @@
+//! Whether a worktree holds changes nobody committed, answered from the last `git status`
+//! while nothing that answer read has moved.
+//!
+//! A recovery read asks it of every worktree over a branch it classifies, and on a host's
+//! larger trees `git status` spends half a second listing untracked files. What the answer
+//! reads is the worktree's own entries, its index and `HEAD`, its excludes and its
+//! configuration, and git itself, so the record under `$ONEVCS_HOME/cache/cleanliness/v1/`
+//! keeps the answer beside a digest of every one of those: each entry's inode identity,
+//! size, mode and modification and change times, every directory's included, which move
+//! whenever an entry is added, removed, renamed or written. A read whose digest is the
+//! recorded one is answered from the record; any other asks git and records again.
+//!
+//! What git reported ignored is left out of the walk, as git leaves it out: a file inside
+//! an ignored directory cannot make the tree dirty, and creating one there moves no
+//! directory the walk reads. An entry is never digested where its timestamps are within
+//! [`SETTLED`] of the `git status` its answer came from, since a write in that span could
+//! leave a timestamp git's own answer did not see; such an answer is used and not kept.
+//! Every shape whose answer depends on something outside the walk — a submodule or nested
+//! repository, a reftable, a split index, a configuration with includes — is asked of git
+//! every time.
+//!
+//! Deleting the directory loses nothing but time.
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+use crate::error::Result;
+use crate::git;
+
+thread_local! {
+    /// Each worktree's answer within one read, which asks it once per branch over it:
+    /// emptied with the read's other memos, and by anything the read writes.
+    static ANSWERED: RefCell<HashMap<PathBuf, bool>> = RefCell::new(HashMap::new());
+}
+
+/// Forget this read's answers.
+pub(crate) fn clear() {
+    ANSWERED.with(|answered| answered.borrow_mut().clear());
+}
+
+/// Answer several worktrees at once, ahead of a read that asks them one by one: each
+/// answer joins this read's, so the read's own asking finds it answered. A worktree this
+/// cannot answer is left to that asking.
+pub(crate) fn prefetch(worktrees: &[PathBuf]) {
+    #[cfg(unix)]
+    if crate::decisions::enabled() {
+        let unanswered: Vec<&PathBuf> = worktrees
+            .iter()
+            .filter(|worktree| ANSWERED.with(|answered| !answered.borrow().contains_key(*worktree)))
+            .collect();
+        let found = crate::vcs::concurrently_on(PREFETCHED, &unanswered, |worktree| {
+            crate::checkout_reads::unturned(|| {
+                crate::recovery_cache::scope(|| recorded::is_dirty(worktree).ok())
+            })
+        });
+        ANSWERED.with(|answered| {
+            let mut answered = answered.borrow_mut();
+            for (worktree, dirty) in unanswered.into_iter().zip(found) {
+                if let Some(dirty) = dirty {
+                    answered.insert(worktree.clone(), dirty);
+                }
+            }
+        });
+    }
+    let _ = worktrees;
+}
+
+/// Worktrees [`prefetch`] reads at once, each walked by its own walkers.
+#[cfg(unix)]
+const PREFETCHED: usize = 4;
+
+/// Asked of git on every read where reuse is not on, and from the record where it is.
+pub(crate) fn is_dirty(worktree: &Path, reuse: bool) -> Result<bool> {
+    #[cfg(unix)]
+    if reuse && crate::decisions::enabled() {
+        if let Some(known) = ANSWERED.with(|answered| answered.borrow().get(worktree).copied()) {
+            return Ok(known);
+        }
+        let dirty = recorded::is_dirty(worktree)?;
+        ANSWERED.with(|answered| answered.borrow_mut().insert(worktree.to_owned(), dirty));
+        return Ok(dirty);
+    }
+    let _ = reuse;
+    git::is_dirty(worktree)
+}
+
+/// How far before the `git status` an answer came from every entry it is kept under must
+/// have last changed. A file's times come from the kernel's coarse clock, which trails the
+/// clock this reads by at most one tick — milliseconds — so a write after the status began
+/// is always stamped later than this before it.
+#[cfg(unix)]
+const SETTLED: std::time::Duration = std::time::Duration::from_secs(1);
+
+#[cfg(unix)]
+mod recorded {
+    use std::collections::{BTreeSet, HashMap};
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::MetadataExt;
+    use std::path::{Path, PathBuf};
+    use std::time::{Duration, SystemTime};
+
+    use serde::{Deserialize, Serialize};
+    use sha2::{Digest, Sha256};
+
+    use super::SETTLED;
+    use crate::error::Result;
+    use crate::git;
+
+    /// The record's shape. A record of any other is asked of git again.
+    const VERSION: u32 = 1;
+
+    /// Directories read at once: past a few the walk is waiting on one filesystem.
+    const WALKERS: usize = 16;
+
+    #[derive(Serialize, Deserialize)]
+    struct Record {
+        version: u32,
+        worktree: PathBuf,
+        /// Paths `git status` reported ignored, relative to the worktree, a directory's
+        /// with its trailing `/`.
+        ignored: BTreeSet<String>,
+        digest: String,
+        dirty: bool,
+    }
+
+    pub(super) fn is_dirty(worktree: &Path) -> Result<bool> {
+        let path = record_path(worktree);
+        if let Some(record) = path.as_deref().and_then(read) {
+            if record.version == VERSION
+                && record.worktree == worktree
+                && digest(worktree, &record.ignored, None).as_deref()
+                    == Some(record.digest.as_str())
+            {
+                return Ok(record.dirty);
+            }
+        }
+        let asked = SystemTime::now();
+        let output = git::checked(
+            &["status", "--porcelain", "-z", "--ignored"],
+            Some(worktree),
+        )?;
+        let (dirty, ignored) = parse(&output.stdout);
+        if let Some(path) = path {
+            let settled_before = asked.checked_sub(SETTLED);
+            if let Some(digest) = settled_before.and_then(|t| digest(worktree, &ignored, Some(t))) {
+                let record = Record {
+                    version: VERSION,
+                    worktree: worktree.to_owned(),
+                    ignored,
+                    digest,
+                    dirty,
+                };
+                if let Ok(text) = serde_json::to_string(&record) {
+                    let _ = crate::home::atomic_write(&path, &text);
+                }
+            }
+        }
+        Ok(dirty)
+    }
+
+    fn record_path(worktree: &Path) -> Option<PathBuf> {
+        let name = format!("{:x}.json", Sha256::digest(worktree.as_os_str().as_bytes()));
+        Some(
+            crate::home::root()
+                .ok()?
+                .join("cache/cleanliness/v1")
+                .join(name),
+        )
+    }
+
+    fn read(path: &Path) -> Option<Record> {
+        serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
+    }
+
+    /// Whether `git status --porcelain -z --ignored` reported anything but ignored
+    /// paths, and the ignored paths it reported.
+    fn parse(stdout: &str) -> (bool, BTreeSet<String>) {
+        let mut dirty = false;
+        let mut ignored = BTreeSet::new();
+        let mut items = stdout.split('\0').filter(|item| !item.is_empty());
+        while let Some(item) = items.next() {
+            if let Some(path) = item.strip_prefix("!! ") {
+                ignored.insert(path.to_owned());
+                continue;
+            }
+            dirty = true;
+            // A rename or copy is followed by the path it came from, as an item of its own.
+            if item.starts_with(['R', 'C']) || item.get(1..2).is_some_and(|y| "RC".contains(y)) {
+                items.next();
+            }
+        }
+        (dirty, ignored)
+    }
+
+    /// The digest of everything the answer read, or `None` where something is a shape the
+    /// walk cannot stand for — or, with `settled_before`, changed too recently to be kept.
+    fn digest(
+        worktree: &Path,
+        ignored: &BTreeSet<String>,
+        settled_before: Option<SystemTime>,
+    ) -> Option<String> {
+        let settled_before = settled_before
+            .map(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+            .map_or(Ok(None), |t| t.map(Some).ok_or(()))
+            .ok()?;
+        let mut hasher = Sha256::new();
+        hasher.update(VERSION.to_le_bytes());
+        fixed(worktree, &mut hasher, settled_before)?;
+        let walk = Walk {
+            worktree,
+            ignored,
+            settled_before,
+        };
+        let listed = walk.everything()?;
+        hasher.update(Walk::subtree(&listed, Path::new("")));
+        Some(format!("{:x}", hasher.finalize()))
+    }
+
+    /// What the answer reads besides the worktree's entries: git, its configuration, the
+    /// repository's `HEAD`, index and excludes.
+    fn fixed(worktree: &Path, hasher: &mut Sha256, settled_before: Option<Duration>) -> Option<()> {
+        hasher.update(crate::recovery_cache::git_semantics()?.as_bytes());
+        let configuration = crate::native_refs::configuration(worktree)?;
+        hasher.update(configuration.as_bytes());
+        let (directory, common) = crate::native_refs::layout(worktree)?;
+        if common.join("reftable").exists()
+            || std::fs::symlink_metadata(worktree.join(".gitmodules")).is_ok()
+            || std::fs::read_dir(&directory)
+                .ok()?
+                .flatten()
+                .any(|entry| entry.file_name().as_bytes().starts_with(b"sharedindex."))
+        {
+            return None;
+        }
+        let head = std::fs::read(directory.join("HEAD")).ok()?;
+        hasher.update(&head);
+        let mut files = vec![
+            worktree.join(".git"),
+            directory.join("HEAD"),
+            directory.join("index"),
+            directory.join("config.worktree"),
+            directory.join("info/sparse-checkout"),
+            common.join("info/sparse-checkout"),
+            common.join("config"),
+            common.join("packed-refs"),
+            common.join("info/exclude"),
+            common.join("info/attributes"),
+            excludes_file(&configuration)?,
+            PathBuf::from("/etc/gitattributes"),
+            xdg_config()?.join("git/attributes"),
+        ];
+        if let Some(target) = head.strip_prefix(b"ref: ") {
+            let target = std::str::from_utf8(target).ok()?.trim();
+            if target.contains("..") {
+                return None;
+            }
+            files.push(common.join(target));
+        }
+        for file in files {
+            hasher.update(file.as_os_str().as_bytes());
+            hasher.update([0]);
+            match std::fs::symlink_metadata(&file) {
+                Ok(metadata) => hasher.update(stamp(&metadata, settled_before)?),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    hasher.update(b"absent");
+                }
+                Err(_) => return None,
+            }
+        }
+        Some(())
+    }
+
+    fn xdg_config() -> Option<PathBuf> {
+        match std::env::var_os("XDG_CONFIG_HOME").filter(|value| !value.is_empty()) {
+            Some(config) => Some(PathBuf::from(config)),
+            None => Some(PathBuf::from(std::env::var_os("HOME")?).join(".config")),
+        }
+    }
+
+    /// The excludes file git reads: `core.excludesFile` where the configuration names one,
+    /// its default otherwise.
+    fn excludes_file(configuration: &str) -> Option<PathBuf> {
+        let mut named = None;
+        for field in configuration.split('\0') {
+            if let Some((key, value)) = field.split_once('\n') {
+                if key.eq_ignore_ascii_case("core.excludesfile") {
+                    named = Some(value.to_owned());
+                }
+            }
+        }
+        match named {
+            Some(value) => match value.strip_prefix("~/") {
+                Some(rest) => Some(PathBuf::from(std::env::var_os("HOME")?).join(rest)),
+                None => Some(PathBuf::from(value)),
+            },
+            None => Some(xdg_config()?.join("git/ignore")),
+        }
+    }
+
+    /// An entry's identity and both its times, or `None` where it changed since
+    /// `settled_before`.
+    fn stamp(metadata: &std::fs::Metadata, settled_before: Option<Duration>) -> Option<[u8; 64]> {
+        let changed = |seconds: i64, nanos: i64| {
+            let at = Duration::new(
+                u64::try_from(seconds).unwrap_or(0),
+                u32::try_from(nanos).unwrap_or(0),
+            );
+            settled_before.is_some_and(|before| at >= before)
+        };
+        if changed(metadata.mtime(), metadata.mtime_nsec())
+            || changed(metadata.ctime(), metadata.ctime_nsec())
+        {
+            return None;
+        }
+        let fields: [u64; 8] = [
+            metadata.dev(),
+            metadata.ino(),
+            metadata.len(),
+            u64::from(metadata.mode()),
+            metadata.mtime().cast_unsigned(),
+            metadata.mtime_nsec().cast_unsigned(),
+            metadata.ctime().cast_unsigned(),
+            metadata.ctime_nsec().cast_unsigned(),
+        ];
+        let mut bytes = [0; 64];
+        for (at, field) in fields.iter().enumerate() {
+            bytes[at * 8..at * 8 + 8].copy_from_slice(&field.to_le_bytes());
+        }
+        Some(bytes)
+    }
+
+    /// One digest's walk of a worktree's entries.
+    struct Walk<'a> {
+        worktree: &'a Path,
+        ignored: &'a BTreeSet<String>,
+        settled_before: Option<Duration>,
+    }
+
+    type Entries = (Vec<(String, [u8; 64])>, Vec<(String, [u8; 64])>);
+
+    impl Walk<'_> {
+        /// One directory's files and directories, by name, each with its stamp, leaving
+        /// out what git reported ignored and the repository's own `.git`.
+        fn entries(&self, relative: &Path) -> Option<Entries> {
+            let mut files = Vec::new();
+            let mut directories = Vec::new();
+            for entry in std::fs::read_dir(self.worktree.join(relative)).ok()? {
+                let entry = entry.ok()?;
+                let name = entry.file_name();
+                if name == ".git" {
+                    if relative.as_os_str().is_empty() {
+                        continue;
+                    }
+                    // A repository inside the tree answers for itself.
+                    return None;
+                }
+                let path = relative.join(&name);
+                let spelled = path.to_string_lossy().into_owned();
+                let metadata = entry.metadata().ok()?;
+                let stamp = stamp(&metadata, self.settled_before)?;
+                if metadata.is_dir() {
+                    if !self.ignored.contains(&format!("{spelled}/")) {
+                        directories.push((spelled, stamp));
+                    }
+                } else if !self.ignored.contains(&spelled) {
+                    files.push((spelled, stamp));
+                }
+            }
+            files.sort_unstable();
+            directories.sort_unstable();
+            Some((files, directories))
+        }
+
+        /// Every directory's entries, read a level at a time, each level's directories
+        /// at once.
+        fn everything(&self) -> Option<HashMap<PathBuf, Entries>> {
+            let mut listed = HashMap::new();
+            let mut level = vec![PathBuf::new()];
+            while !level.is_empty() {
+                let read =
+                    crate::vcs::concurrently_on(WALKERS, &level, |relative| self.entries(relative));
+                let mut next = Vec::new();
+                for (relative, entries) in level.into_iter().zip(read) {
+                    let entries = entries?;
+                    next.extend(entries.1.iter().map(|(name, _)| PathBuf::from(name)));
+                    listed.insert(relative, entries);
+                }
+                level = next;
+            }
+            Some(listed)
+        }
+
+        /// One directory's digest: its files, then each directory under it with its own.
+        fn subtree(listed: &HashMap<PathBuf, Entries>, relative: &Path) -> [u8; 32] {
+            let mut hasher = Sha256::new();
+            if let Some((files, directories)) = listed.get(relative) {
+                for (name, stamp) in files {
+                    hasher.update(name.as_bytes());
+                    hasher.update([0]);
+                    hasher.update(stamp);
+                }
+                for (name, stamp) in directories {
+                    hasher.update(name.as_bytes());
+                    hasher.update([1]);
+                    hasher.update(stamp);
+                    hasher.update(Self::subtree(listed, Path::new(name)));
+                }
+            }
+            hasher.finalize().into()
+        }
+    }
+}

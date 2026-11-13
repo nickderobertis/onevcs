@@ -1006,6 +1006,10 @@ fn serve_recorded(
     // did not name, with the digest of those tips: the record is moved onto them, so an
     // unchanged origin is not asked about again on every later read.
     let mut reanchored: BTreeMap<(String, PathBuf), String> = BTreeMap::new();
+    // Each record this read moves forward — onto origin tips, a base commit or a verdict
+    // it checked it against — written once, after every check that moves it, so a later
+    // one never writes back what an earlier one replaced.
+    let mut rewritten: BTreeMap<(String, PathBuf), Decision> = BTreeMap::new();
     for (branch, seen_at) in &copies {
         let held = held_by(sessions, identity, branch)?;
         let digest = decisions::sessions_digest(sessions, identity, branch, &held);
@@ -1174,12 +1178,10 @@ fn serve_recorded(
                 // Checked against everything up to here and named by none of it: the
                 // next check starts here, so a branch re-derived by one gain is not
                 // named again by what the rest of its checkout had still to be read past.
-                let mut anchored = (*decision).clone();
-                anchored.decided_against = Some(compared.clone());
-                if let Some(origin) = reanchored.remove(&((*branch).clone(), repo.clone())) {
-                    anchored.listing.origin = origin;
-                }
-                decisions::write(&anchored);
+                rewritten
+                    .entry(((*branch).clone(), repo.clone()))
+                    .or_insert_with(|| (*decision).clone())
+                    .decided_against = Some(compared.clone());
             }
         }
         decisions::note_check(identity, repo, gained.commits.len(), named, started);
@@ -1190,9 +1192,11 @@ fn serve_recorded(
     if scan.writing {
         for (key, origin) in reanchored {
             if let Some(Usable::Row(decision)) = usable.get(&key) {
-                let mut anchored = (*decision).clone();
-                anchored.listing.origin = origin;
-                decisions::write(&anchored);
+                rewritten
+                    .entry(key)
+                    .or_insert_with(|| (*decision).clone())
+                    .listing
+                    .origin = origin;
             }
         }
     }
@@ -1210,6 +1214,26 @@ fn serve_recorded(
             .and_then(|only| (!only.looks_everywhere()).then_some(&only.checkouts)),
     )?
     .looking_once(scan.look);
+    // The worktrees the retirements below will ask whether they hold uncommitted work,
+    // read at once rather than one branch at a time: a branch whose kept verdict was
+    // decided before that question is never asked it.
+    crate::retire::prefetch_cleanliness(
+        &census,
+        copies.iter().filter_map(|(branch, seen_at)| {
+            let asked = !served.derive.contains(branch)
+                && seen_at.iter().any(|(repo, _)| {
+                    matches!(
+                        usable.get(&(branch.clone(), repo.clone())),
+                        Some(Usable::Row(decision)) if decision
+                            .listing
+                            .verdict
+                            .as_ref()
+                            .is_none_or(|kept| kept.reached != crate::verdict::Reached::Early)
+                    )
+                });
+            asked.then_some(branch)
+        }),
+    );
     // Each branch's copies are walked as the derivation walks them: a copy unlisted or
     // left out of the default report is passed over, and the first that answers a row
     // ends the walk. Reaching a copy no record can answer derives the whole branch.
@@ -1230,12 +1254,28 @@ fn serve_recorded(
                     break;
                 }
             };
-            let retirement = crate::retire::classify_offline_kept(
+            let classified = crate::retire::classify_offline_kept(
                 &census,
                 branch,
                 decision.listing.verdict.as_ref(),
-            )
-            .map(|(retirement, _)| retirement);
+            );
+            // A verdict derived again — its holders moved since it was kept — is kept in
+            // its place, as the derivation keeps the one it reaches, so the next read
+            // whose holders are these reuses it rather than deriving it once more.
+            if let Some((_, Some(verdict))) = &classified {
+                if scan.writing
+                    && decision.listing.verdict.as_ref() != Some(verdict)
+                    && verdict.retirement.reason != Some(crate::KeepReason::Unknown)
+                    && !verdict.host.failed()
+                {
+                    rewritten
+                        .entry((branch.clone(), repo.clone()))
+                        .or_insert_with(|| decision.clone())
+                        .listing
+                        .verdict = Some(verdict.clone());
+                }
+            }
+            let retirement = classified.map(|(retirement, _)| retirement);
             let Some(mut row) = decision.row.clone() else {
                 continue;
             };
@@ -1270,6 +1310,9 @@ fn serve_recorded(
         }
         served.rows.append(&mut rows);
         served.withheld_rows.append(&mut withheld_rows);
+    }
+    for decision in rewritten.values() {
+        decisions::write(decision);
     }
     Ok(served)
 }

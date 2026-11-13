@@ -115,6 +115,7 @@ pub(crate) fn enabled() -> bool {
 
 pub(crate) fn clear() {
     crate::native_refs::clear();
+    crate::cleanliness::clear();
     CONTEXTS.with(|contexts| contexts.borrow_mut().clear());
     STORES.with(|stores| stores.borrow_mut().clear());
     COVERED.with(|covered| covered.borrow_mut().clear());
@@ -988,6 +989,12 @@ fn is_filter_driver(key: &str) -> bool {
     key.strip_prefix("filter.")
         .and_then(|rest| rest.rsplit_once('.'))
         .is_some_and(|(_, field)| matches!(field, "clean" | "smudge" | "process" | "required"))
+}
+
+/// The identity of the git this process runs, as every recovery key holds it.
+#[cfg(unix)]
+pub(crate) fn git_semantics() -> Option<String> {
+    semantics()
 }
 
 #[cfg(unix)]
