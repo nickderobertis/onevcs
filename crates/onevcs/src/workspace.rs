@@ -720,10 +720,21 @@ fn record_lock(token: &str) -> Result<lock::Guard> {
 /// the lock is a file lock, and a second take of it from this process waits on the
 /// first.
 pub(crate) fn update(token: &str, change: impl FnOnce(&mut Record)) -> Result<Record> {
-    let _guard = record_lock(token)?;
-    let mut record = load(token)?;
-    change(&mut record);
-    save(&record)?;
+    let (record, closed) = {
+        let _guard = record_lock(token)?;
+        let mut record = load(token)?;
+        let was_open = record.state == Lifecycle::Open;
+        change(&mut record);
+        save(&record)?;
+        let closed = was_open && record.state == Lifecycle::Closed;
+        (record, closed)
+    };
+    // Every close of a record crosses here — `session close`, a publication, a
+    // retirement — so here is where what its worktree holds is recorded at rest, once
+    // the record's lock is let go.
+    if closed {
+        crate::cleanliness::record_closed(&record.worktree);
+    }
     Ok(record)
 }
 

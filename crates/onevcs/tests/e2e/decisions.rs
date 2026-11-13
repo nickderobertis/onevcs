@@ -281,6 +281,83 @@ fn session_close_publication_and_landing_leave_their_branchs_record_current() {
 }
 
 #[test]
+fn a_publication_that_closes_its_session_records_its_worktree_at_rest_for_the_next_read() {
+    let fixture = Fixture2::local(&crate::lifecycle::local_direct());
+    let world = &fixture.world;
+    let onevcs = || {
+        let mut command = world.onevcs();
+        command.env_remove("ONEVCS_DECISION_RECORD");
+        command
+    };
+    let rows = |uncached: bool| -> Vec<Value> {
+        let mut command = onevcs();
+        if uncached {
+            command.env("GIT_NAMESPACE", "");
+        }
+        let stdout = command
+            .args(["recoverable", "--all", "--json", "--detail", "decision"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        serde_json::from_slice(&stdout).unwrap()
+    };
+    let reason = |rows: &[Value]| {
+        rows.iter()
+            .find(|row| row["branch"]["branch"] == "work/rest")
+            .map(|row| row["retirement"]["reason"].clone())
+            .unwrap_or(Value::Null)
+    };
+    // No read before the close: a publication refreshes the decision record only where a
+    // host read has started recording, so nothing but the close itself can record here.
+    let stdout = onevcs()
+        .args(["session", "open", "project", "--branch", "work/rest"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let (token, tree) = (
+        crate::world::token_of(&stdout),
+        crate::world::worktree_of(&stdout),
+    );
+    std::fs::write(tree.join("rest.txt"), "work\n").unwrap();
+    run(&tree, &["add", "."]);
+    run(&tree, &["commit", "-q", "-m", "feat: rest"]);
+    let rest = world.home().join("cache/cleanliness/rest-v1");
+    let kept = || -> Vec<Value> {
+        std::fs::read_dir(&rest)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|file| serde_json::from_slice(&std::fs::read(file.path()).ok()?).ok())
+            .collect()
+    };
+    assert!(kept().is_empty(), "nothing is at rest before the close");
+
+    // The publication closes the session and leaves its worktree on the branch: what that
+    // worktree holds is recorded as the record closes, before any read asks.
+    onevcs().args(["publish", &token]).assert().success();
+    assert!(tree.is_dir());
+    let resolved = std::fs::canonicalize(&tree).unwrap();
+    let at_close: Vec<Value> = kept()
+        .into_iter()
+        .filter(|record| record["worktree"] == json!(resolved))
+        .collect();
+    assert_eq!(at_close.len(), 1, "{:?}", kept());
+    assert_eq!(at_close[0]["dirty"], json!(false));
+
+    // The next read answers from it with no walk of the tree: an edit made by hand since,
+    // which no lifecycle event follows, is not seen. That is the rule's accepted gap, and
+    // the uncached read, which asks git, sees the edit.
+    std::fs::write(tree.join("rest.txt"), "edited by hand\n").unwrap();
+    let warm = rows(false);
+    assert_ne!(reason(&warm), json!("dirty-worktree"), "{warm:?}");
+    assert_eq!(reason(&rows(true)), json!("dirty-worktree"));
+}
+
+#[test]
 fn a_session_scoped_read_writes_nothing_under_decisions() {
     let host = Host::new();
     host.branch("work/a");

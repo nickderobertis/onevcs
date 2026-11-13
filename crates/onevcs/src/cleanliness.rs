@@ -142,6 +142,22 @@ fn answer(worktree: &Path, lookup: &Lookup) -> Result<bool> {
 /// edit made inside an idle slot outside onevcs is not seen until one of those events. No
 /// answer is reused by age. Watching the tree's files would close the gap.
 pub(crate) fn lookup(worktree: &Path, sessions: &[crate::workspace::Record]) -> Lookup {
+    let Some((run_root, lifecycle)) = lifecycle(worktree, sessions) else {
+        return Lookup::Exact;
+    };
+    if !matches!(
+        crate::lock::is_occupied(&crate::workspace::occupancy_identity(&run_root)),
+        Ok(false)
+    ) {
+        return Lookup::Exact;
+    }
+    Lookup::AtRest(lifecycle)
+}
+
+/// A worktree's run root and the digest of the lifecycle records naming it, or `None`
+/// where an open session names it or a maintenance run claims its slot. The lease is the
+/// caller's question: a close asks this while it still holds its own.
+fn lifecycle(worktree: &Path, sessions: &[crate::workspace::Record]) -> Option<(PathBuf, String)> {
     use sha2::{Digest, Sha256};
     // A record may spell the path another way; only one ending as this one does — the slot
     // or run root's own name, then the worktree's — is resolved to find out.
@@ -162,21 +178,12 @@ pub(crate) fn lookup(worktree: &Path, sessions: &[crate::workspace::Record]) -> 
         .iter()
         .any(|record| record.state == crate::Lifecycle::Open)
     {
-        return Lookup::Exact;
+        return None;
     }
-    let Some(run_root) = naming
+    let run_root = naming
         .first()
         .map(|record| record.run_root.clone())
-        .or_else(|| worktree.parent().map(Path::to_path_buf))
-    else {
-        return Lookup::Exact;
-    };
-    if !matches!(
-        crate::lock::is_occupied(&crate::workspace::occupancy_identity(&run_root)),
-        Ok(false)
-    ) {
-        return Lookup::Exact;
-    }
+        .or_else(|| worktree.parent().map(Path::to_path_buf))?;
     let mut digest = Sha256::new();
     for record in &naming {
         digest.update(record.token.to_string().as_bytes());
@@ -189,10 +196,42 @@ pub(crate) fn lookup(worktree: &Path, sessions: &[crate::workspace::Record]) -> 
         crate::pool::Maintenance::Idle(last) => digest.update(last.as_bytes()),
         // Claimed, or a slot record this build cannot read: nothing proves it idle.
         crate::pool::Maintenance::Claimed | crate::pool::Maintenance::Unreadable => {
-            return Lookup::Exact;
+            return None;
         }
     }
-    Lookup::AtRest(format!("{:x}", digest.finalize()))
+    Some((run_root, format!("{:x}", digest.finalize())))
+}
+
+/// Record what a worktree holds as the session record naming it closes, under the
+/// lifecycle the close leaves it in, so the next read answers it at rest from what was
+/// true at the close rather than checking it itself. Best effort: the close has already
+/// happened, and a record that could not be made costs only the next read's exact check.
+pub(crate) fn record_closed(worktree: &Path) {
+    #[cfg(unix)]
+    {
+        let off = std::env::var_os("ONEVCS_DECISION_RECORD").as_deref()
+            == Some(std::ffi::OsStr::new("off"));
+        if off || crate::recovery_cache::has_git_overrides() || !worktree.is_dir() {
+            return;
+        }
+        let Ok(sessions) = crate::workspace::all() else {
+            return;
+        };
+        let Some((_, lifecycle)) = lifecycle(worktree, &sessions) else {
+            return;
+        };
+        let checked = || crate::checkout_reads::unturned(|| recorded::is_dirty(worktree));
+        let dirty = if crate::recovery_cache::enabled() {
+            checked()
+        } else {
+            crate::recovery_cache::scope(checked)
+        };
+        if let Ok(dirty) = dirty {
+            rest::record(worktree, &lifecycle, dirty);
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = worktree;
 }
 
 /// What a worktree at rest was found to hold, and the lifecycle it was found under.
@@ -217,13 +256,31 @@ mod rest {
         dirty: bool,
     }
 
+    /// Filed by the worktree's resolved path: a close names it as its session record
+    /// spells it, a read as git lists it.
     fn record_path(worktree: &Path) -> Option<PathBuf> {
+        let resolved = std::fs::canonicalize(worktree).unwrap_or_else(|_| worktree.to_owned());
         crate::home::root().ok().map(|root| {
             root.join("cache/cleanliness/rest-v1").join(format!(
                 "{:x}.json",
-                Sha256::digest(worktree.as_os_str().as_bytes())
+                Sha256::digest(resolved.as_os_str().as_bytes())
             ))
         })
+    }
+
+    pub(super) fn record(worktree: &Path, lifecycle: &str, dirty: bool) {
+        let Some(path) = record_path(worktree) else {
+            return;
+        };
+        let record = Record {
+            version: VERSION,
+            worktree: std::fs::canonicalize(worktree).unwrap_or_else(|_| worktree.to_owned()),
+            lifecycle: lifecycle.to_owned(),
+            dirty,
+        };
+        if let Ok(text) = serde_json::to_string(&record) {
+            let _ = crate::home::atomic_write(&path, &text);
+        }
     }
 
     pub(super) fn forget(worktree: &Path) {
@@ -233,28 +290,17 @@ mod rest {
     }
 
     pub(super) fn answer(worktree: &Path, lifecycle: &str) -> Result<bool> {
-        let path = record_path(worktree);
-        let kept = path
-            .as_deref()
+        let resolved = std::fs::canonicalize(worktree).unwrap_or_else(|_| worktree.to_owned());
+        let kept = record_path(worktree)
             .and_then(|path| std::fs::read_to_string(path).ok())
             .and_then(|text| serde_json::from_str::<Record>(&text).ok());
         if let Some(kept) = kept {
-            if kept.version == VERSION && kept.worktree == worktree && kept.lifecycle == lifecycle {
+            if kept.version == VERSION && kept.worktree == resolved && kept.lifecycle == lifecycle {
                 return Ok(kept.dirty);
             }
         }
         let dirty = super::recorded::is_dirty(worktree)?;
-        if let Some(path) = path {
-            let record = Record {
-                version: VERSION,
-                worktree: worktree.to_owned(),
-                lifecycle: lifecycle.to_owned(),
-                dirty,
-            };
-            if let Ok(text) = serde_json::to_string(&record) {
-                let _ = crate::home::atomic_write(&path, &text);
-            }
-        }
+        record(worktree, lifecycle, dirty);
         Ok(dirty)
     }
 }
