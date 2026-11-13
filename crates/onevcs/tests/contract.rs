@@ -11419,14 +11419,14 @@ fn the_repository_declared_policy_amendment_states_the_surface_the_crate_has() {
         assert!(declared.contains(variant(declaration)));
     }
     let _: fn(&onevcs::ResolvedPolicy) -> &onevcs::PolicyDeclaration = |policy| &policy.declaration;
-    #[allow(clippy::type_complexity)]
-    let _: fn(
-        &onevcs::RulesCheck,
-    ) -> (
-        &onevcs::PolicyDeclaration,
-        &Option<onevcs::ResolvedPolicy>,
-        &Option<onevcs::ReleaseFacts>,
-    ) = |checked| (&checked.declaration, &checked.policy, &checked.release);
+    // The three fields the amendment gives `RulesCheck`, at the types it gives them.
+    type Reported<'c> = (
+        &'c onevcs::PolicyDeclaration,
+        &'c Option<onevcs::ResolvedPolicy>,
+        &'c Option<onevcs::ReleaseFacts>,
+    );
+    let _: fn(&onevcs::RulesCheck) -> Reported<'_> =
+        |checked| (&checked.declaration, &checked.policy, &checked.release);
     // The `rules check` surface the struct literal near the top of the contract spells.
     let rules_check = amendment_declaring("pub struct RulesCheck {");
     for spelled in [
