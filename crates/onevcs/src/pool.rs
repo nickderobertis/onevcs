@@ -329,6 +329,25 @@ fn record_path(slot: &Path) -> PathBuf {
     slot.join("slot.json")
 }
 
+/// What a run root's slot record says of maintenance, for a read deciding whether its
+/// worktree is at rest: `Ok(None)` where the run root is no slot, whether a maintenance run
+/// claims it with what its last one recorded, and `Err` where the record is there and this
+/// build cannot read it — which is no proof the slot is idle.
+pub(crate) fn maintenance_of(run_root: &Path) -> std::result::Result<Option<(bool, String)>, ()> {
+    let raw = match std::fs::read_to_string(record_path(run_root)) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(()),
+    };
+    let record: SlotRecord = serde_json::from_str(&raw).map_err(|_| ())?;
+    if record.version != SLOT_VERSION {
+        return Err(());
+    }
+    let last =
+        serde_json::to_string(&(&record.last_maintained, &record.last_outcome)).map_err(|_| ())?;
+    Ok(Some((record.maintaining.is_some(), last)))
+}
+
 /// Read one slot's record, or say why it cannot be acted on.
 ///
 /// Serde proves the shape and nothing else, and every field here is handed to git or

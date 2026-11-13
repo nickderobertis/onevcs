@@ -97,6 +97,9 @@ fn set_state(host: &Host, branch: &str, state: &str) {
 /// One change to a worktree, by name, and the retirement reason the read after it gives.
 type Step<'a> = (&'a str, Box<dyn Fn() + 'a>, &'a str);
 
+/// One fault, by name, and how to make it.
+type Fault<'a> = (&'a str, Box<dyn Fn() + 'a>);
+
 /// One input git reads beside a worktree, how to move it, and how many worktrees read it.
 type Input<'a> = (&'a str, Box<dyn Fn() + 'a>, usize);
 
@@ -105,6 +108,22 @@ fn retirement_reason(rows: &[Value], branch: &str) -> Value {
         .find(|row| row["branch"]["branch"] == branch)
         .map(|row| row["retirement"]["reason"].clone())
         .unwrap_or(Value::Null)
+}
+
+/// A slot record in a run root, as the pool writes one: claimed by `maintaining`, and
+/// last maintained at `last`.
+fn write_slot(host: &Host, run_root: &std::path::Path, maintaining: Value, last: Value) {
+    let record = json!({
+        "version": 1,
+        "number": 1,
+        "identity": host.key,
+        "execution_checkout": host.repo,
+        "created": "2026-01-01T00:00:00.000Z",
+        "maintaining": maintaining,
+        "last_maintained": last,
+        "last_outcome": if last.is_null() { Value::Null } else { json!("succeeded") },
+    });
+    std::fs::write(run_root.join("slot.json"), record.to_string()).unwrap();
 }
 
 fn statuses(calls: &[String]) -> usize {
@@ -875,23 +894,20 @@ fn a_session_opening_or_a_maintenance_claim_makes_the_next_read_check_exactly() 
 
     // A maintenance run claiming the slot over an edit made at rest.
     let run_root = worktrees[1].parent().unwrap().to_path_buf();
-    let slot = |maintaining: Value, last: Value| {
-        let record = json!({"maintaining": maintaining, "last_maintained": last});
-        std::fs::write(run_root.join("slot.json"), record.to_string()).unwrap();
-    };
+    let slot = |maintaining: Value, last: Value| write_slot(&host, &run_root, maintaining, last);
     slot(Value::Null, Value::Null);
     host.read();
     assert_eq!(counted_read(&host, "a slot at rest").1, 0);
     std::fs::write(worktrees[1].join("seed.txt"), "edited at rest\n").unwrap();
     slot(
-        json!({"pid": 1, "started": null, "since": "2026-01-01T00:00:00Z"}),
+        json!({"pid": 1, "started": 1, "since": "2026-01-01T00:00:00.000Z"}),
         Value::Null,
     );
     let (rows, asked) = counted_read(&host, "claimed");
     assert!(asked >= 1, "the claimed worktree is checked");
     assert_eq!(reason(&rows, "work/w1"), json!("dirty-worktree"));
     // The claim over, its outcome recorded: checked once more, then at rest.
-    slot(Value::Null, json!("2026-01-01T00:05:00Z"));
+    slot(Value::Null, json!("2026-01-01T00:05:00.000Z"));
     assert_eq!(counted_read(&host, "the claim over").1, 1);
     assert_eq!(counted_read(&host, "at rest again").1, 0);
 }
@@ -921,5 +937,127 @@ fn a_lease_on_a_run_root_makes_its_worktree_checked_exactly_while_it_is_held() {
     let (rows, asked) = counted_read(&host, "released");
     assert_eq!(asked, 1);
     assert_eq!(retirement_reason(&rows, "work/w0"), json!("dirty-worktree"));
+    assert_eq!(counted_read(&host, "at rest again").1, 0);
+}
+
+#[test]
+fn a_slot_record_this_build_cannot_read_is_no_proof_its_worktree_is_idle() {
+    let _exclusive = exclusive();
+    let (host, worktrees) = host_with_idle_copies(2);
+    let run_root = worktrees[0].parent().unwrap().to_path_buf();
+    write_slot(&host, &run_root, Value::Null, Value::Null);
+    host.read();
+    assert_eq!(counted_read(&host, "at rest").1, 0);
+    let slot = run_root.join("slot.json");
+    let whole = std::fs::read(&slot).unwrap();
+
+    // Malformed, then unreadable: every edit made meanwhile is seen on the read after it.
+    for (fault, edit) in [("malformed", "edited\n"), ("unreadable", "seed\n")] {
+        match fault {
+            "malformed" => std::fs::write(&slot, "[]").unwrap(),
+            _ => {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::write(&slot, &whole).unwrap();
+                std::fs::set_permissions(&slot, std::fs::Permissions::from_mode(0o000)).unwrap();
+            }
+        }
+        std::fs::write(worktrees[0].join("seed.txt"), edit).unwrap();
+        let (rows, asked) = counted_read(&host, fault);
+        assert!(asked >= 1, "{fault}: checked");
+        let dirty = retirement_reason(&rows, "work/w0") == json!("dirty-worktree");
+        assert_eq!(dirty, edit != "seed\n", "{fault}");
+    }
+    // Repaired: checked once more, then at rest.
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&slot, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
+    std::fs::write(&slot, &whole).unwrap();
+    counted_read(&host, "repaired");
+    assert_eq!(counted_read(&host, "at rest again").1, 0);
+}
+
+#[test]
+fn a_rest_record_that_is_corrupt_another_version_foreign_or_unwritable_is_checked_exactly() {
+    let _exclusive = exclusive();
+    let (host, worktrees) = host_with_idle_copies(2);
+    host.read();
+    assert_eq!(counted_read(&host, "at rest").1, 0);
+    let rest = host.home.join("cache/cleanliness/rest-v1");
+    let records = || {
+        let mut found: Vec<PathBuf> = std::fs::read_dir(&rest)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        found.sort();
+        found
+    };
+    assert_eq!(records().len(), 2, "one per worktree at rest");
+    let tracked = worktrees[0].join("seed.txt");
+    // Each fault follows a hand edit made at rest, which only an exact check sees: the
+    // edit flips the answer, so a record reused past its fault would answer the old one.
+    let mut dirty = false;
+    let mut flip = || {
+        dirty = !dirty;
+        std::fs::write(&tracked, if dirty { "edited\n" } else { "seed\n" }).unwrap();
+        dirty
+    };
+    let faults: Vec<Fault<'_>> = vec![
+        (
+            "corrupt",
+            Box::new(|| {
+                for record in records() {
+                    std::fs::write(record, "not json").unwrap();
+                }
+            }),
+        ),
+        (
+            "another version",
+            Box::new(|| {
+                for record in records() {
+                    let mut kept: Value =
+                        serde_json::from_slice(&std::fs::read(&record).unwrap()).unwrap();
+                    kept["version"] = json!(999);
+                    std::fs::write(record, serde_json::to_vec(&kept).unwrap()).unwrap();
+                }
+            }),
+        ),
+        (
+            "foreign",
+            Box::new(|| {
+                let [first, second] = <[PathBuf; 2]>::try_from(records()).unwrap();
+                let (a, b) = (
+                    std::fs::read(&first).unwrap(),
+                    std::fs::read(&second).unwrap(),
+                );
+                std::fs::write(&first, b).unwrap();
+                std::fs::write(&second, a).unwrap();
+            }),
+        ),
+    ];
+    for (fault, break_it) in faults {
+        let expected = flip();
+        break_it();
+        let (rows, _) = counted_read(&host, fault);
+        let answered = retirement_reason(&rows, "work/w0") == json!("dirty-worktree");
+        assert_eq!(answered, expected, "{fault}: checked exactly");
+        assert_eq!(
+            counted_read(&host, "at rest again").1,
+            0,
+            "{fault}: kept again"
+        );
+    }
+
+    // Unwritable: every read is an exact check.
+    std::fs::remove_dir_all(&rest).unwrap();
+    std::fs::write(&rest, "not a directory").unwrap();
+    for read in ["unwritable", "still unwritable"] {
+        let expected = flip();
+        let (rows, _) = counted_read(&host, read);
+        let answered = retirement_reason(&rows, "work/w0") == json!("dirty-worktree");
+        assert_eq!(answered, expected, "{read}: checked exactly");
+    }
+    std::fs::remove_file(&rest).unwrap();
+    counted_read(&host, "writable again");
     assert_eq!(counted_read(&host, "at rest again").1, 0);
 }

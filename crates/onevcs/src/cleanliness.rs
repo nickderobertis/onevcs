@@ -163,18 +163,11 @@ pub(crate) fn at_rest(worktree: &Path, sessions: &[crate::workspace::Record]) ->
         digest.update(format!("{:?}", record.state).as_bytes());
         digest.update([0]);
     }
-    match std::fs::read(run_root.join("slot.json")) {
-        Ok(bytes) => {
-            let slot: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-            if !slot["maintaining"].is_null() {
-                return None;
-            }
-            digest.update(slot["last_maintained"].to_string().as_bytes());
-            digest.update([0]);
-            digest.update(slot["last_outcome"].to_string().as_bytes());
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => digest.update(b"no slot"),
-        Err(_) => return None,
+    match crate::pool::maintenance_of(&run_root) {
+        Ok(None) => digest.update(b"no slot"),
+        Ok(Some((false, last))) => digest.update(last.as_bytes()),
+        // Claimed, or a slot record this build cannot read: nothing proves it idle.
+        Ok(Some((true, _))) | Err(()) => return None,
     }
     Some(format!("{:x}", digest.finalize()))
 }
