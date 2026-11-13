@@ -261,15 +261,15 @@ pub(crate) const POLICY_VERSION: i64 = 2;
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct DeclaredPolicy {
-    /// `publication`.
+    /// How a change lands; `None` leaves it to `default:`, as every field here does.
     pub(crate) publication: Option<crate::rules::MergePolicy>,
-    /// `approvals`.
+    /// Whether a change waits for an approval before it may merge.
     pub(crate) approvals: Option<crate::rules::Approvals>,
-    /// `base_merge`.
+    /// When a moved base is merged in; unset everywhere, the publication decides it.
     pub(crate) base_merge: Option<crate::rules::BaseMerge>,
-    /// `[policy.drafts]`.
+    /// The draft lifecycle, each of whose two keys resolves on its own.
     pub(crate) drafts: Option<crate::rules::Drafts>,
-    /// `[policy.checks]`.
+    /// How long a publication watches its checks before the shipped bound applies.
     pub(crate) checks: Option<crate::rules::Checks>,
 }
 
