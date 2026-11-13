@@ -63,6 +63,10 @@ impl Early {
             let worktrees: Vec<PathBuf> = sessions
                 .iter()
                 .filter(|record| {
+                    // An owner running holds the session's branch live, and nobody
+                    // asks about its worktree. Its lease is not probed here: a probe
+                    // holds the lease for an instant, and the census asking the same
+                    // question beside it would read that instant as somebody inside.
                     record.state == crate::Lifecycle::Open
                         && !record.owner_is_running()
                         && record.worktree.is_dir()

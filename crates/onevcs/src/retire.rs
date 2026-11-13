@@ -2898,7 +2898,16 @@ pub(crate) fn prefetch_cleanliness<'b>(
     let ask = Ask::offline();
     let mut worktrees: Vec<PathBuf> = Vec::new();
     for branch in branches {
+        // A branch a live session holds, or a registered checkout has checked out, is
+        // classified before anybody asks whether a worktree over it is dirty: its worktrees
+        // are not asked, so they are not read ahead either.
+        if !matches!(census.live_holder(branch), Ok(None)) {
+            continue;
+        }
         let copies = census.copies(branch, &ask);
+        if !matches!(census.checked_out(branch, &copies), Ok(None)) {
+            continue;
+        }
         for place in census.holding(&copies) {
             if place.kind == BranchHolderKind::Checkout {
                 continue;

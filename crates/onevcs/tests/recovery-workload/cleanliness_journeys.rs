@@ -1278,3 +1278,22 @@ fn a_loose_ref_value_is_kept_only_once_settled_and_read_again_whenever_its_file_
     host.read();
     assert!(file.exists(), "kept again once writable");
 }
+
+#[test]
+fn a_worktree_over_a_branch_held_live_is_not_read_at_all() {
+    let _exclusive = exclusive();
+    let (host, _) = host_with_idle_copies(2);
+    // An open session owned by this very process holds work/w0 live; work/w1 is at rest.
+    host.session("work/w0", onevcs::Lifecycle::Open);
+    let (rows, asked) = counted_read(&host, "held live");
+    assert_eq!(
+        retirement_reason(&rows, "work/w0"),
+        json!("held-by-live-session")
+    );
+    assert_eq!(
+        asked, 1,
+        "only the worktree at rest is checked, once, to record it"
+    );
+    let (_, asked) = counted_read(&host, "held live, again");
+    assert_eq!(asked, 0, "neither is read again");
+}

@@ -668,6 +668,14 @@ fn collected(
         .as_ref()
         .is_some_and(|only| !matches!(only.selecting, Selecting::Sessions));
     // The exact checks of open sessions' worktrees begin now, beside the stream reads.
+    // Where processes work is looked at once for the whole read. A read that reuses
+    // records looks before it checks any worktree: those checks run git inside run roots,
+    // and the look must see who else works there, not the read's own git.
+    let look = crate::processes::Look::default();
+    if reusing {
+        look.take();
+    }
+    // The exact checks of open sessions' worktrees begin now, beside the stream reads.
     let _early =
         (reusing && narrowed.is_none()).then(|| crate::cleanliness::Early::begin(&sessions));
     let (streams, answers, moved) = if reusing && narrowed.is_none() {
@@ -725,9 +733,6 @@ fn collected(
         }
         true
     });
-    // Where processes work is looked at once for the whole read, the first time a
-    // branch's holder is asked about, rather than once per open session asked.
-    let look = crate::processes::Look::default();
     let scan = Scan {
         look: &look,
         registry: &registry,
