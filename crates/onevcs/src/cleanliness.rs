@@ -268,7 +268,7 @@ mod recorded {
             common.join("packed-refs"),
             common.join("info/exclude"),
             common.join("info/attributes"),
-            excludes_file(&configuration)?,
+            excludes_file(worktree, &configuration)?,
             PathBuf::from("/etc/gitattributes"),
             xdg_config()?.join("git/attributes"),
         ];
@@ -314,9 +314,9 @@ mod recorded {
         }
     }
 
-    /// The excludes file git reads: `core.excludesFile` where the configuration names one,
-    /// its default otherwise.
-    fn excludes_file(configuration: &str) -> Option<PathBuf> {
+    /// The excludes file git reads: `core.excludesFile` where the configuration names one —
+    /// a relative one read from the worktree, as git reads it — its default otherwise.
+    fn excludes_file(worktree: &Path, configuration: &str) -> Option<PathBuf> {
         let mut named = None;
         for field in configuration.split('\0') {
             if let Some((key, value)) = field.split_once('\n') {
@@ -328,7 +328,7 @@ mod recorded {
         match named {
             Some(value) => match value.strip_prefix("~/") {
                 Some(rest) => Some(PathBuf::from(std::env::var_os("HOME")?).join(rest)),
-                None => Some(PathBuf::from(value)),
+                None => Some(worktree.join(value)),
             },
             None => Some(xdg_config()?.join("git/ignore")),
         }
@@ -416,7 +416,13 @@ mod recorded {
                     if !self.ignored.directories.contains(&path) {
                         directories.push((path, stamp));
                     }
-                } else if !self.ignored.files.contains(&path) {
+                } else if !self.ignored.files.contains(&path)
+                    || matches!(
+                        entry.file_name().to_str(),
+                        Some(".gitignore" | ".gitattributes")
+                    )
+                {
+                    // An ignore or attributes file git ignores is one it still reads.
                     files.push((path, stamp));
                 }
             }

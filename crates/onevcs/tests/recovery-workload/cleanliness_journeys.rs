@@ -238,6 +238,61 @@ fn a_worked_copy_that_changes_between_reads_is_read_afresh() {
             "clean",
         ),
         (
+            "a tracked file made executable",
+            Box::new(|| {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = std::fs::Permissions::from_mode(0o755);
+                std::fs::set_permissions(&tracked, mode).unwrap();
+            }),
+            "dirty-worktree",
+        ),
+        (
+            "made plain again",
+            Box::new(|| {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = std::fs::Permissions::from_mode(0o644);
+                std::fs::set_permissions(&tracked, mode).unwrap();
+            }),
+            "clean",
+        ),
+        (
+            "a tracked file replaced by a link",
+            Box::new(|| {
+                std::fs::remove_file(&tracked).unwrap();
+                std::os::unix::fs::symlink("elsewhere", &tracked).unwrap();
+            }),
+            "dirty-worktree",
+        ),
+        (
+            "the file put back",
+            Box::new(|| {
+                std::fs::remove_file(&tracked).unwrap();
+                run(worktree, &["checkout", "--", "seed.txt"]);
+            }),
+            "clean",
+        ),
+        (
+            "an in-tree ignore file ignoring an untracked file and itself",
+            Box::new(|| {
+                std::fs::write(worktree.join("build.log"), "log\n").unwrap();
+                std::fs::write(worktree.join(".gitignore"), "*.log\n.gitignore\n").unwrap();
+            }),
+            "clean",
+        ),
+        (
+            "that ignore file, still ignoring itself, no longer ignoring the file",
+            Box::new(|| std::fs::write(worktree.join(".gitignore"), ".gitignore\n").unwrap()),
+            "dirty-worktree",
+        ),
+        (
+            "both removed",
+            Box::new(|| {
+                std::fs::remove_file(worktree.join(".gitignore")).unwrap();
+                std::fs::remove_file(worktree.join("build.log")).unwrap();
+            }),
+            "clean",
+        ),
+        (
             "the branch moved back a commit, its change left staged",
             Box::new(|| {
                 run(worktree, &["reset", "-q", "--soft", "HEAD~1"]);
@@ -512,6 +567,21 @@ fn each_input_git_reads_beside_the_tree_asks_again_when_it_moves() {
             1,
         ),
         (
+            "the user's excludes under a configured XDG directory",
+            Box::new(|| {
+                let xdg = host.root.join("xdg");
+                std::fs::create_dir_all(xdg.join("git")).unwrap();
+                std::fs::write(xdg.join("git/ignore"), "*.log\n").unwrap();
+                std::env::set_var("XDG_CONFIG_HOME", &xdg);
+            }),
+            2,
+        ),
+        (
+            "that excludes file emptied",
+            Box::new(|| std::fs::write(host.root.join("xdg/git/ignore"), "").unwrap()),
+            2,
+        ),
+        (
             "an excludes file the configuration names under the home directory",
             Box::new(|| {
                 std::fs::write(&named_excludes, "*.log\n").unwrap();
@@ -522,6 +592,52 @@ fn each_input_git_reads_beside_the_tree_asks_again_when_it_moves() {
         (
             "that excludes file emptied",
             Box::new(|| std::fs::write(&named_excludes, "").unwrap()),
+            1,
+        ),
+        (
+            "an excludes file the configuration names by absolute path",
+            Box::new(|| {
+                let path = host.root.join("absolute-ignores");
+                std::fs::write(&path, "*.log\n").unwrap();
+                run(
+                    worktree,
+                    &["config", "core.excludesFile", path.to_str().unwrap()],
+                );
+            }),
+            1,
+        ),
+        (
+            "that one emptied",
+            Box::new(|| std::fs::write(host.root.join("absolute-ignores"), "").unwrap()),
+            1,
+        ),
+        (
+            "an excludes file the configuration names relative to the worktree",
+            Box::new(|| {
+                std::fs::write(worktree.join("../relative-ignores"), "*.log\n").unwrap();
+                run(
+                    worktree,
+                    &["config", "core.excludesFile", "../relative-ignores"],
+                );
+            }),
+            1,
+        ),
+        (
+            "that one emptied",
+            Box::new(|| std::fs::write(worktree.join("../relative-ignores"), "").unwrap()),
+            1,
+        ),
+        (
+            "an in-tree attributes file, ignored itself",
+            Box::new(|| {
+                std::fs::write(worktree.join(".gitattributes"), "*.txt text\n").unwrap();
+                std::fs::write(git_path("info/exclude"), ".gitattributes\n").unwrap();
+            }),
+            1,
+        ),
+        (
+            "that attributes file rewritten",
+            Box::new(|| std::fs::write(worktree.join(".gitattributes"), "*.txt -text\n").unwrap()),
             1,
         ),
         (
