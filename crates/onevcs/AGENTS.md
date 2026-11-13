@@ -1797,8 +1797,8 @@ The human line appends `, worktree <before> → <after>` in sweep's byte format;
 
 ## Repository-declared publication policy
 
-[The contract](../../docs/contract.md)'s section of that name is the whole statement; five
-repositories' declarations are written against it. `repository_config::read_policy` reads
+[The contract](../../docs/contract.md)'s section of that name is the whole statement, and
+every repository's declaration is written against it. `repository_config::read_policy` reads
 `[policy]` (version 2 on) into the rules file's own types, so a key admits exactly what the
 rule's does; `policy::Declaration::at` reads it from the publication checkout on its base
 and asks git nothing when no `onevcs.toml` is there. Two things are easy to undo:
