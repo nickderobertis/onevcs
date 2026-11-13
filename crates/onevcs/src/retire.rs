@@ -963,10 +963,9 @@ pub(crate) struct Ask<'a> {
     /// What becomes of a merge a session's worktree over the branch left in progress,
     /// once no live session holds it.
     merges: LeftMerges,
-    /// Whether a worktree's cleanliness may be answered from its last `git status` while
-    /// nothing that answer read has moved (`cleanliness.rs`): the read `recoverable`
-    /// makes, and never one that goes on to act.
-    recorded_cleanliness: bool,
+    /// How a worktree's cleanliness is asked: from what `cleanliness.rs` recorded for the
+    /// read `recoverable` makes, and of git for one that goes on to act.
+    cleanliness: crate::cleanliness::Policy,
 }
 
 /// What a census does with a merge a session left in progress in a worktree over a
@@ -991,7 +990,7 @@ impl<'a> Ask<'a> {
             verdicts: None,
             recorded: None,
             merges: LeftMerges::Leave,
-            recorded_cleanliness: false,
+            cleanliness: crate::cleanliness::Policy::Git,
         }
     }
 
@@ -1005,7 +1004,7 @@ impl<'a> Ask<'a> {
             verdicts: None,
             recorded: None,
             merges: LeftMerges::Leave,
-            recorded_cleanliness: false,
+            cleanliness: crate::cleanliness::Policy::Git,
         }
     }
 
@@ -1022,7 +1021,7 @@ impl<'a> Ask<'a> {
                 true => LeftMerges::Leave,
                 false => LeftMerges::Abort,
             },
-            recorded_cleanliness: false,
+            cleanliness: crate::cleanliness::Policy::Git,
         }
     }
 }
@@ -1529,7 +1528,7 @@ impl<'a> Census<'a> {
         &self,
         branch: &str,
         copies: &Copies,
-        recorded_cleanliness: bool,
+        cleanliness: crate::cleanliness::Policy,
     ) -> std::result::Result<Option<PathBuf>, UnknownCause> {
         for place in self.holding(copies) {
             if place.kind == BranchHolderKind::Checkout {
@@ -1542,17 +1541,10 @@ impl<'a> Census<'a> {
                     continue;
                 }
                 let dirty = worktree.is_dir()
-                    && crate::cleanliness::is_dirty(
-                        &worktree,
-                        recorded_cleanliness,
-                        recorded_cleanliness
-                            .then(|| crate::cleanliness::at_rest(&worktree, self.sessions))
-                            .flatten()
-                            .as_deref(),
-                    )
-                    .map_err(|failure| {
-                        UnknownCause::new("worked-in", worktree.display(), failure)
-                    })?;
+                    && crate::cleanliness::is_dirty(&worktree, cleanliness, self.sessions)
+                        .map_err(|failure| {
+                            UnknownCause::new("worked-in", worktree.display(), failure)
+                        })?;
                 if dirty {
                     return Ok(Some(worktree));
                 }
@@ -1628,7 +1620,7 @@ impl<'a> Census<'a> {
         }
         // Every read below that fails is a proof that did not hold, and the answer to
         // that is `unknown` — never a class a read that was not made decided.
-        let retirement = match self.worked_in(branch, &copies, ask.recorded_cleanliness) {
+        let retirement = match self.worked_in(branch, &copies, ask.cleanliness) {
             Ok(Some(reason)) => Retirement::kept(self, branch, reason, &copies),
             Ok(None) => verdict.retirement,
             Err(cause) => Retirement::unknown(self, branch, cause, &copies),
@@ -1645,12 +1637,12 @@ impl<'a> Census<'a> {
         &self,
         branch: &str,
         copies: &Copies,
-        recorded_cleanliness: bool,
+        cleanliness: crate::cleanliness::Policy,
     ) -> std::result::Result<Option<KeepReason>, UnknownCause> {
         if self.checked_out(branch, copies)?.is_some() {
             return Ok(Some(KeepReason::CheckedOut));
         }
-        if self.dirty(branch, copies, recorded_cleanliness)?.is_some() {
+        if self.dirty(branch, copies, cleanliness)?.is_some() {
             return Ok(Some(KeepReason::DirtyWorktree));
         }
         Ok(None)
@@ -2888,7 +2880,7 @@ pub(crate) fn classify_offline_kept(
 ) -> Option<(Retirement, Option<crate::verdict::Verdict>)> {
     let ask = Ask {
         recorded,
-        recorded_cleanliness: true,
+        cleanliness: crate::cleanliness::Policy::Recorded,
         ..Ask::offline()
     };
     census
@@ -2904,7 +2896,7 @@ pub(crate) fn prefetch_cleanliness<'b>(
     branches: impl IntoIterator<Item = &'b String>,
 ) {
     let ask = Ask::offline();
-    let mut worktrees: Vec<(PathBuf, Option<String>)> = Vec::new();
+    let mut worktrees: Vec<PathBuf> = Vec::new();
     for branch in branches {
         let copies = census.copies(branch, &ask);
         for place in census.holding(&copies) {
@@ -2918,15 +2910,14 @@ pub(crate) fn prefetch_cleanliness<'b>(
                 if on.as_deref() == Some(branch.as_str())
                     && worktree != place.repo
                     && worktree.is_dir()
-                    && !worktrees.iter().any(|(seen, _)| *seen == worktree)
+                    && !worktrees.contains(&worktree)
                 {
-                    let at_rest = crate::cleanliness::at_rest(&worktree, census.sessions);
-                    worktrees.push((worktree, at_rest));
+                    worktrees.push(worktree);
                 }
             }
         }
     }
-    crate::cleanliness::prefetch(&worktrees);
+    crate::cleanliness::prefetch(&worktrees, census.sessions);
 }
 
 /// The offline census sweep judges one identity's records against: the same read
@@ -4094,7 +4085,9 @@ mod unknown_causes {
         let copies = census.copies(BRANCH, &Ask::offline());
         assert!(copies.unreadable.is_empty(), "{copies:?}");
         let worktree = landed.stale.worktree.clone();
-        let read = closed(&worktree, || census.worked_in(BRANCH, &copies, false));
+        let read = closed(&worktree, || {
+            census.worked_in(BRANCH, &copies, crate::cleanliness::Policy::Git)
+        });
         says(
             &read.expect_err("a worktree nobody can read answers no state"),
             "worked-in",

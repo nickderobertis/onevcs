@@ -330,22 +330,37 @@ fn record_path(slot: &Path) -> PathBuf {
 }
 
 /// What a run root's slot record says of maintenance, for a read deciding whether its
-/// worktree is at rest: `Ok(None)` where the run root is no slot, whether a maintenance run
-/// claims it with what its last one recorded, and `Err` where the record is there and this
-/// build cannot read it — which is no proof the slot is idle.
-pub(crate) fn maintenance_of(run_root: &Path) -> std::result::Result<Option<(bool, String)>, ()> {
+/// worktree is at rest.
+pub(crate) enum Maintenance {
+    /// The run root is no slot.
+    NoSlot,
+    /// A maintenance run claims the slot.
+    Claimed,
+    /// The record is there and this build cannot read it: no proof the slot is idle.
+    Unreadable,
+    /// Unclaimed, with what its last maintenance recorded, serialized.
+    Idle(String),
+}
+
+pub(crate) fn maintenance_of(run_root: &Path) -> Maintenance {
     let raw = match std::fs::read_to_string(record_path(run_root)) {
         Ok(raw) => raw,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(_) => return Err(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Maintenance::NoSlot,
+        Err(_) => return Maintenance::Unreadable,
     };
-    let record: SlotRecord = serde_json::from_str(&raw).map_err(|_| ())?;
+    let Ok(record) = serde_json::from_str::<SlotRecord>(&raw) else {
+        return Maintenance::Unreadable;
+    };
     if record.version != SLOT_VERSION {
-        return Err(());
+        return Maintenance::Unreadable;
     }
-    let last =
-        serde_json::to_string(&(&record.last_maintained, &record.last_outcome)).map_err(|_| ())?;
-    Ok(Some((record.maintaining.is_some(), last)))
+    if record.maintaining.is_some() {
+        return Maintenance::Claimed;
+    }
+    match serde_json::to_string(&(&record.last_maintained, &record.last_outcome)) {
+        Ok(last) => Maintenance::Idle(last),
+        Err(_) => Maintenance::Unreadable,
+    }
 }
 
 /// Read one slot's record, or say why it cannot be acted on.

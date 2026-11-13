@@ -2,7 +2,7 @@
 //! while nothing that answer read has moved.
 //!
 //! Only a worktree something may be using is checked at all: one an open session, a lease
-//! or a maintenance claim names (see [`at_rest`]). One nothing names is answered from what
+//! or a maintenance claim names (see [`lookup`]). One nothing names is answered from what
 //! was recorded of it at rest, with no walk of its tree, until a session opens there or a
 //! maintenance run claims its slot. A hand edit made inside an idle slot outside onevcs is
 //! therefore not seen until then: that is the rule's accepted gap. No answer is reused by
@@ -51,70 +51,88 @@ pub(crate) fn clear() {
 /// Answer several worktrees at once, ahead of a read that asks them one by one: each
 /// answer joins this read's, so the read's own asking finds it answered. A worktree this
 /// cannot answer is left to that asking.
-pub(crate) fn prefetch(worktrees: &[(PathBuf, Option<String>)]) {
+pub(crate) fn prefetch(worktrees: &[PathBuf], sessions: &[crate::workspace::Record]) {
     #[cfg(unix)]
     if crate::decisions::enabled() {
-        let unanswered: Vec<&(PathBuf, Option<String>)> = worktrees
+        let unanswered: Vec<&PathBuf> = worktrees
             .iter()
-            .filter(|(worktree, _)| {
-                ANSWERED.with(|answered| !answered.borrow().contains_key(worktree))
-            })
+            .filter(|worktree| ANSWERED.with(|answered| !answered.borrow().contains_key(*worktree)))
             .collect();
-        let found = crate::vcs::concurrently_on(PREFETCHED, &unanswered, |(worktree, at_rest)| {
+        let found = crate::vcs::concurrently_on(PREFETCHED, &unanswered, |worktree| {
             crate::checkout_reads::unturned(|| {
-                crate::recovery_cache::scope(|| answer(worktree, at_rest.as_deref()).ok())
+                crate::recovery_cache::scope(|| answer(worktree, &lookup(worktree, sessions)).ok())
             })
         });
         ANSWERED.with(|answered| {
             let mut answered = answered.borrow_mut();
-            for ((worktree, _), dirty) in unanswered.into_iter().zip(found) {
+            for (worktree, dirty) in unanswered.into_iter().zip(found) {
                 if let Some(dirty) = dirty {
                     answered.insert(worktree.clone(), dirty);
                 }
             }
         });
     }
-    let _ = worktrees;
+    let _ = (worktrees, sessions);
 }
 
 /// Worktrees [`prefetch`] reads at once, each walked by its own walkers.
 #[cfg(unix)]
 const PREFETCHED: usize = 4;
 
-/// Asked of git on every read where reuse is not on. Where it is, a worktree something
-/// may be using — `at_rest` is `None`, see [`at_rest`] — is checked exactly, from the
-/// record of its last `git status` while nothing that answer read has moved; one nothing
-/// names is answered from what was recorded of it at rest, with no walk of its tree.
-pub(crate) fn is_dirty(worktree: &Path, reuse: bool, at_rest: Option<&str>) -> Result<bool> {
+/// How a classification asks whether a worktree holds uncommitted work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Policy {
+    /// Ask git every time: what a classification that goes on to act asks.
+    Git,
+    /// Answer from what was recorded where that still stands: the read `recoverable`
+    /// makes. Within it each worktree is looked up as [`lookup`] says.
+    Recorded,
+}
+
+/// How one worktree is answered under [`Policy::Recorded`].
+pub(crate) enum Lookup {
+    /// Something may be using it: checked exactly, from the record of its last
+    /// `git status` while nothing that answer read has moved.
+    Exact,
+    /// Nothing names it: answered from what was recorded of it at rest under this
+    /// lifecycle digest, with no walk of its tree.
+    AtRest(String),
+}
+
+pub(crate) fn is_dirty(
+    worktree: &Path,
+    policy: Policy,
+    sessions: &[crate::workspace::Record],
+) -> Result<bool> {
     #[cfg(unix)]
-    if reuse && crate::decisions::enabled() {
+    if policy == Policy::Recorded && crate::decisions::enabled() {
         if let Some(known) = ANSWERED.with(|answered| answered.borrow().get(worktree).copied()) {
             return Ok(known);
         }
-        let dirty = answer(worktree, at_rest)?;
+        let dirty = answer(worktree, &lookup(worktree, sessions))?;
         ANSWERED.with(|answered| answered.borrow_mut().insert(worktree.to_owned(), dirty));
         return Ok(dirty);
     }
-    let _ = (reuse, at_rest);
+    let _ = (policy, sessions);
     git::is_dirty(worktree)
 }
 
 #[cfg(unix)]
-fn answer(worktree: &Path, at_rest: Option<&str>) -> Result<bool> {
-    match at_rest {
-        Some(lifecycle) => rest::answer(worktree, lifecycle),
+fn answer(worktree: &Path, lookup: &Lookup) -> Result<bool> {
+    match lookup {
+        Lookup::AtRest(lifecycle) => rest::answer(worktree, lifecycle),
         // Whatever uses it now may change it, so what was recorded at rest no longer
         // stands: the first read at rest again checks it exactly.
-        None => {
+        Lookup::Exact => {
             rest::forget(worktree);
             recorded::is_dirty(worktree)
         }
     }
 }
 
-/// Whether a worktree is at rest, and if so the lifecycle it rests under: `None` while an
-/// open session names it, a lease is held on its run root, or a maintenance run claims its
-/// slot — while something may be using it, so its every read is checked exactly.
+/// Whether a worktree is at rest, and if so the lifecycle it rests under: [`Lookup::Exact`]
+/// while an open session names it, a lease is held on its run root, or a maintenance run
+/// claims its slot — while something may be using it, so its every read is checked exactly.
 ///
 /// At rest, its cleanliness is what was recorded the first time it was checked exactly at
 /// rest, kept under a digest of the lifecycle records that name it: each session record's
@@ -123,7 +141,7 @@ fn answer(worktree: &Path, at_rest: Option<&str>) -> Result<bool> {
 /// worktree exactly again. **Nothing else does**, and that is the rule's accepted gap: a hand
 /// edit made inside an idle slot outside onevcs is not seen until one of those events. No
 /// answer is reused by age. Watching the tree's files would close the gap.
-pub(crate) fn at_rest(worktree: &Path, sessions: &[crate::workspace::Record]) -> Option<String> {
+pub(crate) fn lookup(worktree: &Path, sessions: &[crate::workspace::Record]) -> Lookup {
     use sha2::{Digest, Sha256};
     // A record may spell the path another way; only one ending as this one does — the slot
     // or run root's own name, then the worktree's — is resolved to find out.
@@ -144,17 +162,20 @@ pub(crate) fn at_rest(worktree: &Path, sessions: &[crate::workspace::Record]) ->
         .iter()
         .any(|record| record.state == crate::Lifecycle::Open)
     {
-        return None;
+        return Lookup::Exact;
     }
-    let run_root = naming
+    let Some(run_root) = naming
         .first()
         .map(|record| record.run_root.clone())
-        .or_else(|| worktree.parent().map(Path::to_path_buf))?;
+        .or_else(|| worktree.parent().map(Path::to_path_buf))
+    else {
+        return Lookup::Exact;
+    };
     if !matches!(
         crate::lock::is_occupied(&crate::workspace::occupancy_identity(&run_root)),
         Ok(false)
     ) {
-        return None;
+        return Lookup::Exact;
     }
     let mut digest = Sha256::new();
     for record in &naming {
@@ -164,12 +185,14 @@ pub(crate) fn at_rest(worktree: &Path, sessions: &[crate::workspace::Record]) ->
         digest.update([0]);
     }
     match crate::pool::maintenance_of(&run_root) {
-        Ok(None) => digest.update(b"no slot"),
-        Ok(Some((false, last))) => digest.update(last.as_bytes()),
+        crate::pool::Maintenance::NoSlot => digest.update(b"no slot"),
+        crate::pool::Maintenance::Idle(last) => digest.update(last.as_bytes()),
         // Claimed, or a slot record this build cannot read: nothing proves it idle.
-        Ok(Some((true, _))) | Err(()) => return None,
+        crate::pool::Maintenance::Claimed | crate::pool::Maintenance::Unreadable => {
+            return Lookup::Exact;
+        }
     }
-    Some(format!("{:x}", digest.finalize()))
+    Lookup::AtRest(format!("{:x}", digest.finalize()))
 }
 
 /// What a worktree at rest was found to hold, and the lifecycle it was found under.
