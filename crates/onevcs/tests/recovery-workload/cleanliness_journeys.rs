@@ -671,6 +671,22 @@ fn each_input_git_reads_beside_the_tree_asks_again_when_it_moves() {
             1,
         ),
         (
+            "an attributes file the configuration names relative to the worktree",
+            Box::new(|| {
+                std::fs::write(worktree.join("../attributes"), "*.txt text\n").unwrap();
+                run(
+                    worktree,
+                    &["config", "core.attributesFile", "../attributes"],
+                );
+            }),
+            1,
+        ),
+        (
+            "that attributes file rewritten",
+            Box::new(|| std::fs::write(worktree.join("../attributes"), "*.txt -text\n").unwrap()),
+            1,
+        ),
+        (
             "an in-tree attributes file, ignored itself",
             Box::new(|| {
                 std::fs::write(worktree.join(".gitattributes"), "*.txt text\n").unwrap();

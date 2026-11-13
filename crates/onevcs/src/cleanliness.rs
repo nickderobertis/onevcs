@@ -417,9 +417,14 @@ mod recorded {
             common.join("packed-refs"),
             common.join("info/exclude"),
             common.join("info/attributes"),
-            excludes_file(worktree, &configuration)?,
+            configured_file(worktree, &configuration, "core.excludesfile", "git/ignore")?,
             PathBuf::from("/etc/gitattributes"),
-            xdg_config()?.join("git/attributes"),
+            configured_file(
+                worktree,
+                &configuration,
+                "core.attributesfile",
+                "git/attributes",
+            )?,
         ];
         if let Some(target) = head.strip_prefix(b"ref: ") {
             let target = std::str::from_utf8(target).ok()?.trim();
@@ -463,13 +468,19 @@ mod recorded {
         }
     }
 
-    /// The excludes file git reads: `core.excludesFile` where the configuration names one —
-    /// a relative one read from the worktree, as git reads it — its default otherwise.
-    fn excludes_file(worktree: &Path, configuration: &str) -> Option<PathBuf> {
+    /// The file git reads for `key` — `core.excludesFile` or `core.attributesFile` — where
+    /// the configuration names one, a relative one read from the worktree as git reads it;
+    /// its default under the user's configuration directory otherwise.
+    fn configured_file(
+        worktree: &Path,
+        configuration: &str,
+        key: &str,
+        default: &str,
+    ) -> Option<PathBuf> {
         let mut named = None;
         for field in configuration.split('\0') {
-            if let Some((key, value)) = field.split_once('\n') {
-                if key.eq_ignore_ascii_case("core.excludesfile") {
+            if let Some((name, value)) = field.split_once('\n') {
+                if name.eq_ignore_ascii_case(key) {
                     named = Some(value.to_owned());
                 }
             }
@@ -479,7 +490,7 @@ mod recorded {
                 Some(rest) => Some(PathBuf::from(std::env::var_os("HOME")?).join(rest)),
                 None => Some(worktree.join(value)),
             },
-            None => Some(xdg_config()?.join("git/ignore")),
+            None => Some(xdg_config()?.join(default)),
         }
     }
 

@@ -440,7 +440,7 @@ fn counting_git_on_path() {
             &shim,
             format!(
                 "#!/bin/sh\nif [ -n \"${COUNTED_LOG}\" ]; then printf '%s\\n' \"$*\" >> \"${COUNTED_LOG}\"; fi\nexec {real} \"$@\"\n",
-                real = real.display(),
+                real = shell_quoted(&real.to_string_lossy()),
             ),
         )
         .unwrap();
@@ -450,6 +450,11 @@ fn counting_git_on_path() {
         paths.extend(std::env::split_paths(&original));
         std::env::set_var("PATH", std::env::join_paths(paths).unwrap());
     });
+}
+
+/// `text` as one POSIX shell word, whatever it holds.
+fn shell_quoted(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
 }
 
 /// The counting `git` this process runs, put first on `PATH` as a host is built.
