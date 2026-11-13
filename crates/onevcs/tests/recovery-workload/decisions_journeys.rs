@@ -299,11 +299,14 @@ fn the_base_increment_check_costs_the_same_however_many_branches_or_commits() {
         gain_unrelated(&host, commits);
         landed_on_main(&host, "work/0", "squash");
         let mut derived = BTreeSet::new();
+        let mut rows = Vec::new();
+        // Only the read is counted: the uncached read it is held to derives every branch.
         let lines = with_shim(&host, || {
-            let (rows, named) = host.read();
-            assert_eq!(rows, host.uncached());
+            let (read, named) = host.read();
+            rows = read;
             derived = named;
         });
+        assert_eq!(rows, host.uncached());
         (check_invocations(&lines), derived)
     }
     let (few_branches, derived) = measured(1, 3);

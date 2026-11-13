@@ -113,6 +113,10 @@ mod recorded {
     /// Directories read at once: past a few the walk is waiting on one filesystem.
     const WALKERS: usize = 16;
 
+    /// Entries of one directory one walker stamps: a directory smaller than this is one
+    /// walker's alone.
+    const STAMPED_TOGETHER: usize = 2048;
+
     #[derive(Serialize, Deserialize)]
     struct Record {
         version: u32,
@@ -343,23 +347,39 @@ mod recorded {
         /// One directory's files and directories, by name, each with its stamp, leaving
         /// out what git reported ignored and the repository's own `.git`.
         fn entries(&self, relative: &Path) -> Option<Entries> {
-            let mut files = Vec::new();
-            let mut directories = Vec::new();
+            let mut listed = Vec::new();
             for entry in std::fs::read_dir(self.worktree.join(relative)).ok()? {
                 let entry = entry.ok()?;
-                let name = entry.file_name();
-                if name == ".git" {
+                if entry.file_name() == ".git" {
                     if relative.as_os_str().is_empty() {
                         continue;
                     }
                     // A repository inside the tree answers for itself.
                     return None;
                 }
-                let path = relative.join(&name);
-                let spelled = path.to_string_lossy().into_owned();
-                let metadata = entry.metadata().ok()?;
-                let stamp = stamp(&metadata, self.settled_before)?;
-                if metadata.is_dir() {
+                listed.push(entry);
+            }
+            // A directory of many entries is stamped a share at a time, at once: one
+            // directory can hold most of a tree.
+            let chunks: Vec<&[std::fs::DirEntry]> = listed.chunks(STAMPED_TOGETHER).collect();
+            let stamped = crate::vcs::concurrently_on(WALKERS, &chunks, |chunk| {
+                chunk
+                    .iter()
+                    .map(|entry| {
+                        let metadata = entry.metadata().ok()?;
+                        Some((metadata.is_dir(), stamp(&metadata, self.settled_before)?))
+                    })
+                    .collect::<Vec<_>>()
+            });
+            let mut files = Vec::new();
+            let mut directories = Vec::new();
+            for (entry, stamped) in listed.iter().zip(stamped.into_iter().flatten()) {
+                let (is_dir, stamp) = stamped?;
+                let spelled = relative
+                    .join(entry.file_name())
+                    .to_string_lossy()
+                    .into_owned();
+                if is_dir {
                     if !self.ignored.contains(&format!("{spelled}/")) {
                         directories.push((spelled, stamp));
                     }
