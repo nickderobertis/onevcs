@@ -11360,3 +11360,83 @@ fn the_adoption_amendment_states_the_surface_the_crate_exports() {
         assert_eq!(serde_json::to_value(state).expect("a word"), json!(spelled));
     }
 }
+
+#[test]
+fn the_repository_declared_policy_amendment_states_the_surface_the_crate_has() {
+    let section = regions()
+        .0
+        .split("## Repository-declared publication policy")
+        .nth(1)
+        .expect("the repository-declared policy amendment")
+        .split("\n## ")
+        .next()
+        .expect("its body")
+        .to_owned();
+    let declared = only_block("rust", &section, "the repository-declared policy amendment");
+    // Each shape the crate has, spelled in the words the amendment declares it in…
+    for spelled in [
+        "pub enum PolicyDeclaration {",
+        "Declared { document: PathBuf },",
+        "Undeclared { looked_in: PathBuf },",
+        "Unreadable { reason: String },",
+        "pub declaration: PolicyDeclaration,",
+        "pub policy: Option<ResolvedPolicy>,",
+        "pub release: Option<ReleaseFacts>,",
+    ] {
+        assert!(
+            declared.contains(spelled),
+            "the amendment must declare {spelled}"
+        );
+    }
+    // …and the crate held to them: the match is exhaustive and each binding is typed,
+    // so a variant added or a field retyped fails to compile here rather than leaving
+    // the amendment behind.
+    let variant = |declaration: onevcs::PolicyDeclaration| match declaration {
+        onevcs::PolicyDeclaration::Declared { document } => {
+            let _: PathBuf = document;
+            "Declared { document: PathBuf },"
+        }
+        onevcs::PolicyDeclaration::Undeclared { looked_in } => {
+            let _: PathBuf = looked_in;
+            "Undeclared { looked_in: PathBuf },"
+        }
+        onevcs::PolicyDeclaration::Unreadable { reason } => {
+            let _: String = reason;
+            "Unreadable { reason: String },"
+        }
+    };
+    for declaration in [
+        onevcs::PolicyDeclaration::Declared {
+            document: PathBuf::from("/repo/onevcs.toml"),
+        },
+        onevcs::PolicyDeclaration::Undeclared {
+            looked_in: PathBuf::from("/repo"),
+        },
+        onevcs::PolicyDeclaration::Unreadable {
+            reason: String::new(),
+        },
+    ] {
+        assert!(declared.contains(variant(declaration)));
+    }
+    let _: fn(&onevcs::ResolvedPolicy) -> &onevcs::PolicyDeclaration = |policy| &policy.declaration;
+    #[allow(clippy::type_complexity)]
+    let _: fn(
+        &onevcs::RulesCheck,
+    ) -> (
+        &onevcs::PolicyDeclaration,
+        &Option<onevcs::ResolvedPolicy>,
+        &Option<onevcs::ReleaseFacts>,
+    ) = |checked| (&checked.declaration, &checked.policy, &checked.release);
+    // The `rules check` surface the struct literal near the top of the contract spells.
+    let rules_check = amendment_declaring("pub struct RulesCheck {");
+    for spelled in [
+        "pub declaration: PolicyDeclaration,",
+        "pub policy: Option<ResolvedPolicy>,",
+        "pub release: Option<ReleaseFacts> }",
+    ] {
+        assert!(
+            rules_check.contains(spelled),
+            "RulesCheck must declare {spelled}"
+        );
+    }
+}

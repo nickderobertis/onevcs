@@ -2426,6 +2426,18 @@ fn a_local_direct_publication_stamps_its_base_push_as_integrate_and_has_no_revie
     let refused = EventStream::open_filtered(&session.token, phased(Phase::Review))
         .expect_err("a phase this session cannot produce is refused where it is named");
     assert!(refused.to_string().contains("review"), "{refused}");
+
+    // Once the repository's own policy declaration cannot be read, the policy that
+    // left this session without a review no longer resolves — so the phase cannot be
+    // ruled out, and a filter naming it is admitted rather than refused.
+    world.commit_file(
+        &world.path("hosted"),
+        "onevcs.toml",
+        "schema_version = 2\n\n[policy]\nvisibility = \"public\"\n",
+        "chore: declare what only a host may say",
+    );
+    EventStream::open_filtered(&session.token, phased(Phase::Review))
+        .expect("an unresolvable policy widens the phases rather than narrowing them");
 }
 
 /// A release-targets file for the registered `hosted` identity: one target a probe

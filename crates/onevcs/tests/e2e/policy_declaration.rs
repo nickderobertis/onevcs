@@ -305,6 +305,11 @@ const UNREADABLE: &[(&str, &str, &str)] = &[
         "unknown field `lifted`",
     ),
     (
+        "a document that is not TOML",
+        "schema_version = 2\n\n[policy]\npublication =\n",
+        "line 4: ",
+    ),
+    (
         "a value the field's type refuses",
         "schema_version = 2\n\n[policy]\npublication = \"change-sometimes\"\n",
         "unknown variant `change-sometimes`",
@@ -357,6 +362,7 @@ fn an_unreadable_declaration_is_refused_by_rules_check_and_by_every_publication(
             "{what}: the refusal names the document: {stated}"
         );
         assert!(stated.contains(names), "{what}: {stated}");
+        assert_eq!(stated.lines().count(), 1, "{what}: one line: {stated}");
         // No field is printed, because any value would be a rule's or the default's.
         assert!(
             !stdout
@@ -579,4 +585,325 @@ fn a_declared_policy_leaves_the_declared_maintenance_exactly_as_it_was() {
         without["command"][0], "scripts/maintain-slot.sh",
         "{without}"
     );
+}
+
+/// The keys `[policy]` has, as the contract's own example document spells them — its
+/// keys, then its subtables — so a key the reader gains or loses without the contract
+/// is caught where the reader lists what it admits.
+fn contract_keys() -> Vec<String> {
+    let contract = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/contract.md"),
+    )
+    .expect("the contract");
+    let section = contract
+        .split("## Repository-declared publication policy")
+        .nth(1)
+        .expect("the section")
+        .split("```toml\n")
+        .nth(1)
+        .expect("its example document")
+        .split("```")
+        .next()
+        .expect("the document's end");
+    let mut keys = Vec::new();
+    let mut in_policy = false;
+    for line in section.lines().map(str::trim) {
+        if let Some(table) = line.strip_prefix('[') {
+            let table = table.split(']').next().unwrap_or_default();
+            in_policy = table == "policy";
+            if let Some(sub) = table.strip_prefix("policy.") {
+                keys.push(sub.to_owned());
+            }
+        } else if in_policy {
+            if let Some((key, _)) = line.split_once('=') {
+                keys.push(key.trim().to_owned());
+            }
+        }
+    }
+    keys
+}
+
+#[test]
+fn an_unknown_key_is_refused_listing_exactly_the_keys_the_contract_states() {
+    let hosted = Hosted::new(DEFAULT);
+    let world = &hosted.world;
+    no_rules(world);
+    declare(
+        &hosted,
+        "schema_version = 2\n\n[policy]\npublishes = \"often\"\n",
+    );
+    let stdout = String::from_utf8_lossy(&rules_check(world).stdout).into_owned();
+    let keys = contract_keys();
+    assert_eq!(
+        keys,
+        ["publication", "approvals", "base_merge", "drafts", "checks"],
+        "the contract's example names every key"
+    );
+    let listed = keys
+        .iter()
+        .map(|key| format!("`{key}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    assert!(
+        line(&stdout, "declaration: ").contains(&format!("expected one of {listed}")),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn a_checkout_off_its_base_or_a_dangling_declaration_is_unreadable_until_restored() {
+    let hosted = Hosted::new(DEFAULT);
+    let world = &hosted.world;
+    no_rules(world);
+    declare(&hosted, AUTO);
+    let checkout = checkout_of(&checked(world));
+    let document = checkout.join("onevcs.toml");
+
+    // Off its base, the publication checkout holds a branch's copy, which is not the
+    // repository's declaration.
+    world.git(
+        &hosted.checkout,
+        &["checkout", "-q", "-b", "feature/elsewhere"],
+    );
+    let output = rules_check(world);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!output.status.success(), "{stdout}");
+    let stated = line(&stdout, "declaration: ");
+    assert!(
+        stated.starts_with(&format!(
+            "declaration: unreadable: {} is read on the publication checkout's base",
+            document.display()
+        )),
+        "{stated}"
+    );
+    assert!(stated.contains("rather than the base"), "{stated}");
+    world.git(&hosted.checkout, &["checkout", "-q", "main"]);
+    assert!(checked(world).contains("declaration: declared in"));
+
+    // A declaration that is a symbolic link to nothing is there, and cannot be read.
+    std::fs::remove_file(&document).expect("the declaration removed");
+    std::os::unix::fs::symlink(checkout.join("nowhere.toml"), &document).expect("a dangling link");
+    let output = rules_check(world);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!output.status.success(), "{stdout}");
+    assert!(
+        line(&stdout, "declaration: ").starts_with(&format!(
+            "declaration: unreadable: cannot read {}",
+            document.display()
+        )),
+        "{stdout}"
+    );
+    std::fs::remove_file(&document).expect("the link removed");
+    world.git(&hosted.checkout, &["checkout", "-q", "--", "onevcs.toml"]);
+    assert!(checked(world).contains("declaration: declared in"));
+}
+
+#[test]
+fn layers_that_combine_into_a_policy_no_host_can_honour_are_refused_naming_each() {
+    // The default requires an approval; a declaration of `local-direct` that says
+    // nothing about approvals would merge without one ever being evaluated.
+    let hosted = Hosted::new(DEFAULT);
+    let world = &hosted.world;
+    no_rules(world);
+    let token = hosted.change("feature/unapproved", "feat: work that needs an approval");
+    declare(
+        &hosted,
+        "schema_version = 2\n\n[policy]\npublication = \"local-direct\"\n",
+    );
+    let output = rules_check(world);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(
+        stderr.contains("publication: local-direct (from the repository declaration"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("approvals: required (from the default)"),
+        "{stderr}"
+    );
+    world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "approvals: required (from the default)",
+        ));
+    assert_eq!(
+        hosted.origin_log().len(),
+        2,
+        "nothing landed beyond the declaration"
+    );
+
+    // Stated beside the publication, it resolves.
+    declare(
+        &hosted,
+        "schema_version = 2\n\n[policy]\npublication = \"local-direct\"\napprovals = \"none\"\n",
+    );
+    assert!(checked(world).contains("publication: local-direct (from the repository declaration"));
+}
+
+#[test]
+fn every_verb_that_routes_an_identity_refuses_its_unreadable_declaration() {
+    let hosted = Hosted::new(DEFAULT);
+    let world = &hosted.world;
+    // A rule that says only how visible the repository is, which the declaration —
+    // readable or not — has no say in.
+    one_rule(world, "    visibility: private\n");
+    let token = hosted.change("feature/opened-before", "feat: work already under way");
+    // A branch of the checkout's own, for the branch-keyed verb.
+    world.git(
+        &hosted.checkout,
+        &["checkout", "-q", "-b", "feature/branch-keyed"],
+    );
+    world.commit_file(
+        &hosted.checkout,
+        "two.txt",
+        "two\n",
+        "feat: work on a branch nobody opened a session for",
+    );
+    world.git(&hosted.checkout, &["checkout", "-q", "main"]);
+    declare(
+        &hosted,
+        "schema_version = 2\n\n[policy]\npublication = \"change-auto\"\npublishes = \"often\"\n",
+    );
+    let document = checkout_of(&String::from_utf8_lossy(&rules_check(world).stdout))
+        .join("onevcs.toml")
+        .display()
+        .to_string();
+    green(world);
+
+    let refused = |args: &[&str]| {
+        world
+            .onevcs()
+            .args(args)
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains(document.as_str()))
+            .stderr(predicate::str::contains("unknown field `publishes`"));
+    };
+    refused(&["publish-branch", "feature/branch-keyed", "--repo", "hosted"]);
+    assert!(hosted.branch_on_origin("feature/branch-keyed").is_none());
+    refused(&["resolve", "hosted"]);
+    refused(&["repos", "--audit-gates"]);
+    refused(&["status", &token]);
+    refused(&[
+        "register",
+        &hosted.checkout.to_string_lossy(),
+        "--origin",
+        "https://github.com/acme-corp/hosted.git",
+    ]);
+    assert!(
+        !world
+            .host_calls()
+            .iter()
+            .any(|call| call.starts_with("pr create ")),
+        "no change request was opened"
+    );
+
+    // A release adoption it consumes is unanswered rather than vouched for.
+    let output = world
+        .onevcs()
+        .args([
+            "release",
+            "check-adoption",
+            "hosted",
+            "--consumer",
+            "hosted",
+            "--json",
+        ])
+        .output()
+        .expect("the binary runs");
+    let verdict: Value = serde_json::from_slice(&output.stdout).expect("one JSON verdict");
+    assert_eq!(verdict["state"], "unanswered", "{verdict}");
+    assert!(
+        verdict["unanswered"]
+            .as_str()
+            .is_some_and(|reason| reason.contains(document.as_str())),
+        "{verdict}"
+    );
+
+    // What the rule says about visibility still stands.
+    let output = world
+        .onevcs()
+        .args(["boundary", "inspect", "--input", "-", "--json"])
+        .write_stdin(r#"{"repository": "hosted"}"#)
+        .output()
+        .expect("the binary runs");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let inspected: Value = serde_json::from_slice(&output.stdout).expect("JSON");
+    assert_eq!(inspected["visibility"], "private", "{inspected}");
+
+    // Mended, the same identity routes again.
+    declare(&hosted, AUTO);
+    world
+        .onevcs()
+        .args(["resolve", "hosted"])
+        .assert()
+        .success();
+    world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+}
+
+#[test]
+fn a_local_train_refuses_an_unreadable_declaration_and_leaves_the_base_where_it_was() {
+    let fixture = crate::lifecycle::Fixture::local(&crate::lifecycle::local_direct());
+    let world = &fixture.world;
+    world.git(
+        &fixture.checkout,
+        &["checkout", "-q", "-b", "claude/one", "main"],
+    );
+    world.commit_file(
+        &fixture.checkout,
+        "two.txt",
+        "two\n",
+        "feat: a trained candidate",
+    );
+    world.git(&fixture.checkout, &["checkout", "-q", "main"]);
+    world.commit_file(
+        &fixture.checkout,
+        "onevcs.toml",
+        "schema_version = 2\n\n[policy]\nvisibility = \"public\"\n",
+        "chore: declare what only a host may say",
+    );
+    let document = std::fs::canonicalize(&fixture.checkout)
+        .expect("the checkout")
+        .join("onevcs.toml");
+    let base = world.git(&fixture.origin, &["rev-parse", "main"]);
+
+    // The train is allowed only for a `local-direct` identity, and nothing says this
+    // one is: the rules file's default would, but it is not what this repository
+    // publishes under while its own declaration cannot be read.
+    world
+        .onevcs()
+        .args(["integrate", "claude/one", "--push"])
+        .current_dir(&fixture.checkout)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(document.display().to_string()))
+        .stderr(predicate::str::contains("[policy] names `visibility`"));
+    assert_eq!(world.git(&fixture.origin, &["rev-parse", "main"]), base);
+
+    // Mended, the train lands it.
+    world.commit_file(
+        &fixture.checkout,
+        "onevcs.toml",
+        "schema_version = 2\n\n[policy]\napprovals = \"none\"\n",
+        "chore: declare what a repository may say",
+    );
+    world
+        .onevcs()
+        .args(["integrate", "claude/one", "--push"])
+        .current_dir(&fixture.checkout)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("claude/one: merged"));
 }

@@ -255,9 +255,11 @@ pub(crate) const POLICY_VERSION: i64 = 2;
 /// `onevcs.toml`.
 ///
 /// Every key is optional and is read into the very type the same key of a rules-file
-/// rule is read into, so one definition decides what each admits. Which layer wins
-/// per field is [`crate::policy`]'s question, not this one's.
-#[derive(Debug, Clone, Default, PartialEq)]
+/// rule is read into, so one definition decides what each admits — and this struct is
+/// the shape the table is read into, so it is also the one list of keys `[policy]`
+/// has. Which layer wins per field is [`crate::policy`]'s question, not this one's.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct DeclaredPolicy {
     /// `publication`.
     pub(crate) publication: Option<crate::rules::MergePolicy>,
@@ -321,47 +323,39 @@ pub(crate) fn read_policy(document: &str, origin: &str) -> Result<Option<Declare
         validate_repository_config(document, origin)?;
         return Ok(None);
     }
+    // The keys only a host's rule may carry are looked for first, by name, so each is
+    // refused as what it is rather than as a key `[policy]` does not have.
     #[derive(Deserialize)]
-    struct Config {
-        policy: Option<Policy>,
-    }
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct Policy {
-        publication: Option<crate::rules::MergePolicy>,
-        approvals: Option<crate::rules::Approvals>,
-        base_merge: Option<crate::rules::BaseMerge>,
-        drafts: Option<crate::rules::Drafts>,
-        checks: Option<crate::rules::Checks>,
-        // Named so that each is refused as what it is rather than as a typo.
+    struct HostOnly {
         visibility: Option<toml::Spanned<toml::Value>>,
         #[serde(rename = "match")]
         criteria: Option<toml::Spanned<toml::Value>>,
     }
-    let config: Config = toml::from_str(document).map_err(failure)?;
-    let Some(policy) = config.policy else {
-        return Ok(None);
-    };
-    for (key, spanned) in [
-        ("visibility", &policy.visibility),
-        ("match", &policy.criteria),
-    ] {
-        if let Some(spanned) = spanned {
-            return Err(error::invalid(format!(
-                "{origin}, line {}: [policy] names `{key}`, which only a host's rules-file rule \
-                 may carry; a repository declares how it publishes, and which repositories a \
-                 policy applies to and how visible they are is the host's to say. Delete the key",
-                line_of(document, spanned.span().start)
-            )));
+    #[derive(Deserialize)]
+    struct Probe {
+        policy: Option<HostOnly>,
+    }
+    if let Some(host_only) = toml::from_str::<Probe>(document).map_err(failure)?.policy {
+        for (key, spanned) in [
+            ("visibility", host_only.visibility),
+            ("match", host_only.criteria),
+        ] {
+            if let Some(spanned) = spanned {
+                return Err(error::invalid(format!(
+                    "{origin}, line {}: [policy] names `{key}`, which only a host's rules-file \
+                     rule may carry; a repository declares how it publishes, and which \
+                     repositories a policy applies to and how visible they are is the host's \
+                     to say. Delete the key",
+                    line_of(document, spanned.span().start)
+                )));
+            }
         }
     }
-    Ok(Some(DeclaredPolicy {
-        publication: policy.publication,
-        approvals: policy.approvals,
-        base_merge: policy.base_merge,
-        drafts: policy.drafts,
-        checks: policy.checks,
-    }))
+    #[derive(Deserialize)]
+    struct Config {
+        policy: Option<DeclaredPolicy>,
+    }
+    Ok(toml::from_str::<Config>(document).map_err(failure)?.policy)
 }
 
 pub(crate) fn resolve(
