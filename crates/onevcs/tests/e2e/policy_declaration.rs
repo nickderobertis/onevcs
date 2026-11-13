@@ -350,7 +350,7 @@ fn an_unreadable_declaration_is_refused_by_rules_check_and_by_every_publication(
         let output = rules_check(world);
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(!output.status.success(), "{what}: {stdout}");
+        assert_eq!(output.status.code(), Some(1), "{what}: {stdout}");
         let document_path = checkout_of(&stdout).join("onevcs.toml");
         let stated = line(&stdout, "declaration: ");
         assert!(
@@ -433,7 +433,7 @@ fn a_declaration_or_checkout_the_process_cannot_read_never_falls_back() {
     std::fs::set_permissions(&document, std::fs::Permissions::from_mode(0o644))
         .expect("permissions restored");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(!output.status.success(), "{stdout}");
+    assert_eq!(output.status.code(), Some(1), "{stdout}");
     let stated = line(&stdout, "declaration: ");
     assert!(
         stated.starts_with(&format!(
@@ -452,7 +452,7 @@ fn a_declaration_or_checkout_the_process_cannot_read_never_falls_back() {
         .expect("permissions restored");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!output.status.success(), "{stdout}\n{stderr}");
+    assert_eq!(output.status.code(), Some(1), "{stdout}\n{stderr}");
     let stated = line(&stdout, "declaration: ");
     assert!(
         stated.starts_with(&format!(
@@ -667,7 +667,7 @@ fn a_checkout_off_its_base_or_a_dangling_declaration_is_unreadable_until_restore
     );
     let output = rules_check(world);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(!output.status.success(), "{stdout}");
+    assert_eq!(output.status.code(), Some(1), "{stdout}");
     let stated = line(&stdout, "declaration: ");
     assert!(
         stated.starts_with(&format!(
@@ -685,7 +685,7 @@ fn a_checkout_off_its_base_or_a_dangling_declaration_is_unreadable_until_restore
     std::os::unix::fs::symlink(checkout.join("nowhere.toml"), &document).expect("a dangling link");
     let output = rules_check(world);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(!output.status.success(), "{stdout}");
+    assert_eq!(output.status.code(), Some(1), "{stdout}");
     assert!(
         line(&stdout, "declaration: ").starts_with(&format!(
             "declaration: unreadable: cannot read {}",
@@ -906,4 +906,71 @@ fn a_local_train_refuses_an_unreadable_declaration_and_leaves_the_base_where_it_
         .assert()
         .success()
         .stdout(predicate::str::contains("claude/one: merged"));
+}
+
+#[test]
+fn a_verified_publication_is_not_resumed_while_its_declaration_is_unreadable() {
+    // A session's publication verified the branch and stopped on a red check, which is
+    // the boundary `publish-branch` resumes from rather than verifying again.
+    let hosted = Hosted::new(DEFAULT);
+    let world = &hosted.world;
+    no_rules(world);
+    declare(&hosted, AUTO);
+    let red = |conclusion: &'static str| Check {
+        name: "gate",
+        status: "completed",
+        conclusion: Some(conclusion),
+        required: true,
+    };
+    world.host_checks(&[red("failure")]);
+    let token = hosted.change("feature/resumable", "feat: add the resumable thing");
+    world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("required check failed"));
+    world
+        .onevcs()
+        .args(["session", "close", &token])
+        .assert()
+        .success();
+    world.host_checks(&[red("success")]);
+
+    // The declaration in the publication checkout stops reading: the stored boundary
+    // is not resumed under the default, and the whole path refuses naming it.
+    let document = checkout_of(&checked(world)).join("onevcs.toml");
+    std::fs::write(
+        &document,
+        "schema_version = 2\n\n[policy]\npublication = \"change-auto\"\npublishes = \"often\"\n",
+    )
+    .expect("the declaration rewritten in place");
+    let publish_branch = || {
+        world
+            .onevcs()
+            .args(["publish-branch", "feature/resumable", "--repo", "hosted"])
+            .assert()
+    };
+    let refused = publish_branch()
+        .code(2)
+        .stderr(predicate::str::contains(document.display().to_string()))
+        .stderr(predicate::str::contains("unknown field `publishes`"));
+    assert!(
+        !String::from_utf8_lossy(&refused.get_output().stderr)
+            .contains("resuming the verified publication"),
+        "nothing was resumed under a policy that did not resolve"
+    );
+    assert_eq!(hosted.origin_log().len(), 2, "nothing landed");
+
+    // Restored, the boundary it left standing is resumed and lands under the
+    // declaration's `change-auto`.
+    world.git(&hosted.checkout, &["checkout", "-q", "--", "onevcs.toml"]);
+    let resumed = publish_branch()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+    assert!(
+        String::from_utf8_lossy(&resumed.get_output().stderr)
+            .contains("resuming the verified publication"),
+        "the stored boundary still stood"
+    );
 }
