@@ -720,6 +720,52 @@ fn a_disagreeing_copy_and_a_non_base_origin_ref_answer_the_uncached_read() {
     assert!(rows.iter().all(|row| row["branch"]["branch"] != "work/b"));
 }
 
+#[test]
+fn origin_tips_a_branch_was_checked_against_are_not_asked_about_again_while_unmoved() {
+    let host = Host::new();
+    host.branch("work/a");
+    host.branch("work/b");
+    host.read();
+    let unpublished_checks = |calls: &[String]| {
+        calls
+            .iter()
+            .filter(|call| call.starts_with("for-each-ref") && call.contains("--no-merged"))
+            .count()
+    };
+
+    // A non-base origin ref the records never saw: the first read asks whether each branch
+    // is still ahead of everything origin has…
+    run(
+        &host.repo,
+        &[
+            "update-ref",
+            "refs/remotes/origin/elsewhere",
+            &run(&host.repo, &["rev-parse", "main"]),
+        ],
+    );
+    let mut first = Vec::new();
+    let asked = with_shim(&host, || first = host.read().0);
+    assert_eq!(first, host.uncached(), "another origin ref");
+    assert!(unpublished_checks(&asked) > 0, "{asked:?}");
+    // …and the read after it, over the same origin tips, asks nothing of the sort.
+    let mut second = Vec::new();
+    let asked = with_shim(&host, || second = host.read().0);
+    assert_eq!(second, host.uncached(), "origin unmoved since");
+    assert_eq!(host.derived(), set(&[]));
+    assert_eq!(unpublished_checks(&asked), 0, "{asked:?}");
+
+    // Origin moving again is asked about again: here it reaches work/b's tip.
+    let tip = run(&host.repo, &["rev-parse", "work/b"]);
+    run(
+        &host.repo,
+        &["update-ref", "refs/remotes/origin/elsewhere", &tip],
+    );
+    let (rows, _) = host.read();
+    assert_eq!(rows, host.uncached(), "the origin reaches work/b");
+    assert!(rows.iter().all(|row| row["branch"]["branch"] != "work/b"));
+    assert!(rows.iter().any(|row| row["branch"]["branch"] == "work/a"));
+}
+
 /// A host shaped like the one whose warm read re-derived every branch: a registered
 /// checkout carrying a linked worktree whose directory is gone, and a second checkout
 /// holding some of the same branch names at tips of its own.

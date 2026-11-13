@@ -1002,6 +1002,10 @@ fn serve_recorded(
     // or whose inputs moved is only a reason to derive its branch where a read reaches
     // it: a copy behind one that answers a row is never decided, so it has no record.
     let mut usable: BTreeMap<(String, PathBuf), Usable<'_>> = BTreeMap::new();
+    // The copies the check below found still unpublished under origin tips their record
+    // did not name, with the digest of those tips: the record is moved onto them, so an
+    // unchanged origin is not asked about again on every later read.
+    let mut reanchored: BTreeMap<(String, PathBuf), String> = BTreeMap::new();
     for (branch, seen_at) in &copies {
         let held = held_by(sessions, identity, branch)?;
         let digest = decisions::sessions_digest(sessions, identity, branch, &held);
@@ -1080,6 +1084,9 @@ fn serve_recorded(
                 {
                     usable.insert(key, Usable::No);
                     continue;
+                }
+                if let Some(Some(now)) = origin_digests.get(repo) {
+                    reanchored.insert(key.clone(), now.clone());
                 }
             }
             usable.insert(key, Usable::Row(decision));
@@ -1169,6 +1176,9 @@ fn serve_recorded(
                 // named again by what the rest of its checkout had still to be read past.
                 let mut anchored = (*decision).clone();
                 anchored.decided_against = Some(compared.clone());
+                if let Some(origin) = reanchored.remove(&((*branch).clone(), repo.clone())) {
+                    anchored.listing.origin = origin;
+                }
                 decisions::write(&anchored);
             }
         }
@@ -1176,6 +1186,15 @@ fn serve_recorded(
     }
     for key in named_by_base {
         usable.insert(key, Usable::No);
+    }
+    if scan.writing {
+        for (key, origin) in reanchored {
+            if let Some(Usable::Row(decision)) = usable.get(&key) {
+                let mut anchored = (*decision).clone();
+                anchored.listing.origin = origin;
+                decisions::write(&anchored);
+            }
+        }
     }
 
     // The fresh half of each retirement, for the branches that are served.
