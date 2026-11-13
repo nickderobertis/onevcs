@@ -1328,3 +1328,56 @@ fn a_worktree_over_a_branch_held_live_is_not_read_at_all() {
     let (_, asked) = counted_read(&host, "held live, again");
     assert_eq!(asked, 0, "neither is read again");
 }
+
+#[test]
+fn no_row_depends_on_the_cleanliness_of_a_worktree_held_live_and_one_not_held_is_read_exactly() {
+    let _exclusive = exclusive();
+    let (host, worktrees) = host_with_idle_copies(3);
+    // work/w0: an open session owned by this very process.
+    host.session("work/w0", onevcs::Lifecycle::Open);
+    // work/w1: an open session whose owner has exited, its run root's lease held, as a
+    // command working inside it holds it.
+    set_state(&host, "work/w1", "open");
+    let run_root = worktrees[1].parent().unwrap();
+    let locks = host.home.join("locks");
+    std::fs::create_dir_all(&locks).unwrap();
+    let identity = format!("run:{}", run_root.display());
+    let lease =
+        std::fs::File::create(locks.join(format!("{}.lock", onevcs_digest(&identity)))).unwrap();
+    fs4::fs_std::FileExt::lock_shared(&lease).unwrap();
+    // work/w2: an open session whose owner has exited and nothing holds: what it holds is
+    // asked exactly, so its row follows its tree.
+    set_state(&host, "work/w2", "open");
+
+    let reason = |rows: &[Value], branch: &str| retirement_reason(rows, branch);
+    for (step, dirty) in [
+        ("dirtied", true),
+        ("made clean", false),
+        ("dirtied again", true),
+    ] {
+        for worktree in &worktrees {
+            if dirty {
+                std::fs::write(worktree.join("seed.txt"), format!("{step}\n")).unwrap();
+            } else {
+                run(worktree, &["checkout", "--", "seed.txt"]);
+            }
+        }
+        let (rows, _) = counted_read(&host, step);
+        assert_eq!(
+            reason(&rows, "work/w0"),
+            json!("held-by-live-session"),
+            "{step}"
+        );
+        assert_eq!(
+            reason(&rows, "work/w1"),
+            json!("held-by-live-session"),
+            "{step}"
+        );
+        assert_eq!(
+            reason(&rows, "work/w2") == json!("dirty-worktree"),
+            dirty,
+            "{step}: the worktree nothing holds is read as it stands"
+        );
+    }
+    drop(lease);
+}
