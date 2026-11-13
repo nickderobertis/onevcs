@@ -348,6 +348,41 @@ fn a_publication_that_closes_its_session_records_its_worktree_at_rest_for_the_ne
     assert_eq!(at_close.len(), 1, "{:?}", kept());
     assert_eq!(at_close[0]["dirty"], json!(false));
 
+    // A close with recording turned off, or under a `GIT_*` override that makes every
+    // read an uncached one, records nothing.
+    for (branch, variable, value) in [
+        ("work/off", "ONEVCS_DECISION_RECORD", "off"),
+        ("work/override", "GIT_NAMESPACE", ""),
+    ] {
+        let stdout = onevcs()
+            .args(["session", "open", "project", "--branch", branch])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let (token, tree) = (
+            crate::world::token_of(&stdout),
+            crate::world::worktree_of(&stdout),
+        );
+        let file = format!("{}.txt", branch.replace('/', "-"));
+        std::fs::write(tree.join(&file), format!("{branch}\n")).unwrap();
+        run(&tree, &["add", "."]);
+        run(&tree, &["commit", "-q", "-m", &format!("feat: {branch}")]);
+        onevcs()
+            .env(variable, value)
+            .args(["publish", &token])
+            .assert()
+            .success();
+        let resolved = std::fs::canonicalize(&tree).unwrap();
+        assert!(
+            kept()
+                .iter()
+                .all(|record| record["worktree"] != json!(resolved)),
+            "{variable}={value:?} records nothing"
+        );
+    }
+
     // The next read answers from it with no walk of the tree: an edit made by hand since,
     // which no lifecycle event follows, is not seen. That is the rule's accepted gap, and
     // the uncached read, which asks git, sees the edit.

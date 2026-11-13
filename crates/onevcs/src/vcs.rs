@@ -667,7 +667,6 @@ fn collected(
     let branch_filter = narrowed
         .as_ref()
         .is_some_and(|only| !matches!(only.selecting, Selecting::Sessions));
-    // The exact checks of open sessions' worktrees begin now, beside the stream reads.
     // Where processes work is looked at once for the whole read. A read that reuses
     // records looks before it checks any worktree: those checks run git inside run roots,
     // and the look must see who else works there, not the read's own git.

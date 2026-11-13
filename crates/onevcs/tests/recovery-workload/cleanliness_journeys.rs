@@ -1160,12 +1160,12 @@ fn kept_refs(host: &Host) -> (PathBuf, std::collections::BTreeMap<String, String
         .join("cache/refs-v1")
         .join(onevcs_digest(&common.display().to_string()));
     let text = std::fs::read_to_string(&file).unwrap_or_default();
-    let decoded = |hex: &str| {
-        let bytes: Vec<u8> = (0..hex.len())
+    let decoded = |hex: &str| -> Option<String> {
+        let bytes: Option<Vec<u8>> = (0..hex.len())
             .step_by(2)
-            .map(|at| u8::from_str_radix(&hex[at..at + 2], 16).unwrap())
+            .map(|at| u8::from_str_radix(hex.get(at..at + 2)?, 16).ok())
             .collect();
-        String::from_utf8(bytes).unwrap()
+        String::from_utf8(bytes?).ok()
     };
     let entries = text
         .lines()
@@ -1173,7 +1173,7 @@ fn kept_refs(host: &Host) -> (PathBuf, std::collections::BTreeMap<String, String
         .filter_map(|line| {
             let mut fields = line.split('\t');
             let (path, _stamp, value) = (fields.next()?, fields.next()?, fields.next()?);
-            Some((path.to_owned(), decoded(value)))
+            Some((path.to_owned(), decoded(value)?))
         })
         .collect();
     (file, entries)
@@ -1251,6 +1251,37 @@ fn a_loose_ref_value_is_kept_only_once_settled_and_read_again_whenever_its_file_
     let (rows, _) = host.read();
     assert_eq!(rows, host.uncached());
     assert_eq!(kept_refs(&host).1.get(&ref_a), None);
+
+    // Lines this build could not have written, beneath a header it did: each is left out,
+    // its ref read from its file, and every whole line still kept.
+    settle();
+    host.read();
+    let whole = std::fs::read_to_string(&file).unwrap();
+    let mut lines: Vec<&str> = whole.lines().collect();
+    let good_b = lines
+        .iter()
+        .position(|line| line.starts_with(&format!("{ref_b}\t")))
+        .map(|at| lines.remove(at))
+        .unwrap();
+    lines.retain(|line| !line.starts_with(&format!("{ref_a}\t")));
+    let damaged = format!(
+        "{}\n{ref_a}\tnot-hex\tzz\n{ref_a}\t00ff\t{}\n{good_b}\n",
+        lines.join("\n"),
+        hex(&format!("{b}\n"))
+    );
+    std::fs::write(&file, damaged).unwrap();
+    let (rows, _) = host.read();
+    assert_eq!(rows, host.uncached(), "malformed entries");
+    let (_, kept) = kept_refs(&host);
+    assert_eq!(
+        kept.get(&ref_b),
+        Some(&format!("{main}\n")),
+        "the whole line is kept"
+    );
+    assert!(
+        kept.contains_key(&ref_a),
+        "the malformed one is read again and kept anew"
+    );
 
     // A kept file that is not one this build wrote, or that cannot be written, keeps
     // nothing and costs only the reads it would have saved.
