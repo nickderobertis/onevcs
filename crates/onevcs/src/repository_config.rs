@@ -273,7 +273,6 @@ pub(crate) struct DeclaredPolicy {
     pub(crate) checks: Option<crate::rules::Checks>,
 }
 
-/// The line a byte offset of `document` is on, counted from one.
 fn line_of(document: &str, offset: usize) -> usize {
     document[..offset.min(document.len())]
         .bytes()
