@@ -383,7 +383,6 @@ fn a_kept_answer_that_is_corrupt_foreign_gone_or_unwritable_is_asked_of_git_agai
     assert_eq!(counted_read(&host, "swapped").1, 2);
     assert_eq!(counted_read(&host, "kept again").1, 0);
 
-    // Gone.
     std::fs::remove_dir_all(host.home.join("cache/cleanliness")).unwrap();
     assert_eq!(counted_read(&host, "gone").1, 2);
     assert_eq!(counted_read(&host, "kept again").1, 0);
