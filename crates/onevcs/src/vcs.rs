@@ -674,9 +674,6 @@ fn collected(
     if reusing {
         look.take();
     }
-    // The exact checks of open sessions' worktrees begin now, beside the stream reads.
-    let _early =
-        (reusing && narrowed.is_none()).then(|| crate::cleanliness::Early::begin(&sessions));
     let (streams, answers, moved) = if reusing && narrowed.is_none() {
         let answers = crate::decisions::host_streams()?;
         let streams = answers.streams.clone();

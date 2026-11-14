@@ -1,12 +1,15 @@
 //! Whether a worktree holds changes nobody committed, answered from the last `git status`
 //! while nothing that answer read has moved.
 //!
-//! Only a worktree something may be using is checked at all: one an open session, a lease
-//! or a maintenance claim names (see [`lookup`]). One nothing names is answered from what
-//! was recorded of it at rest, with no walk of its tree, until a session opens there or a
-//! maintenance run claims its slot. A hand edit made inside an idle slot outside onevcs is
-//! therefore not seen until then: that is the rule's accepted gap. No answer is reused by
-//! age.
+//! Only a worktree something may be using is checked at all: one an open session whose
+//! owner is running, a lease or a maintenance claim names (see [`lookup`]). One nothing
+//! uses — an idle slot, a closed session's tree, or an open session's whose owner has
+//! exited — is answered from what a fresh `git status` found the first time a read saw it
+//! that way, with no walk of its tree, until a session opens, resumes or closes there or
+//! a maintenance run claims its slot. A hand edit made inside such a worktree outside
+//! onevcs is therefore not seen until then: that is the rule's accepted gap. A dead
+//! owner's uncommitted work is not in it, since that first check after the death finds it.
+//! No answer is reused by age.
 //!
 //! A recovery read asks it of every worktree over a branch it classifies, and on a host's
 //! larger trees `git status` spends half a second listing untracked files. What the answer
@@ -40,113 +43,6 @@ thread_local! {
     /// Each worktree's answer within one read, which asks it once per branch over it:
     /// emptied with the read's other memos, and by anything the read writes.
     static ANSWERED: RefCell<HashMap<PathBuf, bool>> = RefCell::new(HashMap::new());
-}
-
-/// Exact answers a host read began before its identities are scanned, by worktree: `None`
-/// while one is still being made. Shared by every thread of the read, and emptied when the
-/// read's [`Early`] ends.
-static EARLY: std::sync::Mutex<Option<HashMap<PathBuf, Option<bool>>>> =
-    std::sync::Mutex::new(None);
-static EARLY_MADE: std::sync::Condvar = std::sync::Condvar::new();
-
-/// Exact checks of the worktrees open sessions name, begun as a host read starts so they
-/// run beside its stream and record reads rather than after them: every one is a worktree
-/// the read checks exactly whenever it asks, so beginning early changes when the check is
-/// made within the read and nothing about what it answers. Ended — and waited for — when
-/// dropped.
-pub(crate) struct Early(Option<std::thread::JoinHandle<()>>);
-
-impl Early {
-    pub(crate) fn begin(sessions: &[crate::workspace::Record]) -> Self {
-        #[cfg(unix)]
-        if crate::decisions::enabled() {
-            let worktrees: Vec<PathBuf> = sessions
-                .iter()
-                .filter(|record| {
-                    // An owner running holds the session's branch live, and nobody
-                    // asks about its worktree. Its lease is not probed here: a probe
-                    // holds the lease for an instant, and the census asking the same
-                    // question beside it would read that instant as somebody inside.
-                    record.state == crate::Lifecycle::Open
-                        && !record.owner_is_running()
-                        && record.worktree.is_dir()
-                })
-                .map(|record| resolved(&record.worktree))
-                .collect();
-            if let Ok(mut early) = EARLY.lock() {
-                *early = Some(
-                    worktrees
-                        .iter()
-                        .map(|worktree| (worktree.clone(), None))
-                        .collect(),
-                );
-            }
-            let handle = std::thread::spawn(move || {
-                crate::vcs::concurrently_on(PREFETCHED, &worktrees, |worktree| {
-                    // Whatever ends this check, a reader waiting on it is let go.
-                    struct Settled<'a>(&'a Path);
-                    impl Drop for Settled<'_> {
-                        fn drop(&mut self) {
-                            if let Ok(mut early) = EARLY.lock() {
-                                if let Some(early) = early.as_mut() {
-                                    if early.get(self.0) == Some(&None) {
-                                        early.remove(self.0);
-                                    }
-                                }
-                            }
-                            EARLY_MADE.notify_all();
-                        }
-                    }
-                    let _settled = Settled(worktree);
-                    let dirty = crate::checkout_reads::unturned(|| {
-                        crate::recovery_cache::scope(|| recorded::is_dirty(worktree).ok())
-                    });
-                    if let Ok(mut early) = EARLY.lock() {
-                        if let Some(early) = early.as_mut() {
-                            match dirty {
-                                Some(dirty) => early.insert(worktree.clone(), Some(dirty)),
-                                // Unanswered here: the read's own check is made as usual.
-                                None => early.remove(worktree),
-                            };
-                        }
-                    }
-                });
-            });
-            return Self(Some(handle));
-        }
-        let _ = sessions;
-        Self(None)
-    }
-
-    /// The early answer for a worktree, waiting for it where it is still being made.
-    #[cfg(unix)]
-    fn answer(worktree: &Path) -> Option<bool> {
-        let worktree = resolved(worktree);
-        let mut early = EARLY.lock().ok()?;
-        loop {
-            match early.as_ref()?.get(&worktree) {
-                None => return None,
-                Some(Some(dirty)) => return Some(*dirty),
-                Some(None) => early = EARLY_MADE.wait(early).ok()?,
-            }
-        }
-    }
-}
-
-impl Drop for Early {
-    fn drop(&mut self) {
-        if let Some(handle) = self.0.take() {
-            let _ = handle.join();
-        }
-        if let Ok(mut early) = EARLY.lock() {
-            *early = None;
-        }
-    }
-}
-
-/// A worktree's path resolved, so a session record's spelling and git's listing meet.
-fn resolved(worktree: &Path) -> PathBuf {
-    std::fs::canonicalize(worktree).unwrap_or_else(|_| worktree.to_owned())
 }
 
 /// Called with `recovery_cache::clear`, so an answer lasts exactly as long as the read's
@@ -232,25 +128,27 @@ fn answer(worktree: &Path, lookup: &Lookup) -> Result<bool> {
         // stands: the first read at rest again checks it exactly.
         Lookup::Exact => {
             rest::forget(worktree);
-            match Early::answer(worktree) {
-                Some(dirty) => Ok(dirty),
-                None => recorded::is_dirty(worktree),
-            }
+            recorded::is_dirty(worktree, false)
         }
     }
 }
 
 /// Whether a worktree is at rest, and if so the lifecycle it rests under: [`Lookup::Exact`]
-/// while an open session names it, a lease is held on its run root, or a maintenance run
-/// claims its slot — while something may be using it, so its every read is checked exactly.
+/// while something may be using it — an open session whose owner is running names it, a
+/// lease is held on its run root, or a maintenance run claims its slot — so its every
+/// read is checked exactly.
 ///
-/// At rest, its cleanliness is what was recorded the first time it was checked exactly at
-/// rest, kept under a digest of the lifecycle records that name it: each session record's
-/// token and state, and the slot's maintenance fields. A session opening there, closing, or
-/// a maintenance run claiming the slot moves that digest, so the read after it checks the
-/// worktree exactly again. **Nothing else does**, and that is the rule's accepted gap: a hand
-/// edit made inside an idle slot outside onevcs is not seen until one of those events. No
-/// answer is reused by age. Watching the tree's files would close the gap.
+/// At rest, its cleanliness is what a fresh `git status` found the first time a read saw
+/// it under its current lifecycle, kept under a digest of the lifecycle records that name
+/// it: each session record's token and state, an open one's owner by pid and start time,
+/// and the slot's maintenance fields. A session opening, resuming or closing there, its
+/// owner exiting, or a maintenance run claiming the slot moves that digest, so the read
+/// after it checks the worktree afresh; a lease taken on it forgets the record. **Nothing
+/// else does**, and that is the rule's accepted gap: a hand edit made inside a worktree
+/// nothing is using, outside onevcs, is not seen until one of those events. A session
+/// whose owner died with work uncommitted is found by that first check after the death,
+/// and answered as holding it from then on. No answer is reused by age. Watching the
+/// tree's files would close the gap.
 pub(crate) fn lookup(worktree: &Path, sessions: &[crate::workspace::Record]) -> Lookup {
     let Some((run_root, lifecycle)) = lifecycle(worktree, sessions) else {
         return Lookup::Exact;
@@ -284,9 +182,14 @@ fn lifecycle(worktree: &Path, sessions: &[crate::workspace::Record]) -> Option<(
     let mut naming: Vec<&crate::workspace::Record> =
         sessions.iter().filter(|record| names(record)).collect();
     naming.sort_by_key(|record| record.token.to_string());
+    // An open session whose owner runs may be writing its worktree at any moment. One whose
+    // owner is gone has nothing using it, and rests under that owner's identity — a pid and
+    // its start time, so a later process given the same pid is not taken for it — so its
+    // first read after the owner is seen gone checks it, and resuming or reopening the
+    // session, which names an owner of its own, moves the digest again.
     if naming
         .iter()
-        .any(|record| record.state == crate::Lifecycle::Open)
+        .any(|record| record.state == crate::Lifecycle::Open && record.owner_is_running())
     {
         return None;
     }
@@ -300,6 +203,10 @@ fn lifecycle(worktree: &Path, sessions: &[crate::workspace::Record]) -> Option<(
         digest.update([0]);
         digest.update(format!("{:?}", record.state).as_bytes());
         digest.update([0]);
+        if record.state == crate::Lifecycle::Open {
+            digest.update(format!("{}:{:?}", record.owner_pid, record.owner_started).as_bytes());
+            digest.update([0]);
+        }
     }
     match crate::pool::maintenance_of(&run_root) {
         crate::pool::Maintenance::NoSlot => digest.update(b"no slot"),
@@ -330,7 +237,7 @@ pub(crate) fn record_closed(worktree: &Path) {
         let Some((_, lifecycle)) = lifecycle(worktree, &sessions) else {
             return;
         };
-        let checked = || crate::checkout_reads::unturned(|| recorded::is_dirty(worktree));
+        let checked = || crate::checkout_reads::unturned(|| recorded::is_dirty(worktree, true));
         let dirty = if crate::recovery_cache::enabled() {
             checked()
         } else {
@@ -409,7 +316,10 @@ mod rest {
                 return Ok(kept.dirty);
             }
         }
-        let dirty = super::recorded::is_dirty(worktree)?;
+        // Asked of git afresh, never from a record of the tree taken before this lifecycle
+        // began: a session's owner may have died with its work uncommitted, and that work
+        // is what this read exists to find.
+        let dirty = super::recorded::is_dirty(worktree, true)?;
         record(worktree, lifecycle, dirty);
         Ok(dirty)
     }
@@ -468,9 +378,10 @@ mod recorded {
         files: BTreeSet<PathBuf>,
     }
 
-    pub(super) fn is_dirty(worktree: &Path) -> Result<bool> {
+    /// `fresh` asks git whatever was recorded, and records what it answers.
+    pub(super) fn is_dirty(worktree: &Path, fresh: bool) -> Result<bool> {
         let path = record_path(worktree);
-        if let Some(record) = path.as_deref().and_then(read) {
+        if let Some(record) = path.as_deref().filter(|_| !fresh).and_then(read) {
             if record.version == VERSION
                 && record.worktree == worktree
                 && digest(worktree, &record.ignored, None).as_deref()
