@@ -349,7 +349,9 @@ pub(crate) struct Gained {
 
 /// Read what `current` gained since every commit in `decided` in one pass. One `log` and
 /// one `diff`, plus a `merge-base --octopus` per batch of commits to anchor from: the
-/// log and the diff do not grow with what was gained or how many records are checked. Any of them failing is an `Err`, which covers every branch that check names.
+/// log and the diff do not grow with what was gained or how many records are checked,
+/// and each is answered in process where it can be. Any of them failing is an `Err`,
+/// which covers every branch that check names.
 pub(crate) fn gained(
     asked: git::Asked<'_>,
     current: &str,
@@ -361,25 +363,17 @@ pub(crate) fn gained(
         from: from.clone(),
         ..Gained::default()
     };
-    let range = format!("{from}..{current}");
-    let listed = git::run_given(asked, &["log", "--format=%H%x00%B%x00", &range, "--"], b"")?;
-    if !listed.ok()
-        || !listed.read_failures.is_empty()
-        || (listed.stdout.is_empty() && from != current)
-    {
+    // Both read through the reads every derivation makes, so a base's history and the
+    // paths it changed are answered in process where they can be, and by git otherwise.
+    let listed = git::log_messages(asked, &from, current)?;
+    if listed.is_empty() && from != current {
         return Err(crate::error::invalid(format!(
-            "git log {range} could not be read whole: {}",
-            listed.diagnostic()
+            "git log {from}..{current} could not be read whole"
         )));
     }
-    let mut parts = listed.stdout.split('\0');
-    while let (Some(sha), Some(message)) = (parts.next(), parts.next()) {
-        let sha = sha.trim();
-        if sha.is_empty() {
-            continue;
-        }
-        gained.commits.insert(sha.to_owned());
-        let subject = message.lines().next().unwrap_or_default().trim_end();
+    for commit in listed {
+        gained.commits.insert(commit.sha);
+        let subject = commit.message.lines().next().unwrap_or_default().trim_end();
         gained.subjects.insert(subject.to_owned());
         if let Some(number) = subject
             .rsplit_once("(#")
@@ -392,42 +386,17 @@ pub(crate) fn gained(
                 gained.numbers.insert(number.to_owned());
             }
         }
-        for value in crate::landed::trailer_values(message, landed) {
+        for value in crate::landed::trailer_values(&commit.message, landed) {
             gained.trailers.insert(value.as_str().to_owned());
         }
     }
-    let changed = git::run_given(
-        asked,
-        &[
-            "diff",
-            "--name-only",
-            "--no-renames",
-            "-z",
-            &from,
-            current,
-            "--",
-        ],
-        b"",
-    )?;
-    if !changed.ok() || !changed.read_failures.is_empty() {
-        return Err(crate::error::invalid(format!(
-            "git diff {from} {current} could not be read whole: {}",
-            changed.diagnostic()
-        )));
+    // A commit differs from itself in nothing, which needs no listing to say.
+    if from != current {
+        gained.paths = git::changed_paths(asked, &from, current)?
+            .iter()
+            .map(|path| path_key(path))
+            .collect();
     }
-    // A listing that was not text reads as empty, so an empty one is held to git's count
-    // of files: a base gaining a path it cannot print cannot be checked.
-    if changed.stdout.is_empty() && git::count_files(asked, &from, current)? != 0 {
-        return Err(crate::error::invalid(format!(
-            "the paths {from} and {current} differ in could not be read whole"
-        )));
-    }
-    gained.paths = changed
-        .stdout
-        .split('\0')
-        .filter(|path| !path.is_empty())
-        .map(path_key)
-        .collect();
     Ok(gained)
 }
 

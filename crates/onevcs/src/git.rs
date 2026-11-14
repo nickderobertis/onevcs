@@ -3904,6 +3904,9 @@ pub(crate) fn octopus_base(
     decided: &BTreeSet<String>,
     batch: usize,
 ) -> Result<String> {
+    if let Some(oldest) = oldest_of_one_line(asked, current, decided) {
+        return Ok(oldest);
+    }
     let mut common = current.to_owned();
     let decided: Vec<&str> = decided.iter().map(String::as_str).collect();
     for chunk in decided.chunks(batch.saturating_sub(1).max(1)) {
@@ -3924,6 +3927,43 @@ pub(crate) fn octopus_base(
     }
     Ok(common)
 }
+
+/// What `merge-base --octopus` answers for `current` and `decided` where every two of them
+/// are one an ancestor of the other, as each is asked in process: the oldest, which every
+/// other descends from. Any other shape — two commits neither of which descends from the
+/// other, an ancestry this process cannot answer, more commits than [`ONE_LINE_LIMIT`] — is
+/// `None`, for git's walk to answer.
+fn oldest_of_one_line(
+    asked: Asked<'_>,
+    current: &str,
+    decided: &BTreeSet<String>,
+) -> Option<String> {
+    if decided.len() > ONE_LINE_LIMIT {
+        return None;
+    }
+    let env = asked.env();
+    let descends = |from: &str, to: &str| crate::native_refs::is_ancestor(asked.at, &env, from, to);
+    let commits: Vec<&str> = std::iter::once(current)
+        .chain(decided.iter().map(String::as_str))
+        .collect();
+    for (at, first) in commits.iter().enumerate() {
+        for second in &commits[at + 1..] {
+            if !(descends(first, second)? || descends(second, first)?) {
+                return None;
+            }
+        }
+    }
+    let mut oldest = current;
+    for commit in &commits[1..] {
+        if descends(commit, oldest)? {
+            oldest = commit;
+        }
+    }
+    Some(oldest.to_owned())
+}
+
+/// The most commits [`oldest_of_one_line`] compares two by two before leaving them to git.
+const ONE_LINE_LIMIT: usize = 16;
 
 /// How many files git says two commits differ in.
 ///
@@ -4047,11 +4087,6 @@ pub fn known_to_carry_changes<'a>(
         .split('\0')
         .filter(|path| !path.is_empty())
         .any(|path| touched.contains(path)))
-}
-
-/// How many files git says two commits differ in, for a caller holding a listing to it.
-pub(crate) fn count_files(cwd: Asked<'_>, from: &str, to: &str) -> Result<usize> {
-    counted_files(cwd, from, to)
 }
 
 /// Whether a whole-tree `diff --name-only -z` answered in full: a listing of text arrived

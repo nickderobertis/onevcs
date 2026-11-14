@@ -19,7 +19,7 @@
 
 #![cfg(unix)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
@@ -1006,6 +1006,88 @@ fn each_way_a_base_gains_names_a_branch_rederives_only_that_branch() {
     assert!(every.contains("work/unrelated"), "{every:?}");
 }
 
+/// What the base gained is read the way every derivation reads history and paths: in
+/// process where it can be, so a warm read checking a moved base starts no git, and names
+/// exactly the branches the uncached read's answer says moved.
+#[test]
+fn what_a_base_gained_is_read_in_process_and_names_what_git_names() {
+    let host = Host::new();
+    host.branch("work/path");
+    host.branch("work/subject");
+    host.branch("work/unrelated");
+    host.read();
+    base_commit(&host, "chore: touches work/path's file", "work-path");
+    base_commit(&host, "feat: work/subject", "subject-carried");
+    gain_unrelated(&host, 3);
+    let mut rows = Vec::new();
+    let mut derived = BTreeSet::new();
+    let asked = with_shim(&host, || (rows, derived) = host.read());
+    let checks = host.checks();
+    assert_eq!(
+        rows,
+        host.uncached(),
+        "the warm read answers the uncached rows"
+    );
+    assert_eq!(derived, set(&["work/path", "work/subject"]));
+    assert_eq!(
+        checks.len(),
+        1,
+        "the one checkout's base was checked: {checks:?}"
+    );
+    assert_eq!(checks[0]["gained"], 5, "{checks:?}");
+    assert!(
+        asked.iter().all(|call| !call.starts_with("merge-base")
+            && !call.starts_with("log")
+            && !call.starts_with("diff")),
+        "nothing the check reads starts git: {asked:?}"
+    );
+}
+
+/// `merge-base --octopus` is answered in process only for commits on one line of
+/// ancestry, where its answer is the oldest of them. A base moved to a commit its
+/// records' base does not descend from is off that line, and git anchors the check.
+#[test]
+fn a_base_moved_off_the_line_its_records_were_decided_on_leaves_the_anchor_to_git() {
+    let host = Host::new();
+    host.branch("work/kept");
+    host.branch("work/touched");
+    gain_unrelated(&host, 2);
+    host.read();
+    let decided = run(&host.repo, &["rev-parse", "main"]);
+    // The base rewound one commit and moved on another way: neither tip descends from
+    // the other.
+    run(&host.repo, &["reset", "-q", "--hard", "main~1"]);
+    base_commit(&host, "chore: touches work/touched's file", "work-touched");
+    let current = run(&host.repo, &["rev-parse", "main"]);
+    assert!(
+        std::process::Command::new("git")
+            .args(["merge-base", "--is-ancestor", &decided, &current])
+            .current_dir(&host.repo)
+            .status()
+            .unwrap()
+            .code()
+            == Some(1)
+    );
+    let mut rows = Vec::new();
+    let mut derived = BTreeSet::new();
+    let asked = with_shim(&host, || (rows, derived) = host.read());
+    assert_eq!(
+        rows,
+        host.uncached(),
+        "the warm read answers the uncached rows"
+    );
+    assert!(
+        asked
+            .iter()
+            .any(|call| call.starts_with("merge-base --octopus")),
+        "git anchors a check off one line: {asked:?}"
+    );
+    assert!(
+        derived.contains("work/touched"),
+        "the path the base changed names its branch: {derived:?}"
+    );
+}
+
 #[test]
 fn a_partial_stream_line_and_a_removed_stream_answer_the_uncached_read() {
     let host = Host::new();
@@ -1228,10 +1310,13 @@ fn one_read_that_moves_a_record_on_three_counts_keeps_all_three() {
     assert_eq!(again, rows, "nothing moved since");
     assert_eq!(host.derived(), set(&[]));
     assert!(
-        asked.iter().all(|call| !call.contains("--no-merged")
-            && !call.starts_with("merge-base --octopus")
-            && !call.starts_with("log --format=%H%x00%B%x00 ")),
+        asked.iter().all(|call| !call.contains("--no-merged")),
         "{asked:?}"
+    );
+    assert_eq!(
+        host.checks(),
+        Vec::<Value>::new(),
+        "the base is not asked again"
     );
     assert_eq!(record(), after, "the read after it rewrites nothing");
 }

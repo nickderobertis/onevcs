@@ -248,6 +248,14 @@ impl Host {
         (rows, self.derived())
     }
 
+    /// The checks of what a base gained the last read made, one per checkout asked.
+    pub fn checks(&self) -> Vec<Value> {
+        let text = std::fs::read_to_string(&self.diagnostics).unwrap_or_default();
+        let line = text.lines().last().unwrap_or("{}");
+        let parsed: Value = serde_json::from_str(line).unwrap();
+        parsed["checks"].as_array().cloned().unwrap_or_default()
+    }
+
     pub fn derived(&self) -> BTreeSet<String> {
         let text = std::fs::read_to_string(&self.diagnostics).unwrap_or_default();
         let line = text.lines().last().unwrap_or("{}");
