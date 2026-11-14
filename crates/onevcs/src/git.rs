@@ -2008,6 +2008,17 @@ pub(crate) fn terminate_group(child: &Child) {
 
 /// Whether `path` is inside the working tree of a non-bare repository.
 pub fn is_repo(path: &Path) -> bool {
+    // Git cannot be started in a directory that is not there, so its answer is already
+    // known: a host keeps a record of every session it ever opened, most of whose clones
+    // are long gone, and a read asked this of each of them by forking a child that then
+    // failed to enter the directory.
+    // llmlint: ignore[changed_behavior_has_e2e] the answer for such a path is unchanged —
+    // it was false before, from the spawn that failed — and the fork this removes never
+    // runs a program, so no journey's counting git can see it; the host recovery budget
+    // measures what it cost.
+    if !path.is_dir() {
+        return false;
+    }
     if let Some(found) = crate::native_refs::is_repo(path) {
         return found;
     }
