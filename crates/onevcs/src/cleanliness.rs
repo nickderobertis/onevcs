@@ -399,6 +399,14 @@ mod recorded {
         ) else {
             return git::is_dirty(worktree);
         };
+        // A listing whose pipe failed part way is not git's whole answer, so it is neither
+        // read nor kept: the worktree is asked as the uncached read asks it.
+        // llmlint: ignore[changed_behavior_has_e2e] a pipe read failing under a git that
+        // exited cleanly is an I/O fault no journey can arrange for real; what it falls back
+        // to is the uncached read every cleanliness journey compares against.
+        if !output.read_failures.is_empty() {
+            return git::is_dirty(worktree);
+        }
         let (dirty, ignored) = parse(&output.stdout);
         // An answer naming a path that is not UTF-8 reaches here spelled lossily, so what
         // it reported ignored cannot be held to the paths on disk: it is used, not kept.
