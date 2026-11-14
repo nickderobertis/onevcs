@@ -1,15 +1,8 @@
 //! Whether a worktree holds changes nobody committed, answered from the last `git status`
 //! while nothing that answer read has moved.
 //!
-//! Only a worktree something may be using is checked at all: one an open session whose
-//! owner is running, a lease or a maintenance claim names (see [`lookup`]). One nothing
-//! uses — an idle slot, a closed session's tree, or an open session's whose owner has
-//! exited — is answered from what a fresh `git status` found the first time a read saw it
-//! that way, with no walk of its tree, until a session opens, resumes or closes there or
-//! a maintenance run claims its slot. A hand edit made inside such a worktree outside
-//! onevcs is therefore not seen until then: that is the rule's accepted gap. A dead
-//! owner's uncommitted work is not in it, since that first check after the death finds it.
-//! No answer is reused by age.
+//! Only a worktree something may be using is checked at all; one nothing uses is answered
+//! at rest, from what its lifecycle last recorded, and never by age (see [`lookup`]).
 //!
 //! A recovery read asks it of every worktree over a branch it classifies, and on a host's
 //! larger trees `git status` spends half a second listing untracked files. What the answer
