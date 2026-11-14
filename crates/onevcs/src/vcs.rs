@@ -1071,15 +1071,22 @@ fn serve_recorded(
                 || base_here == Some(decision.listing.base.as_str());
             let moved_stream =
                 moved.covers(branch) || (!decision.landed && moved.unreadable.contains(identity));
-            // llmlint: ignore[changed_behavior_has_e2e] a record's key is the branch's own
-            // inputs, not its objects' presence: an object lost underneath a tip that did not
-            // move is damage to the repository, which the uncached read reports as a whole and
-            // which reappears as soon as anything re-derives the branch.
+            // A tip whose commit this copy can no longer read — its lender pruned what the
+            // copy borrowed — answers differently from the record that read it, so it is
+            // derived as the uncached read derives it.
+            let readable = || {
+                let lent_here = (repo != &publication).then_some(lent.as_deref()).flatten();
+                git::has_commit(
+                    git::Asked::borrowing(repo, lent_here),
+                    &crate::host::Sha(tip.clone()),
+                )
+            };
             if decision.tip != *tip
                 || advertised.is_some_and(|tip| tip != decision.listing.origin_tip)
                 || !same_base
                 || digest != decision.sessions
                 || moved_stream
+                || !readable()
             {
                 usable.insert(key, Usable::No);
                 continue;
