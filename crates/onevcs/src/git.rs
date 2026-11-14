@@ -3561,9 +3561,25 @@ pub fn is_valid_branch_name(branch: &str) -> bool {
 
 /// Whether the worktree has staged or unstaged changes.
 pub fn is_dirty(cwd: &Path) -> Result<bool> {
-    Ok(!checked(&["status", "--porcelain"], Some(cwd))?
+    Ok(!status_unwritten(&["status", "--porcelain"], cwd)?
         .trimmed()
         .is_empty())
+}
+
+/// A `git status` that leaves the index as it found it, which is what every question
+/// this crate asks of a worktree's cleanliness is: a read.
+///
+/// Without optional locks git still answers exactly, and only skips refreshing the
+/// index's stat data on disk. That refresh is housekeeping whose frequency moves with
+/// git's version — from 2.53 a racy entry is judged by the second, so the index is
+/// rewritten on every status until it was written a second after every file it lists —
+/// and a read writing it moves the input a kept cleanliness answer is stamped under.
+pub(crate) fn status_unwritten(args: &[&str], cwd: &Path) -> Result<Output> {
+    checked_with_env(
+        args,
+        Some(cwd),
+        &[("GIT_OPTIONAL_LOCKS".to_owned(), "0".to_owned())],
+    )
 }
 
 /// Stage everything in the worktree.

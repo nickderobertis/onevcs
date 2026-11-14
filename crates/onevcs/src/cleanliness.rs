@@ -404,11 +404,12 @@ mod recorded {
         }
         let asked = SystemTime::now();
         // A worktree git cannot read is asked as an uncached read asks it, so what it
-        // answers — the refusal included, word for word — is that read's.
-        let Ok(output) = git::checked(
-            &["status", "--porcelain", "-z", "--ignored"],
-            Some(worktree),
-        ) else {
+        // answers — the refusal included, word for word — is that read's. Asked without
+        // writing the index, which a kept answer is stamped under: see
+        // `git::status_unwritten`.
+        let Ok(output) =
+            git::status_unwritten(&["status", "--porcelain", "-z", "--ignored"], worktree)
+        else {
             return git::is_dirty(worktree);
         };
         // A listing whose pipe failed part way is not git's whole answer, so it is neither
