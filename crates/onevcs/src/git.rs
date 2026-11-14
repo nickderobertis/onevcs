@@ -1410,11 +1410,6 @@ impl<'a> Asked<'a> {
         }
     }
 
-    /// The store this read borrows, where it borrows one.
-    pub(crate) fn borrowed(self) -> Option<&'a Path> {
-        self.borrowing
-    }
-
     /// Where the command runs, for the reads that name a repository rather than
     /// asking it anything.
     pub fn path(self) -> &'a Path {

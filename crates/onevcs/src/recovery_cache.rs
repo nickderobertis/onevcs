@@ -156,15 +156,7 @@ struct Listing {
     store: PathBuf,
     generation: String,
     held: Vec<String>,
-    /// Earlier generations this one holds everything of: each listing written over one
-    /// whose lines it all still holds carries that one's generation and what it carried,
-    /// so a record made at any of them is held to this listing's lines.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    covers: Vec<String>,
 }
-
-/// The most earlier generations one listing carries.
-const COVERED_GENERATIONS: usize = 256;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields, tag = "kind", rename_all = "kebab-case")]
@@ -236,13 +228,63 @@ impl Query {
     }
     /// Whether `store` still holds everything it held at `generation`.
     fn covers(&self, path: &Path, store: &Store, generation: &str) -> bool {
-        store_covers(path, store, generation)
+        let asked = (path.to_owned(), generation.to_owned());
+        if let Some(known) = COVERED.with(|covered| covered.borrow().get(&asked).copied()) {
+            return known;
+        }
+        let covered = self
+            .listing(path)
+            .filter(|listing| listing.generation == generation)
+            .is_some_and(|listing| listing.held.iter().all(|line| store.held.contains(line)));
+        COVERED.with(|known| known.borrow_mut().insert(asked, covered));
+        covered
+    }
+
+    /// The listing recorded for one store, where it is this format's, names this
+    /// store and is the generation its own lines digest to.
+    fn listing(&self, store: &Path) -> Option<Listing> {
+        let listing: Listing =
+            serde_json::from_slice(&std::fs::read(self.listing_path(store)?).ok()?).ok()?;
+        (listing.version == VERSION
+            && listing.store == store
+            && generation_of(listing.held.iter()) == listing.generation)
+            .then_some(listing)
+    }
+
+    fn listing_path(&self, store: &Path) -> Option<PathBuf> {
+        Some(self.path.parent()?.parent()?.join("stores").join(format!(
+            "{}.json",
+            crate::ids::digest(&store.to_string_lossy())
+        )))
     }
 
     /// Record each store's current generation, once per process, where the listing
     /// there is of another.
     fn list_stores(&self) {
-        list_stores(&self.stores);
+        for (path, store) in &self.stores {
+            let asked = (path.clone(), store.generation.clone());
+            if LISTED.with(|listed| listed.borrow().contains(&asked)) {
+                continue;
+            }
+            LISTED.with(|listed| listed.borrow_mut().insert(asked));
+            if self
+                .listing(path)
+                .is_some_and(|listing| listing.generation == store.generation)
+            {
+                continue;
+            }
+            let listing = Listing {
+                version: VERSION,
+                store: path.clone(),
+                generation: store.generation.clone(),
+                held: store.held.iter().cloned().collect(),
+            };
+            if let (Some(target), Ok(bytes)) =
+                (self.listing_path(path), serde_json::to_vec(&listing))
+            {
+                replace(&target, &store.generation, &bytes);
+            }
+        }
     }
 
     /// Every object the query names is in the store and hashes to its name. Asked
@@ -331,136 +373,6 @@ fn checksum(key: &str, answer: &Answer, stores: &[Generation]) -> String {
         serde_json::to_string(answer).expect("cache answer"),
         serde_json::to_string(stores).expect("cache generations")
     ))
-}
-
-/// Whether `store` still holds everything it held at `generation`.
-fn store_covers(path: &Path, store: &Store, generation: &str) -> bool {
-    let asked = (path.to_owned(), generation.to_owned());
-    if let Some(known) = COVERED.with(|covered| covered.borrow().get(&asked).copied()) {
-        return known;
-    }
-    let covered = listing(path)
-        .filter(|listing| {
-            listing.generation == generation || listing.covers.iter().any(|g| g == generation)
-        })
-        .is_some_and(|listing| listing.held.iter().all(|line| store.held.contains(line)));
-    COVERED.with(|known| known.borrow_mut().insert(asked, covered));
-    covered
-}
-
-/// The listing recorded for one store, where it is this format's, names this store and
-/// is the generation its own lines digest to.
-fn listing(store: &Path) -> Option<Listing> {
-    let listing: Listing =
-        serde_json::from_slice(&std::fs::read(listing_path(store)?).ok()?).ok()?;
-    (listing.version == VERSION
-        && listing.store == store
-        && generation_of(listing.held.iter()) == listing.generation)
-        .then_some(listing)
-}
-
-fn listing_path(store: &Path) -> Option<PathBuf> {
-    Some(
-        crate::home::root()
-            .ok()?
-            .join("cache/recoverable/v1/stores")
-            .join(format!(
-                "{}.json",
-                crate::ids::digest(&store.to_string_lossy())
-            )),
-    )
-}
-
-/// Record each store's current generation, once per process, where the listing there is
-/// of another.
-fn list_stores(stores: &[(PathBuf, Store)]) {
-    for (path, store) in stores {
-        let asked = (path.clone(), store.generation.clone());
-        if LISTED.with(|listed| listed.borrow().contains(&asked)) {
-            continue;
-        }
-        LISTED.with(|listed| listed.borrow_mut().insert(asked));
-        let before = listing(path);
-        if before
-            .as_ref()
-            .is_some_and(|listing| listing.generation == store.generation)
-        {
-            continue;
-        }
-        // What the listing being replaced stood for carries over only where this store
-        // still holds every line of it; one it lost any of stands for nothing earlier.
-        let covers = before
-            .filter(|before| before.held.iter().all(|line| store.held.contains(line)))
-            .map(|before| {
-                let mut covers = before.covers;
-                covers.retain(|generation| *generation != before.generation);
-                covers.push(before.generation);
-                let excess = covers.len().saturating_sub(COVERED_GENERATIONS);
-                covers.drain(..excess);
-                covers
-            })
-            .unwrap_or_default();
-        let listing = Listing {
-            version: VERSION,
-            store: path.clone(),
-            generation: store.generation.clone(),
-            held: store.held.iter().cloned().collect(),
-            covers,
-        };
-        if let (Some(target), Ok(bytes)) = (listing_path(path), serde_json::to_vec(&listing)) {
-            replace(&target, &store.generation, &bytes);
-        }
-    }
-}
-
-/// A repository, and the store it is lent where it is lent one.
-pub(crate) type Place = (PathBuf, Option<PathBuf>);
-
-/// Every object store the places read, each once.
-fn stores_of(places: &[Place]) -> Option<Vec<(PathBuf, Store)>> {
-    let mut stores: Vec<(PathBuf, Store)> = Vec::new();
-    for (repo, borrowing) in places {
-        let context = enabled()
-            .then(|| context_of(repo, Compared::Objects, borrowing.as_deref()))
-            .flatten()?;
-        for (path, store) in context.stores {
-            if !stores.iter().any(|(seen, _)| *seen == path) {
-                stores.push((path, store));
-            }
-        }
-    }
-    Some(stores)
-}
-
-/// The generation of every object store the places read — each listed where a later read
-/// can hold it to what it held — or `None` where this read cannot say, which keeps a
-/// decision from being recorded against them.
-pub(crate) fn store_generations(places: &[Place]) -> Option<Vec<(PathBuf, String)>> {
-    let stores = stores_of(places)?;
-    list_stores(&stores);
-    Some(
-        stores
-            .iter()
-            .map(|(path, store)| (path.clone(), store.generation.clone()))
-            .collect(),
-    )
-}
-
-/// Whether the places read exactly the stores `recorded` names, each still holding
-/// everything it held then: an object one lost — a borrowed store pruned, a store gone —
-/// may be one the recorded answer read, and nothing else about a copy has to move. A store
-/// the record does not name was never held to anything, so it holds nothing either.
-pub(crate) fn stores_hold(places: &[Place], recorded: &[(PathBuf, String)]) -> bool {
-    let Some(stores) = stores_of(places) else {
-        return false;
-    };
-    stores.len() == recorded.len()
-        && stores.iter().all(|(path, store)| {
-            recorded.iter().any(|(named, generation)| {
-                named == path
-                    && (store.generation == *generation || store_covers(path, store, generation))
-            })
-        })
 }
 
 /// A generation is the digest of the sorted lines that list it.

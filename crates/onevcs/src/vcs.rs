@@ -863,9 +863,6 @@ fn scan_identity(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
                 .chain(withheld_rows.iter())
                 .map(|(_, row)| row.branch.branch.as_str())
                 .collect();
-            // Each copy is asked through the store the derivation lent it.
-            let publication = store::resolve(scan.registry, identity)?.publication;
-            let lent = git::objects_dir(&publication).ok();
             for branch in &derive {
                 for (repo, tip) in tips.get(branch).into_iter().flatten() {
                     let copy = (branch.clone(), repo.clone());
@@ -874,14 +871,7 @@ fn scan_identity(identity: &str, scan: &Scan<'_>) -> Result<Scanned> {
                     {
                         continue;
                     }
-                    let lent_here = (*repo != publication).then_some(lent.as_deref()).flatten();
-                    record_unlisted(
-                        identity,
-                        git::Asked::borrowing(repo, lent_here),
-                        tip,
-                        branch,
-                        scan.sessions,
-                    );
+                    record_unlisted(identity, repo, tip, branch, scan.sessions);
                 }
             }
         }
@@ -1081,33 +1071,15 @@ fn serve_recorded(
                 || base_here == Some(decision.listing.base.as_str());
             let moved_stream =
                 moved.covers(branch) || (!decision.landed && moved.unreadable.contains(identity));
-            // A tip whose commit this copy can no longer read — its lender pruned what the
-            // copy borrowed — answers differently from the record that read it, so it is
-            // derived as the uncached read derives it.
-            // …and so does a copy whose object stores lost anything since: the record's
-            // answer may have read what went.
-            let lent_here = (repo != &publication).then_some(lent.as_deref()).flatten();
-            let readable = || {
-                let places = match decision.row {
-                    Some(_) => judged_places(
-                        repo,
-                        decision.listing.verdict.as_ref(),
-                        &publication,
-                        lent.as_deref(),
-                    ),
-                    None => vec![(repo.clone(), lent_here.map(Path::to_path_buf))],
-                };
-                git::has_commit(
-                    git::Asked::borrowing(repo, lent_here),
-                    &crate::host::Sha(tip.clone()),
-                ) && crate::recovery_cache::stores_hold(&places, &decision.listing.stores)
-            };
+            // llmlint: ignore[changed_behavior_has_e2e] a record's key is the branch's own
+            // inputs, not its objects' presence: an object lost underneath a tip that did not
+            // move is damage to the repository, which the uncached read reports as a whole and
+            // which reappears as soon as anything re-derives the branch.
             if decision.tip != *tip
                 || advertised.is_some_and(|tip| tip != decision.listing.origin_tip)
                 || !same_base
                 || digest != decision.sessions
                 || moved_stream
-                || !readable()
             {
                 usable.insert(key, Usable::No);
                 continue;
@@ -1307,28 +1279,16 @@ fn serve_recorded(
             // its place, as the derivation keeps the one it reaches, so the next read
             // whose holders are these reuses it rather than deriving it once more.
             if let Some((_, Some(verdict))) = &classified {
-                // Held to the stores the new verdict judged, as they stand now: the record
-                // was served because the ones it named still held what they held.
-                let stores = (scan.writing
+                if scan.writing
                     && decision.listing.verdict.as_ref() != Some(verdict)
                     && verdict.retirement.reason != Some(crate::KeepReason::Unknown)
-                    && !verdict.host.failed())
-                .then(|| {
-                    crate::recovery_cache::store_generations(&judged_places(
-                        repo,
-                        Some(verdict),
-                        &publication,
-                        lent.as_deref(),
-                    ))
-                })
-                .flatten();
-                if let Some(stores) = stores {
-                    let listing = &mut rewritten
+                    && !verdict.host.failed()
+                {
+                    rewritten
                         .entry((branch.clone(), repo.clone()))
                         .or_insert_with(|| decision.clone())
-                        .listing;
-                    listing.verdict = Some(verdict.clone());
-                    listing.stores = stores;
+                        .listing
+                        .verdict = Some(verdict.clone());
                 }
             }
             let retirement = classified.map(|(retirement, _)| retirement);
@@ -1774,7 +1734,6 @@ fn scanned(identity: &str, scan: &Scan<'_>, only: Option<&BTreeSet<String>>) -> 
                             .as_ref()
                             .map(|tip| tip.as_str().to_owned()),
                     ),
-                    (&publication, lent.as_deref()),
                     sessions,
                     trailers,
                 );
@@ -2146,39 +2105,6 @@ fn session_rows_without_base(
     Ok(())
 }
 
-/// The places a copy's decision read objects through: the copy's own repository, and every
-/// place its verdict judged a copy of the branch in, each lent what the derivation lent it.
-fn judged_places(
-    repo: &Path,
-    verdict: Option<&crate::verdict::Verdict>,
-    publication: &Path,
-    lent: Option<&Path>,
-) -> Vec<crate::recovery_cache::Place> {
-    let place = |repo: &Path| {
-        (
-            repo.to_path_buf(),
-            (repo != publication)
-                .then_some(lent)
-                .flatten()
-                .map(Path::to_path_buf),
-        )
-    };
-    let mut places = vec![place(repo)];
-    for holder in verdict
-        .into_iter()
-        .flat_map(|verdict| &verdict.retirement.holders)
-    {
-        if holder.kind == crate::retire::BranchHolderKind::Origin {
-            continue;
-        }
-        let held = place(Path::new(&holder.location));
-        if !places.contains(&held) {
-            places.push(held);
-        }
-    }
-    places
-}
-
 /// Write the decision of a branch this read derived.
 #[expect(
     clippy::too_many_arguments,
@@ -2194,19 +2120,13 @@ fn record_decision(
     (at, row): &(Option<u64>, Recoverable),
     verdict: Option<crate::verdict::Verdict>,
     (covered, origin_tip): (bool, Option<String>),
-    (publication, lent): (&Path, Option<&Path>),
     sessions: &[workspace::Record],
     trailers: &provenance::Trailers,
 ) {
     use crate::decisions::{self, Decision, Listing};
-    let places = judged_places(asked.path(), verdict.as_ref(), publication, lent);
-    let Some(stores) = crate::recovery_cache::store_generations(&places) else {
-        return;
-    };
     let landed = row.landed.is_landed();
     let held = row.held_by.clone();
     let mut listing = Listing {
-        stores,
         checkout: asked.path().to_path_buf(),
         base: base.to_owned(),
         committed_at: *at,
@@ -2276,17 +2196,12 @@ fn record_decision(
 /// left to count until its tip moves.
 fn record_unlisted(
     identity: &str,
-    asked: git::Asked<'_>,
+    repo: &Path,
     tip: &str,
     branch: &str,
     sessions: &[workspace::Record],
 ) {
     use crate::decisions::{self, Decision, Listing};
-    let repo = asked.path();
-    let place = (repo.to_path_buf(), asked.borrowed().map(Path::to_path_buf));
-    let Some(stores) = crate::recovery_cache::store_generations(&[place]) else {
-        return;
-    };
     let held = held_by(sessions, identity, branch).ok().flatten();
     decisions::write(&Decision {
         version: decisions::VERSION,
@@ -2298,7 +2213,6 @@ fn record_unlisted(
         listing: Listing {
             checkout: repo.to_path_buf(),
             origin: decisions::origin_digest(repo, "").unwrap_or_default(),
-            stores,
             ..Listing::default()
         },
         landed: true,
