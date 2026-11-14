@@ -117,7 +117,7 @@ fn read<T>(repo: &Path, choose: impl FnOnce(&Snapshot) -> Option<T>) -> Option<T
         let mut snapshots = snapshots.borrow_mut();
         let snapshot = snapshots
             .entry(repo.to_owned())
-            .or_insert_with(|| settled_snapshot(repo))
+            .or_insert_with(|| settled_snapshot(repo).and_then(|built| kept(repo, built)))
             .as_ref()?;
         choose(snapshot)
     })
@@ -831,6 +831,55 @@ pub(crate) fn is_ancestor(
 /// whose listing and whose values disagree is refused rather than answered from; a
 /// refusal of that kind is read again, a few times, so that a ref moved during the
 /// read costs one more read rather than every ref read of the call going to git.
+/// A snapshot built here or on another thread, kept as this thread's with its
+/// repository's configuration frozen beside it, or `None` where that configuration
+/// changes what a ref name means or where refs are kept.
+fn kept(repo: &Path, snapshot: Snapshot) -> Option<Snapshot> {
+    let configuration = snapshot.repository.config().ok()?.snapshot().ok()?;
+    for key in [
+        "core.worktree",
+        "core.warnAmbiguousRefs",
+        "extensions.refStorage",
+        "extensions.objectFormat",
+    ] {
+        match configuration.get_entry(key) {
+            Err(error) if error.code() == git2::ErrorCode::NotFound => (),
+            _ => return None,
+        }
+    }
+    CONFIGURATIONS.with(|configurations| {
+        configurations
+            .borrow_mut()
+            .insert(repo.to_owned(), configuration)
+    });
+    Some(snapshot)
+}
+
+/// Snapshot several repositories at once, ahead of a read that asks them one by one: each
+/// is built on a thread of its own, as [`read`] would build it, under the turn this thread
+/// takes for it, and kept as this thread's, so the read's own asking finds it built.
+pub(crate) fn prefetch(repos: &[PathBuf]) {
+    if !crate::recovery_cache::enabled() {
+        return;
+    }
+    let wanted: Vec<&PathBuf> = repos
+        .iter()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .filter(|repo| SNAPSHOTS.with(|snapshots| !snapshots.borrow().contains_key(*repo)))
+        // A checkout that is gone is answered without a snapshot, and without a turn.
+        .filter(|repo| repo.is_dir() && keep_turn(repo).is_some())
+        .collect();
+    let built = crate::vcs::concurrently_on(SNAPSHOTTED, &wanted, |repo| settled_snapshot(repo));
+    for (repo, built) in wanted.into_iter().zip(built) {
+        let snapshot = built.and_then(|built| kept(repo, built));
+        SNAPSHOTS.with(|snapshots| snapshots.borrow_mut().insert(repo.clone(), snapshot));
+    }
+}
+
+/// Repositories [`prefetch`] snapshots at once.
+const SNAPSHOTTED: usize = 8;
+
 fn settled_snapshot(at: &Path) -> Option<Snapshot> {
     let mut wait = std::time::Duration::from_millis(2);
     for _ in 0..5 {
@@ -984,18 +1033,6 @@ fn snapshot(at: &Path) -> Option<Snapshot> {
     {
         return None;
     }
-    let configuration = repo.config().ok()?.snapshot().ok()?;
-    for key in [
-        "core.worktree",
-        "core.warnAmbiguousRefs",
-        "extensions.refStorage",
-        "extensions.objectFormat",
-    ] {
-        match configuration.get_entry(key) {
-            Err(error) if error.code() == git2::ErrorCode::NotFound => (),
-            _ => return None,
-        }
-    }
     let (mut tips, mut symbolic) = if common == directory {
         match read_tips(&names, &loose, &listed) {
             Some(read) => read,
@@ -1028,11 +1065,6 @@ fn snapshot(at: &Path) -> Option<Snapshot> {
         worktrees.push((path.to_owned(), branch));
     }
     worktrees[1..].sort_by(|a, b| a.0.cmp(&b.0));
-    CONFIGURATIONS.with(|configurations| {
-        configurations
-            .borrow_mut()
-            .insert(at.to_owned(), configuration)
-    });
     Some(Snapshot {
         repository: repo,
         tips,

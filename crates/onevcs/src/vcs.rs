@@ -906,6 +906,17 @@ struct Served {
 /// to the derivation that takes its turn whenever anything about it moved: its record
 /// is missing or not this build's, its tip or sessions or streams changed, a copy of it
 /// disagrees with another, or the base gained something that names it.
+/// Snapshot an identity's checkouts at once, ahead of a read that asks them one by one;
+/// a checkout a narrowed read does not look in is left alone, as that read leaves it.
+fn prefetch_snapshots(checkouts: &[PathBuf], narrowed: Option<&Narrowed>) {
+    let looked_in: Vec<PathBuf> = checkouts
+        .iter()
+        .filter(|repo| narrowed.is_none_or(|only| only.looks_in(repo)))
+        .cloned()
+        .collect();
+    crate::native_refs::prefetch(&looked_in);
+}
+
 fn serve_recorded(
     identity: &str,
     scan: &Scan<'_>,
@@ -924,6 +935,8 @@ fn serve_recorded(
     let mut served = Served::default();
     let records = decisions::load(identity);
     let resolution = store::resolve(registry, identity)?;
+    let checkouts = workspace::checkouts_among(registry, &resolution, sessions);
+    prefetch_snapshots(&checkouts, narrowed.as_ref());
     let publication = resolution.publication.clone();
     let current = git::default_branch(&publication, "origin")
         .ok()
@@ -944,7 +957,6 @@ fn serve_recorded(
     let mut origin_digests: BTreeMap<PathBuf, Option<String>> = BTreeMap::new();
     let mut advertised: BTreeMap<PathBuf, Option<crate::native_refs::AdvertisedTips>> =
         BTreeMap::new();
-    let checkouts = workspace::checkouts_among(registry, &resolution, sessions);
     for repo in &checkouts {
         if narrowed.as_ref().is_some_and(|only| !only.looks_in(repo)) {
             continue;
@@ -1416,7 +1428,9 @@ fn scanned(identity: &str, scan: &Scan<'_>, only: Option<&BTreeSet<String>>) -> 
         ),
     > = BTreeMap::new();
     let _reads = crate::checkout_reads::identity(&resolution.key)?;
-    for repo in workspace::checkouts_among(registry, &resolution, sessions) {
+    let checkouts = workspace::checkouts_among(registry, &resolution, sessions);
+    prefetch_snapshots(&checkouts, narrowed.as_ref());
+    for repo in checkouts {
         // A checkout none of the selected sessions can be holding a branch in is
         // not opened: that is the difference between a filter that narrows the
         // answer and one that narrows the work, and on a host with forty retained
