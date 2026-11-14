@@ -945,10 +945,9 @@ fn snapshot(at: &Path) -> Option<Snapshot> {
     }
     kept.save();
     canonical_value(&std::fs::read(directory.join("HEAD")).ok()?)?;
-    let mut packed_tips: BTreeMap<String, git2::Oid> = BTreeMap::new();
-    // Gathered and then built in one pass rather than inserted one by one: a checkout's
-    // packed refs number in the thousands, and inserting each into two maps was most of
-    // what reading them cost.
+    // Gathered and then merged with the loose refs in one pass rather than inserted one
+    // by one: a checkout's packed refs number in the thousands, and building maps of them
+    // to look each up again was most of what reading them cost.
     let mut listed: Vec<(String, git2::Oid)> = Vec::new();
     if common.join("packed-refs").exists() {
         let packed = std::fs::read_to_string(common.join("packed-refs")).ok()?;
@@ -977,14 +976,12 @@ fn snapshot(at: &Path) -> Option<Snapshot> {
         if listed.windows(2).any(|pair| pair[0].0 == pair[1].0) {
             return None;
         }
-        let mut all: Vec<String> = std::mem::take(&mut names).into_iter().collect();
-        all.extend(listed.iter().map(|(name, _)| name.clone()));
-        all.sort_unstable();
-        all.dedup();
-        names = all.into_iter().collect();
-        packed_tips = listed.into_iter().collect();
     }
-    if names.iter().any(|name| name.starts_with("refs/replace/")) {
+    if names
+        .iter()
+        .chain(listed.iter().map(|(name, _)| name))
+        .any(|name| name.starts_with("refs/replace/"))
+    {
         return None;
     }
     let configuration = repo.config().ok()?.snapshot().ok()?;
@@ -999,12 +996,13 @@ fn snapshot(at: &Path) -> Option<Snapshot> {
             _ => return None,
         }
     }
-    let (mut tips, mut symbolic) = match (common == directory)
-        .then(|| read_tips(&names, &loose, &packed_tips))
-        .flatten()
-    {
-        Some(read) => read,
-        None => iterated_tips(&repo, &names)?,
+    let (mut tips, mut symbolic) = if common == directory {
+        match read_tips(&names, &loose, &listed) {
+            Some(read) => read,
+            None => iterated_tips(&repo, &every_name(names, &listed))?,
+        }
+    } else {
+        iterated_tips(&repo, &every_name(names, &listed))?
     };
     let head = repo.find_reference("HEAD").ok()?;
     if let Some(target) = head.symbolic_target().ok()? {
@@ -1112,20 +1110,31 @@ impl RefValue {
 /// Answered only where one reading of those files answers it: a symbolic ref naming
 /// a ref outside them, or naming another symbolic one, is left to libgit2, which
 /// reads the files again and follows the chain however it goes on.
+///
+/// `names` are the loose refs `loose` holds, and `packed` the packed ones sorted by name
+/// with none twice: the two are merged in name order, a loose ref standing in for a packed
+/// one of its name as it does for git.
 fn read_tips(
     names: &BTreeSet<String>,
     loose: &BTreeMap<String, RefValue>,
-    packed: &BTreeMap<String, git2::Oid>,
+    packed: &[(String, git2::Oid)],
 ) -> Option<Tips> {
     let value = |name: &str| {
-        loose
-            .get(name)
-            .cloned()
-            .or_else(|| packed.get(name).copied().map(RefValue::Direct))
+        loose.get(name).cloned().or_else(|| {
+            packed
+                .binary_search_by(|(listed, _)| listed.as_str().cmp(name))
+                .ok()
+                .map(|at| RefValue::Direct(packed[at].1))
+        })
     };
-    let mut tips = Vec::with_capacity(names.len());
+    let mut tips = Vec::with_capacity(names.len() + packed.len());
     let mut symbolic = BTreeMap::new();
+    let mut packed_only = packed.iter().peekable();
     for name in names {
+        while let Some((listed, tip)) = packed_only.next_if(|(listed, _)| listed < name) {
+            tips.push((listed.clone(), *tip));
+        }
+        packed_only.next_if(|(listed, _)| listed == name);
         let named = match value(name)? {
             RefValue::Direct(named) => named,
             RefValue::Symbolic(target) => {
@@ -1139,8 +1148,15 @@ fn read_tips(
         };
         tips.push((name.clone(), named));
     }
-    // `names` is ordered, so these arrive sorted and the map is built in one pass.
+    tips.extend(packed_only.map(|(listed, tip)| (listed.clone(), *tip)));
+    // Both are ordered, so these arrive sorted and the map is built in one pass.
     Some((tips.into_iter().collect(), symbolic))
+}
+
+/// The loose refs' names and the packed ones', as one set.
+fn every_name(mut names: BTreeSet<String>, packed: &[(String, git2::Oid)]) -> BTreeSet<String> {
+    names.extend(packed.iter().map(|(name, _)| name.clone()));
+    names
 }
 
 /// The refs as libgit2 lists them, where they are the ones `names` holds.
