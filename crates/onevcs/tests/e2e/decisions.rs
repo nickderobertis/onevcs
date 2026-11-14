@@ -539,6 +539,124 @@ fn packed_refs_read_in_one_pass_answer_as_git_reads_them() {
 }
 
 #[test]
+fn a_kept_reach_that_is_damaged_or_cannot_be_written_is_walked_again() {
+    let host = host_with_many_origin_tips(80);
+    host.branch("work/a");
+    host.read();
+    let store = host.home.join("cache/reach-v1");
+    let kept = || -> PathBuf {
+        std::fs::read_dir(&store)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path()
+    };
+    let file = kept();
+    let whole = std::fs::read_to_string(&file).unwrap();
+    assert!(whole.starts_with("onevcs reach 1\n"));
+    let reached_at = whole.find("reached\n").unwrap();
+    let damages: Vec<(&str, String)> = vec![
+        ("not one this build wrote", "not a reach\n".to_owned()),
+        (
+            "another version",
+            whole.replacen("onevcs reach 1", "onevcs reach 0", 1),
+        ),
+        (
+            "cut short after its tips",
+            whole[..reached_at + "reached\n".len()].to_owned(),
+        ),
+        ("a reached commit taken out, its digest left as it was", {
+            let mut lines: Vec<&str> = whole.lines().collect();
+            let at = lines.iter().position(|line| *line == "reached").unwrap() + 1;
+            lines.remove(at);
+            lines.join("\n") + "\n"
+        }),
+    ];
+    for (n, (damage, text)) in damages.into_iter().enumerate() {
+        std::fs::write(&file, text).unwrap();
+        commit_on(&host, "work/a", &format!("a-{n}.txt"));
+        let (rows, _) = host.read();
+        assert_eq!(rows, host.uncached(), "{damage}");
+        let rewritten = std::fs::read_to_string(kept()).unwrap();
+        assert!(
+            rewritten.starts_with("onevcs reach 1\n"),
+            "{damage}: walked again and kept"
+        );
+    }
+    // The commit that hides a published branch's tip taken out of a kept set, its digest
+    // left as it was: were the set read as kept, the branch would be listed as unpublished.
+    let b = host.branch("work/b");
+    let tree = run(&host.repo, &["rev-parse", &format!("{b}^{{tree}}")]);
+    let beyond = run(
+        &host.repo,
+        &["commit-tree", &tree, "-p", &b, "-m", "chore: beyond work/b"],
+    );
+    run(
+        &host.repo,
+        &["update-ref", "refs/remotes/origin/keep/b", &beyond],
+    );
+    let (rows, _) = host.read();
+    assert_eq!(rows, host.uncached(), "work/b published");
+    let text = std::fs::read_to_string(kept()).unwrap();
+    assert!(
+        text.contains(&format!("{b}\n")),
+        "the kept set holds work/b's tip"
+    );
+    std::fs::write(kept(), text.replacen(&format!("{b}\n"), "", 1)).unwrap();
+    // Another origin tip, so the branch is listed again against the kept set.
+    let main = run(&host.repo, &["rev-parse", "main"]);
+    let extra = run(
+        &host.repo,
+        &[
+            "commit-tree",
+            &tree,
+            "-p",
+            &main,
+            "-m",
+            "chore: another origin tip",
+        ],
+    );
+    run(
+        &host.repo,
+        &["update-ref", "refs/remotes/origin/keep/extra", &extra],
+    );
+    let (rows, _) = host.read();
+    assert_eq!(rows, host.uncached(), "a kept set altered under its digest");
+
+    std::fs::remove_dir_all(&store).unwrap();
+    std::fs::write(&store, "not a directory").unwrap();
+    for read in ["unwritable", "still unwritable"] {
+        commit_on(&host, "work/a", &format!("{read}.txt").replace(' ', "-"));
+        let (rows, _) = host.read();
+        assert_eq!(rows, host.uncached(), "{read}");
+    }
+    std::fs::remove_file(&store).unwrap();
+    commit_on(&host, "work/a", "writable.txt");
+    let (rows, _) = host.read();
+    assert_eq!(rows, host.uncached(), "writable again");
+    assert!(kept().exists());
+}
+
+#[test]
+fn an_origin_tip_whose_commit_cannot_be_read_leaves_the_listing_to_git() {
+    let host = host_with_many_origin_tips(80);
+    host.branch("work/a");
+    host.read();
+    // One origin tip's commit gone from the store.
+    let tip = run(&host.repo, &["rev-parse", "refs/remotes/origin/keep/t7"]);
+    let object = host
+        .repo
+        .join(".git/objects")
+        .join(&tip[..2])
+        .join(&tip[2..]);
+    std::fs::remove_file(&object).unwrap();
+    commit_on(&host, "work/a", "a-after-loss.txt");
+    let (rows, _) = host.read();
+    assert_eq!(rows, host.uncached(), "an unreadable origin tip");
+}
+
+#[test]
 fn a_session_scoped_read_writes_nothing_under_decisions() {
     let host = Host::new();
     host.branch("work/a");

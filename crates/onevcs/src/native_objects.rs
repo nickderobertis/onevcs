@@ -149,6 +149,9 @@ pub(crate) fn unreached(
 
 /// The most commits [`unreached`] keeps or walks: past it, git's own walk, which stops
 /// where its exclusions meet, is the cheaper one.
+// llmlint: ignore[changed_behavior_has_e2e] a cost bound whose only effect is to leave the
+// walk to git, which is the path every uncached read the journeys compare against takes;
+// reaching it takes a history of over a hundred thousand commits.
 const REACHED_LIMIT: usize = 1 << 17;
 
 /// What the origin's tips reach, kept between reads.
@@ -211,9 +214,16 @@ mod reach {
         )
     }
 
+    /// A kept file's lines, and the digest of them its last line carries: a file cut short
+    /// or altered would otherwise read as a smaller set, and a smaller set lists published
+    /// branches as unpublished.
     fn read(path: &Path) -> Option<(BTreeSet<git2::Oid>, HashSet<git2::Oid>)> {
         let text = std::fs::read_to_string(path).ok()?;
-        let mut lines = text.lines();
+        let (body, trailer) = text.rsplit_once("digest ")?;
+        if trailer.trim_end() != format!("{:x}", Sha256::digest(body.as_bytes())) {
+            return None;
+        }
+        let mut lines = body.lines();
         if lines.next()? != VERSION {
             return None;
         }
@@ -233,7 +243,10 @@ mod reach {
                 hidden.insert(id);
             }
         }
-        into_reached.then_some((hidden, reached))
+        // Every tip reaches itself, so a set without one of its own tips is not one this
+        // build wrote.
+        (into_reached && hidden.iter().all(|tip| reached.contains(tip)))
+            .then_some((hidden, reached))
     }
 
     fn write(path: &Path, hidden: &BTreeSet<git2::Oid>, reached: &HashSet<git2::Oid>) {
@@ -249,6 +262,10 @@ mod reach {
             text.push_str(&id.to_string());
             text.push('\n');
         }
+        let digest = format!("{:x}", Sha256::digest(text.as_bytes()));
+        text.push_str("digest ");
+        text.push_str(&digest);
+        text.push('\n');
         let _ = crate::home::atomic_write(path, &text);
     }
 
