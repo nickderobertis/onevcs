@@ -102,6 +102,11 @@ pub(crate) struct Listing {
     /// Where a local origin stood this branch when it was decided.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin_tip: Option<String>,
+    /// Each object store the copy was read through, and its generation then. A store
+    /// that has since lost an object may have lost one the answer read, so the record is
+    /// served only while each still holds what it held; a record naming none is not.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stores: Vec<(PathBuf, String)>,
 }
 // llmlint: ignore-end[invalid_states_unrepresentable]
 

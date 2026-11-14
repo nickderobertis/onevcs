@@ -315,6 +315,15 @@ pub(crate) fn clear() {
     VERIFIED.with(|verified| verified.borrow_mut().clear());
 }
 
+/// Each of a commit's parents read as a commit, as `log` reads them before it prints the
+/// commit: one it cannot read is git's refusal, so it is git's to word.
+fn parents_read(commit: &git2::Commit<'_>) -> Option<()> {
+    for at in 0..commit.parent_count() {
+        commit.parent(at).ok()?;
+    }
+    Some(())
+}
+
 /// One argument shape, with its object ids already parsed.
 enum Shape<'a> {
     /// `merge-base A B`.
@@ -514,12 +523,14 @@ impl<'a> Shape<'a> {
                 }
                 printed(out)
             }
-            Self::CommittedAt(x) => printed(format!(
-                "{}\n",
-                commit(repository, *x)?.committer().when().seconds()
-            )),
+            Self::CommittedAt(x) => {
+                let commit = commit(repository, *x)?;
+                parents_read(&commit)?;
+                printed(format!("{}\n", commit.committer().when().seconds()))
+            }
             Self::Message(x) => {
                 let commit = commit(repository, *x)?;
+                parents_read(&commit)?;
                 let mut out = body(&commit)?.to_vec();
                 out.push(b'\n');
                 printed_text(out)
@@ -606,7 +617,15 @@ impl Shape<'_> {
                 }
                 printed(out)
             }
-            Self::CommittedAt(x) => printed(format!("{}\n", view.commit(*x)?.time)),
+            // `log -1` parses the commit's parents as it walks, and refuses one it cannot
+            // read, so an answer here needs each of them read too.
+            Self::CommittedAt(x) => {
+                let commit = view.commit(*x)?;
+                for parent in commit.parents.iter() {
+                    view.commit(*parent)?;
+                }
+                printed(format!("{}\n", commit.time))
+            }
             Self::Peeled(revisions) => {
                 let mut out = String::new();
                 for revision in revisions {
