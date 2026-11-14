@@ -825,12 +825,6 @@ pub(crate) fn is_ancestor(
     })
 }
 
-/// A snapshot of refs nothing moved while they were read.
-///
-/// Other sessions' fetches rewrite a checkout's refs at any moment, and a snapshot
-/// whose listing and whose values disagree is refused rather than answered from; a
-/// refusal of that kind is read again, a few times, so that a ref moved during the
-/// read costs one more read rather than every ref read of the call going to git.
 /// A snapshot built here or on another thread, kept as this thread's with its
 /// repository's configuration frozen beside it, or `None` where that configuration
 /// changes what a ref name means or where refs are kept.
@@ -880,6 +874,12 @@ pub(crate) fn prefetch(repos: &[PathBuf]) {
 /// Repositories [`prefetch`] snapshots at once.
 const SNAPSHOTTED: usize = 8;
 
+/// A snapshot of refs nothing moved while they were read.
+///
+/// Other sessions' fetches rewrite a checkout's refs at any moment, and a snapshot
+/// whose listing and whose values disagree is refused rather than answered from; a
+/// refusal of that kind is read again, a few times, so that a ref moved during the
+/// read costs one more read rather than every ref read of the call going to git.
 fn settled_snapshot(at: &Path) -> Option<Snapshot> {
     let mut wait = std::time::Duration::from_millis(2);
     for _ in 0..5 {

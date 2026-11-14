@@ -333,7 +333,6 @@ fn checksum(key: &str, answer: &Answer, stores: &[Generation]) -> String {
     ))
 }
 
-/// A generation is the digest of the sorted lines that list it.
 /// Whether `store` still holds everything it held at `generation`.
 fn store_covers(path: &Path, store: &Store, generation: &str) -> bool {
     let asked = (path.to_owned(), generation.to_owned());
@@ -464,6 +463,7 @@ pub(crate) fn stores_hold(places: &[Place], recorded: &[(PathBuf, String)]) -> b
         })
 }
 
+/// A generation is the digest of the sorted lines that list it.
 fn generation_of<'a>(held: impl Iterator<Item = &'a String>) -> String {
     let mut joined = String::new();
     for line in held {
