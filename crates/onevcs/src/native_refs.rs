@@ -17,6 +17,8 @@ struct Snapshot {
     directory: PathBuf,
     #[cfg(unix)]
     common: PathBuf,
+    /// Each [`remote_digest`] this snapshot answered, by remote and the head left out.
+    remote_digests: RefCell<HashMap<(String, String), String>>,
 }
 /// A repository, and the store it is lent where it is lent one.
 type Lending = (PathBuf, Option<PathBuf>);
@@ -573,6 +575,43 @@ pub(crate) fn remote_heads(repo: &Path, remote: &str) -> Option<BTreeMap<String,
         )
     })
 }
+/// A digest of `remote`'s heads other than `HEAD` and `except`: each name and its tip in
+/// name order, as [`remote_heads`] lists them. Asked once per branch a read records, of
+/// one snapshot, so the snapshot keeps each answer it gives.
+pub(crate) fn remote_digest(repo: &Path, remote: &str, except: &str) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    read(repo, |snapshot| {
+        let key = (remote.to_owned(), except.to_owned());
+        if let Some(digest) = snapshot.remote_digests.borrow().get(&key) {
+            return Some(digest.clone());
+        }
+        let prefix = format!("refs/remotes/{remote}/");
+        let mut hasher = Sha256::new();
+        let mut hex = [0_u8; 40];
+        for (name, tip) in snapshot.tips.range(prefix.clone()..) {
+            let Some(name) = name.strip_prefix(&prefix) else {
+                break;
+            };
+            if name == "HEAD" || name == except {
+                continue;
+            }
+            for (at, byte) in tip.as_bytes().iter().enumerate() {
+                hex[at * 2] = b"0123456789abcdef"[usize::from(byte >> 4)];
+                hex[at * 2 + 1] = b"0123456789abcdef"[usize::from(byte & 0x0f)];
+            }
+            hasher.update(name.as_bytes());
+            hasher.update([0]);
+            hasher.update(&hex[..tip.as_bytes().len() * 2]);
+            hasher.update([0]);
+        }
+        let digest = format!("{:x}", hasher.finalize());
+        snapshot
+            .remote_digests
+            .borrow_mut()
+            .insert(key, digest.clone());
+        Some(digest)
+    })
+}
 pub(crate) fn worktrees(repo: &Path) -> Option<Vec<(PathBuf, Option<String>)>> {
     read(repo, |snapshot| Some(snapshot.worktrees.clone()))
 }
@@ -1006,6 +1045,7 @@ fn snapshot(at: &Path) -> Option<Snapshot> {
         directory,
         #[cfg(unix)]
         common,
+        remote_digests: RefCell::new(HashMap::new()),
     })
 }
 fn canonical_oid(value: &str) -> bool {
