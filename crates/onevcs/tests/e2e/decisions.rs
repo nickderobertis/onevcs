@@ -1321,6 +1321,197 @@ fn one_read_that_moves_a_record_on_three_counts_keeps_all_three() {
     assert_eq!(record(), after, "the read after it rewrites nothing");
 }
 
+/// A run clone borrows its checkout's objects, so a commit only the checkout held is gone
+/// from the clone once the checkout prunes it, though the clone's branch never moved. The
+/// branch's record is then not what the uncached read answers, and it is derived again —
+/// whether the commit lost is the clone's tip or one below a tip the clone wrote itself.
+fn borrowed_commit_pruned(own_commit_on_top: bool) {
+    let host = Host::new();
+    host.branch("work/kept");
+    host.branch("work/borrowed");
+    let clone = host
+        .root
+        .join("runs")
+        .join(Host::token("work/borrowed"))
+        .join("clone");
+    run(
+        &host.root,
+        &[
+            "clone",
+            "-q",
+            "--shared",
+            "--no-checkout",
+            host.repo.to_str().unwrap(),
+            clone.to_str().unwrap(),
+        ],
+    );
+    run(&clone, &["branch", "work/borrowed", "origin/work/borrowed"]);
+    let borrowed = run(&clone, &["rev-parse", "work/borrowed"]);
+    if own_commit_on_top {
+        let tree = run(&clone, &["rev-parse", "work/borrowed^{tree}"]);
+        let own = run(
+            &clone,
+            &[
+                "commit-tree",
+                &tree,
+                "-p",
+                &borrowed,
+                "-m",
+                "feat: the clone's own",
+            ],
+        );
+        run(&clone, &["update-ref", "refs/heads/work/borrowed", &own]);
+    }
+    // A fetch that pruned the branch's tracking ref leaves the clone's copy unpublished,
+    // and the checkout's copy is then rewritten, so each copy is decided at a tip of its own
+    // and the borrowed commit is one only the checkout's store holds.
+    run(
+        &clone,
+        &["update-ref", "-d", "refs/remotes/origin/work/borrowed"],
+    );
+    run(&host.repo, &["checkout", "-q", "work/borrowed"]);
+    run(
+        &host.repo,
+        &[
+            "commit",
+            "-q",
+            "--amend",
+            "-m",
+            "feat: work/borrowed, rewritten",
+        ],
+    );
+    run(&host.repo, &["checkout", "-q", "main"]);
+    // The checkout's copy is published, so the clone's is the one that answers the branch.
+    let published = run(&host.repo, &["rev-parse", "work/borrowed"]);
+    run(
+        &host.repo,
+        &[
+            "update-ref",
+            "refs/remotes/origin/work/borrowed",
+            &published,
+        ],
+    );
+    let (before, _) = host.read();
+    assert_eq!(before, host.uncached(), "the premise: both reads agree");
+    let held_in_clone = |rows: &[Value]| {
+        rows.iter().any(|row| {
+            row["branch"]["branch"] == "work/borrowed"
+                && row["checkout"].as_str() == Some(clone.to_str().unwrap())
+        })
+    };
+    assert!(
+        held_in_clone(&before),
+        "the premise: the clone's copy answers {before:#?}"
+    );
+    // The checkout drops the branch and prunes its commits, which the clone only borrowed.
+    run(&host.repo, &["branch", "-D", "work/borrowed"]);
+    run(
+        &host.repo,
+        &["update-ref", "-d", "refs/remotes/origin/work/borrowed"],
+    );
+    run(&host.repo, &["reflog", "expire", "--expire=now", "--all"]);
+    run(&host.repo, &["gc", "-q", "--prune=now"]);
+    let readable = |commit: &str| {
+        std::process::Command::new("git")
+            .args(["cat-file", "-e", &format!("{commit}^{{commit}}")])
+            .current_dir(&clone)
+            .status()
+            .unwrap()
+            .success()
+    };
+    let tip = run(&clone, &["rev-parse", "work/borrowed"]);
+    assert!(
+        !readable(&borrowed),
+        "the premise: the borrowed commit is gone"
+    );
+    assert_eq!(
+        readable(&tip),
+        own_commit_on_top,
+        "the premise: the tip is the clone's own"
+    );
+    let (rows, derived) = host.read();
+    let uncached = host.uncached();
+    assert_eq!(rows, uncached, "the warm read answers the uncached rows");
+    assert!(derived.contains("work/borrowed"), "{derived:?}");
+    assert_eq!(host.read().0, uncached, "and keeps answering them");
+}
+
+#[test]
+fn a_recorded_tip_whose_borrowed_commit_was_pruned_answers_the_uncached_read() {
+    borrowed_commit_pruned(false);
+}
+
+#[test]
+fn a_recorded_tip_above_a_pruned_borrowed_commit_answers_the_uncached_read() {
+    borrowed_commit_pruned(true);
+}
+
+/// The checkout's copy answers a branch whose verdict also judged a run clone's copy. The
+/// clone's store loses the commit its copy stands at while nothing about the checkout
+/// moves, and the verdict the checkout's record kept is no longer what the uncached read
+/// derives.
+#[test]
+fn a_verdict_that_judged_a_copy_whose_store_lost_its_commit_answers_the_uncached_read() {
+    let host = Host::new();
+    host.branch("work/held");
+    let clone = host
+        .root
+        .join("runs")
+        .join(Host::token("work/held"))
+        .join("clone");
+    run(
+        &host.root,
+        &[
+            "clone",
+            "-q",
+            "--shared",
+            "--no-checkout",
+            host.repo.to_str().unwrap(),
+            clone.to_str().unwrap(),
+        ],
+    );
+    // The clone's copy stands at a commit of its own, in its own store alone.
+    let tree = run(&clone, &["rev-parse", "origin/work/held^{tree}"]);
+    let parent = run(&clone, &["rev-parse", "origin/work/held"]);
+    let own = run(
+        &clone,
+        &[
+            "commit-tree",
+            &tree,
+            "-p",
+            &parent,
+            "-m",
+            "feat: the clone's own",
+        ],
+    );
+    run(&clone, &["update-ref", "refs/heads/work/held", &own]);
+    let (before, _) = host.read();
+    assert_eq!(before, host.uncached(), "the premise: both reads agree");
+    let row = |rows: &[Value]| {
+        rows.iter()
+            .find(|row| row["branch"]["branch"] == "work/held")
+            .cloned()
+            .unwrap_or_default()
+    };
+    assert_eq!(
+        row(&before)["checkout"].as_str(),
+        Some(host.repo.to_str().unwrap()),
+        "the premise: the checkout's copy answers {before:#?}"
+    );
+    assert!(
+        row(&before)["retirement"]["holders"]
+            .to_string()
+            .contains("clone"),
+        "the premise: its verdict judged the clone's copy {before:#?}"
+    );
+    let loose = clone.join(".git/objects").join(&own[..2]).join(&own[2..]);
+    std::fs::remove_file(loose).expect("the clone's own commit is a loose object");
+    let (rows, _) = host.read();
+    let uncached = host.uncached();
+    assert_eq!(rows, uncached, "the warm read answers the uncached rows");
+    assert_eq!(host.read().0, uncached, "and keeps answering them");
+}
+
 /// A host shaped like the one whose warm read re-derived every branch: a registered
 /// checkout carrying a linked worktree whose directory is gone, and a second checkout
 /// holding some of the same branch names at tips of its own.
