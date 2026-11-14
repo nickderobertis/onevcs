@@ -910,12 +910,6 @@ struct Served {
     tips: BTreeMap<String, Vec<(PathBuf, String)>>,
 }
 
-/// The rows the records can answer for one identity, and the branches they cannot.
-///
-/// Holds no turn and starts no process for a branch whose inputs held. A branch is sent
-/// to the derivation that takes its turn whenever anything about it moved: its record
-/// is missing or not this build's, its tip or sessions or streams changed, a copy of it
-/// disagrees with another, or the base gained something that names it.
 /// Snapshot an identity's checkouts at once, ahead of a read that asks them one by one;
 /// a checkout a narrowed read does not look in is left alone, as that read leaves it.
 fn prefetch_snapshots(checkouts: &[PathBuf], narrowed: Option<&Narrowed>) {
@@ -927,6 +921,12 @@ fn prefetch_snapshots(checkouts: &[PathBuf], narrowed: Option<&Narrowed>) {
     crate::native_refs::prefetch(&looked_in);
 }
 
+/// The rows the records can answer for one identity, and the branches they cannot.
+///
+/// Holds no turn and starts no process for a branch whose inputs held. A branch is sent
+/// to the derivation that takes its turn whenever anything about it moved: its record
+/// is missing or not this build's, its tip or sessions or streams changed, a copy of it
+/// disagrees with another, or the base gained something that names it.
 fn serve_recorded(
     identity: &str,
     scan: &Scan<'_>,
