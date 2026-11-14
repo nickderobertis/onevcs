@@ -86,6 +86,7 @@ pub(crate) enum Policy {
 }
 
 /// How one worktree is answered under [`Policy::Recorded`].
+#[cfg(unix)]
 pub(crate) enum Lookup {
     /// Something may be using it: checked exactly, from the record of its last
     /// `git status` while nothing that answer read has moved.
@@ -142,6 +143,7 @@ fn answer(worktree: &Path, lookup: &Lookup) -> Result<bool> {
 /// whose owner died with work uncommitted is found by that first check after the death,
 /// and answered as holding it from then on. No answer is reused by age. Watching the
 /// tree's files would close the gap.
+#[cfg(unix)]
 pub(crate) fn lookup(worktree: &Path, sessions: &[crate::workspace::Record]) -> Lookup {
     let Some((run_root, lifecycle)) = lifecycle(worktree, sessions) else {
         return Lookup::Exact;
@@ -158,6 +160,7 @@ pub(crate) fn lookup(worktree: &Path, sessions: &[crate::workspace::Record]) -> 
 /// A worktree's run root and the digest of the lifecycle records naming it, or `None`
 /// where an open session names it or a maintenance run claims its slot. The lease is the
 /// caller's question: a close asks this while it still holds its own.
+#[cfg(unix)]
 fn lifecycle(worktree: &Path, sessions: &[crate::workspace::Record]) -> Option<(PathBuf, String)> {
     use sha2::{Digest, Sha256};
     // A record may spell the path another way; only one ending as this one does — the slot

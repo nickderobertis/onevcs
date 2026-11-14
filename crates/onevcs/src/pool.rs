@@ -331,6 +331,7 @@ fn record_path(slot: &Path) -> PathBuf {
 
 /// What a run root's slot record says of maintenance, for a read deciding whether its
 /// worktree is at rest.
+#[cfg(unix)]
 pub(crate) enum Maintenance {
     /// The run root is no slot.
     NoSlot,
@@ -342,6 +343,7 @@ pub(crate) enum Maintenance {
     Idle(String),
 }
 
+#[cfg(unix)]
 pub(crate) fn maintenance_of(run_root: &Path) -> Maintenance {
     let raw = match std::fs::read_to_string(record_path(run_root)) {
         Ok(raw) => raw,
