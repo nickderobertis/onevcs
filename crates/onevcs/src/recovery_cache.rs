@@ -650,7 +650,12 @@ pub(crate) fn unreached(
 ) -> Option<Vec<String>> {
     let (cwd, borrowing) = admitted(cwd, &[])?;
     let id = |text: &str| {
-        crate::git::ObjectId::parse(text).and_then(|id| git2::Oid::from_str(id.as_str()).ok())
+        (text.len() == 40
+            && text
+                .bytes()
+                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')))
+        .then(|| git2::Oid::from_str(text).ok())
+        .flatten()
     };
     let tips = tips.iter().map(|tip| id(tip)).collect::<Option<Vec<_>>>()?;
     let hidden = hidden

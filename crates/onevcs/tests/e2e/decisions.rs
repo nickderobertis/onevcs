@@ -538,6 +538,35 @@ fn packed_refs_read_in_one_pass_answer_as_git_reads_them() {
     assert_eq!(rows, host.uncached(), "packed again");
 }
 
+/// A kept reach with one reached commit taken out — `commit`, or the first after the tips
+/// — its count lowered to match and its digest left as it was.
+fn without_reached(kept: &[u8], header: usize, commit: Option<&str>) -> Vec<u8> {
+    let tips = u64::from_le_bytes(kept[header..header + 8].try_into().unwrap()) as usize;
+    let reached = u64::from_le_bytes(kept[header + 8..header + 16].try_into().unwrap()) as usize;
+    let ids = header + 16;
+    let first = ids + tips * 20;
+    let at = match commit {
+        None => first,
+        Some(commit) => {
+            let wanted: Vec<u8> = (0..40)
+                .step_by(2)
+                .map(|at| u8::from_str_radix(&commit[at..at + 2], 16).unwrap())
+                .collect();
+            match (0..reached)
+                .map(|n| first + n * 20)
+                .find(|at| kept[*at..*at + 20] == wanted[..])
+            {
+                Some(at) => at,
+                None => return kept.to_vec(),
+            }
+        }
+    };
+    let mut altered = kept.to_vec();
+    altered.drain(at..at + 20);
+    altered[header + 8..header + 16].copy_from_slice(&((reached - 1) as u64).to_le_bytes());
+    altered
+}
+
 #[test]
 fn a_kept_reach_that_is_damaged_or_cannot_be_written_is_walked_again() {
     let host = host_with_many_origin_tips(80);
@@ -553,34 +582,30 @@ fn a_kept_reach_that_is_damaged_or_cannot_be_written_is_walked_again() {
             .path()
     };
     let file = kept();
-    let whole = std::fs::read_to_string(&file).unwrap();
-    assert!(whole.starts_with("onevcs reach 1\n"));
-    let reached_at = whole.find("reached\n").unwrap();
-    let damages: Vec<(&str, String)> = vec![
-        ("not one this build wrote", "not a reach\n".to_owned()),
-        (
-            "another version",
-            whole.replacen("onevcs reach 1", "onevcs reach 0", 1),
-        ),
-        (
-            "cut short after its tips",
-            whole[..reached_at + "reached\n".len()].to_owned(),
-        ),
-        ("a reached commit taken out, its digest left as it was", {
-            let mut lines: Vec<&str> = whole.lines().collect();
-            let at = lines.iter().position(|line| *line == "reached").unwrap() + 1;
-            lines.remove(at);
-            lines.join("\n") + "\n"
+    let whole = std::fs::read(&file).unwrap();
+    let version = b"onevcs reach 2\n";
+    assert!(whole.starts_with(version));
+    let damages: Vec<(&str, Vec<u8>)> = vec![
+        ("not one this build wrote", b"not a reach\n".to_vec()),
+        ("another version", {
+            let mut other = whole.clone();
+            other[version.len() - 2] = b'0';
+            other
         }),
+        ("cut short", whole[..whole.len() - 100].to_vec()),
+        (
+            "a reached commit taken out, its count and digest left consistent with it",
+            without_reached(&whole, version.len(), None),
+        ),
     ];
-    for (n, (damage, text)) in damages.into_iter().enumerate() {
-        std::fs::write(&file, text).unwrap();
+    for (n, (damage, bytes)) in damages.into_iter().enumerate() {
+        std::fs::write(&file, bytes).unwrap();
         commit_on(&host, "work/a", &format!("a-{n}.txt"));
         let (rows, _) = host.read();
         assert_eq!(rows, host.uncached(), "{damage}");
-        let rewritten = std::fs::read_to_string(kept()).unwrap();
+        let rewritten = std::fs::read(kept()).unwrap();
         assert!(
-            rewritten.starts_with("onevcs reach 1\n"),
+            rewritten.starts_with(version),
             "{damage}: walked again and kept"
         );
     }
@@ -598,12 +623,10 @@ fn a_kept_reach_that_is_damaged_or_cannot_be_written_is_walked_again() {
     );
     let (rows, _) = host.read();
     assert_eq!(rows, host.uncached(), "work/b published");
-    let text = std::fs::read_to_string(kept()).unwrap();
-    assert!(
-        text.contains(&format!("{b}\n")),
-        "the kept set holds work/b's tip"
-    );
-    std::fs::write(kept(), text.replacen(&format!("{b}\n"), "", 1)).unwrap();
+    let bytes = std::fs::read(kept()).unwrap();
+    let altered = without_reached(&bytes, version.len(), Some(&b));
+    assert_ne!(altered, bytes, "the kept set holds work/b's tip");
+    std::fs::write(kept(), altered).unwrap();
     // Another origin tip, so the branch is listed again against the kept set.
     let main = run(&host.repo, &["rev-parse", "main"]);
     let extra = run(

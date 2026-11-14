@@ -164,9 +164,8 @@ mod reach {
     use super::graph::View;
     use super::REACHED_LIMIT;
 
-    /// The kept file's first line: one of any other shape is computed again.
-    const VERSION: &str = "onevcs reach 1";
-
+    /// The kept file's first bytes: one of any other shape is computed again.
+    const VERSION: &[u8] = b"onevcs reach 2\n";
     /// Every commit reachable from `starts` and not in `known`, and the commits of
     /// `known` the walk met, or `None` past [`REACHED_LIMIT`] or at a commit it cannot
     /// read.
@@ -214,59 +213,60 @@ mod reach {
         )
     }
 
-    /// A kept file's lines, and the digest of them its last line carries: a file cut short
-    /// or altered would otherwise read as a smaller set, and a smaller set lists published
+    /// A kept file: its version, the count of tips, the count of reached commits, every
+    /// id as its twenty bytes, and the SHA-256 of all of that last — a file cut short or
+    /// altered would otherwise read as a smaller set, and a smaller set lists published
     /// branches as unpublished.
     fn read(path: &Path) -> Option<(BTreeSet<git2::Oid>, HashSet<git2::Oid>)> {
-        let text = std::fs::read_to_string(path).ok()?;
-        let (body, trailer) = text.rsplit_once("digest ")?;
-        if trailer.trim_end() != format!("{:x}", Sha256::digest(body.as_bytes())) {
+        let bytes = std::fs::read(path).ok()?;
+        let (body, digest) = bytes.split_at_checked(bytes.len().checked_sub(32)?)?;
+        if Sha256::digest(body).as_slice() != digest {
             return None;
         }
-        let mut lines = body.lines();
-        if lines.next()? != VERSION {
+        let rest = body.strip_prefix(VERSION)?;
+        let (counts, ids) = rest.split_at_checked(16)?;
+        let count = |at: usize| {
+            usize::try_from(u64::from_le_bytes(counts[at..at + 8].try_into().ok()?)).ok()
+        };
+        let (tips, reached_count) = (count(0)?, count(8)?);
+        if ids.len() != (tips.checked_add(reached_count)?).checked_mul(20)? {
             return None;
         }
-        let mut hidden = BTreeSet::new();
-        let mut reached = HashSet::new();
-        let mut into_reached = false;
-        for line in lines {
-            if line == "reached" {
-                into_reached = true;
-                continue;
-            }
-            let id = crate::git::ObjectId::parse(line)?;
-            let id = git2::Oid::from_str(id.as_str()).ok()?;
-            if into_reached {
-                reached.insert(id);
-            } else {
-                hidden.insert(id);
-            }
-        }
+        let mut chunks = ids.chunks_exact(20).map(git2::Oid::from_bytes);
+        let hidden = chunks
+            .by_ref()
+            .take(tips)
+            .collect::<Result<BTreeSet<_>, _>>()
+            .ok()?;
+        let reached = chunks.collect::<Result<HashSet<_>, _>>().ok()?;
         // Every tip reaches itself, so a set without one of its own tips is not one this
         // build wrote.
-        (into_reached && hidden.iter().all(|tip| reached.contains(tip)))
+        hidden
+            .iter()
+            .all(|tip| reached.contains(tip))
             .then_some((hidden, reached))
     }
 
     fn write(path: &Path, hidden: &BTreeSet<git2::Oid>, reached: &HashSet<git2::Oid>) {
-        let mut text = String::with_capacity((hidden.len() + reached.len() + 2) * 41);
-        text.push_str(VERSION);
-        text.push('\n');
-        for id in hidden {
-            text.push_str(&id.to_string());
-            text.push('\n');
+        let mut bytes =
+            Vec::with_capacity(VERSION.len() + 16 + (hidden.len() + reached.len()) * 20 + 32);
+        bytes.extend_from_slice(VERSION);
+        bytes.extend_from_slice(&(hidden.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(&(reached.len() as u64).to_le_bytes());
+        for id in hidden.iter().chain(reached) {
+            bytes.extend_from_slice(id.as_bytes());
         }
-        text.push_str("reached\n");
-        for id in reached {
-            text.push_str(&id.to_string());
-            text.push('\n');
+        let digest = Sha256::digest(&bytes);
+        bytes.extend_from_slice(&digest);
+        let Some(parent) = path.parent() else {
+            return;
+        };
+        let _ = crate::home::ensure_dir(parent);
+        let temporary = parent.join(format!(".reach.{}", crate::ids::unique()));
+        if std::fs::write(&temporary, &bytes).is_ok() && std::fs::rename(&temporary, path).is_err()
+        {
+            let _ = std::fs::remove_file(&temporary);
         }
-        let digest = format!("{:x}", Sha256::digest(text.as_bytes()));
-        text.push_str("digest ");
-        text.push_str(&digest);
-        text.push('\n');
-        let _ = crate::home::atomic_write(path, &text);
     }
 
     /// Every commit `hidden` reaches: what was kept for exactly these tips, or the kept
