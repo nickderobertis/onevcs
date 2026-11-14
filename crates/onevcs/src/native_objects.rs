@@ -111,6 +111,186 @@ pub(crate) fn is_ancestor(
     graph::View::of(repo, borrowing).is_ancestor(ancestor, descendant)
 }
 
+/// Of the commits reachable from `tips`, those no commit in `hidden` or `also` reaches:
+/// what `git rev-list TIPS --not HIDDEN ALSO` prints, as a set.
+///
+/// The commits `hidden` reaches — a checkout's origin tips, thousands of them on a busy
+/// host, which git parses every one of on each walk — are kept between reads in
+/// `$ONEVCS_HOME/cache/reach-v1/`, with the tips they were taken from. Which commits a
+/// commit reaches is a fact of its id, so a kept set stands for those tips whatever the
+/// store; a later read walks down from each tip added since, stopping at the kept set,
+/// and keeps it where every tip taken away is one the added tips still reach — so the
+/// set is exactly what the tips reach now. Anything else — a tip taken away whose commits
+/// may no longer be reached, a set past [`REACHED_LIMIT`], a commit this view cannot
+/// read — is git's walk to make, as before.
+pub(crate) fn unreached(
+    repo: &Path,
+    borrowing: Option<&Path>,
+    tips: &[git2::Oid],
+    hidden: &BTreeSet<git2::Oid>,
+    also: &[git2::Oid],
+) -> Option<std::collections::HashSet<git2::Oid>> {
+    let view = graph::View::of(repo, borrowing);
+    let reached = reach::kept(&view, repo, borrowing, hidden)?;
+    let (beyond, _) = reach::walk(&view, also.iter().copied(), &reached)?;
+    let mut printed = std::collections::HashSet::new();
+    let mut pending: Vec<git2::Oid> = tips.to_vec();
+    while let Some(next) = pending.pop() {
+        if reached.contains(&next) || beyond.contains(&next) || !printed.insert(next) {
+            continue;
+        }
+        pending.extend(view.commit(next)?.parents.iter().copied());
+        if printed.len() > REACHED_LIMIT {
+            return None;
+        }
+    }
+    Some(printed)
+}
+
+/// The most commits [`unreached`] keeps or walks: past it, git's own walk, which stops
+/// where its exclusions meet, is the cheaper one.
+const REACHED_LIMIT: usize = 1 << 17;
+
+/// What the origin's tips reach, kept between reads.
+mod reach {
+    use std::collections::{BTreeSet, HashSet};
+    use std::path::{Path, PathBuf};
+
+    use sha2::{Digest, Sha256};
+
+    use super::graph::View;
+    use super::REACHED_LIMIT;
+
+    /// The kept file's first line: one of any other shape is computed again.
+    const VERSION: &str = "onevcs reach 1";
+
+    /// Every commit reachable from `starts` and not in `known`, and the commits of
+    /// `known` the walk met, or `None` past [`REACHED_LIMIT`] or at a commit it cannot
+    /// read.
+    pub(super) fn walk(
+        view: &View,
+        starts: impl IntoIterator<Item = git2::Oid>,
+        known: &HashSet<git2::Oid>,
+    ) -> Option<(HashSet<git2::Oid>, HashSet<git2::Oid>)> {
+        let mut visited = HashSet::new();
+        let mut met = HashSet::new();
+        let mut pending: Vec<git2::Oid> = starts.into_iter().collect();
+        while let Some(next) = pending.pop() {
+            if known.contains(&next) {
+                met.insert(next);
+                continue;
+            }
+            if !visited.insert(next) {
+                continue;
+            }
+            pending.extend(view.commit(next)?.parents.iter().copied());
+            if visited.len() > REACHED_LIMIT {
+                return None;
+            }
+        }
+        Some((visited, met))
+    }
+
+    fn path(repo: &Path, borrowing: Option<&Path>) -> Option<PathBuf> {
+        let mut digest = Sha256::new();
+        digest.update(
+            std::fs::canonicalize(repo)
+                .ok()?
+                .to_string_lossy()
+                .as_bytes(),
+        );
+        digest.update([0]);
+        if let Some(borrowing) = borrowing {
+            digest.update(borrowing.to_string_lossy().as_bytes());
+        }
+        Some(
+            crate::home::root()
+                .ok()?
+                .join("cache/reach-v1")
+                .join(format!("{:x}", digest.finalize())),
+        )
+    }
+
+    fn read(path: &Path) -> Option<(BTreeSet<git2::Oid>, HashSet<git2::Oid>)> {
+        let text = std::fs::read_to_string(path).ok()?;
+        let mut lines = text.lines();
+        if lines.next()? != VERSION {
+            return None;
+        }
+        let mut hidden = BTreeSet::new();
+        let mut reached = HashSet::new();
+        let mut into_reached = false;
+        for line in lines {
+            if line == "reached" {
+                into_reached = true;
+                continue;
+            }
+            let id = crate::git::ObjectId::parse(line)?;
+            let id = git2::Oid::from_str(id.as_str()).ok()?;
+            if into_reached {
+                reached.insert(id);
+            } else {
+                hidden.insert(id);
+            }
+        }
+        into_reached.then_some((hidden, reached))
+    }
+
+    fn write(path: &Path, hidden: &BTreeSet<git2::Oid>, reached: &HashSet<git2::Oid>) {
+        let mut text = String::with_capacity((hidden.len() + reached.len() + 2) * 41);
+        text.push_str(VERSION);
+        text.push('\n');
+        for id in hidden {
+            text.push_str(&id.to_string());
+            text.push('\n');
+        }
+        text.push_str("reached\n");
+        for id in reached {
+            text.push_str(&id.to_string());
+            text.push('\n');
+        }
+        let _ = crate::home::atomic_write(path, &text);
+    }
+
+    /// Every commit `hidden` reaches: what was kept for exactly these tips, or the kept
+    /// set carried forward over the tips added since where that is exact, or walked
+    /// whole.
+    pub(super) fn kept(
+        view: &View,
+        repo: &Path,
+        borrowing: Option<&Path>,
+        hidden: &BTreeSet<git2::Oid>,
+    ) -> Option<HashSet<git2::Oid>> {
+        let path = path(repo, borrowing);
+        if let Some((before, mut reached)) = path.as_deref().and_then(read) {
+            if before == *hidden {
+                return Some(reached);
+            }
+            let added = hidden.difference(&before).copied();
+            if let Some((new, met)) = walk(view, added, &reached) {
+                // A tip taken away is still reached only where the added tips met it; any
+                // other may have been all that reached some commits, which the kept set
+                // would then hold wrongly.
+                if before.difference(hidden).all(|gone| met.contains(gone)) {
+                    reached.extend(new);
+                    if reached.len() <= REACHED_LIMIT {
+                        if let Some(path) = &path {
+                            write(path, hidden, &reached);
+                        }
+                        return Some(reached);
+                    }
+                    return None;
+                }
+            }
+        }
+        let (reached, _) = walk(view, hidden.iter().copied(), &HashSet::new())?;
+        if let Some(path) = &path {
+            write(path, hidden, &reached);
+        }
+        Some(reached)
+    }
+}
+
 /// Forget every commit and header read within the read that is ending.
 pub(crate) fn clear() {
     graph::clear();

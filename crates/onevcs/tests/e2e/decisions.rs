@@ -392,6 +392,152 @@ fn a_publication_that_closes_its_session_records_its_worktree_at_rest_for_the_ne
     assert_eq!(reason(&rows(true)), json!("dirty-worktree"));
 }
 
+/// A checkout carrying more remote-tracking tips than an argument list does, each at a
+/// commit of its own off `main`: the shape whose unpublished branches are listed in one
+/// walk over all of those tips.
+fn host_with_many_origin_tips(tips: usize) -> Host {
+    let host = Host::new();
+    let main = run(&host.repo, &["rev-parse", "main"]);
+    let tree = run(&host.repo, &["rev-parse", "main^{tree}"]);
+    let mut updates = String::new();
+    for n in 0..tips {
+        let kept = run(
+            &host.repo,
+            &[
+                "commit-tree",
+                &tree,
+                "-p",
+                &main,
+                "-m",
+                &format!("chore: kept {n}"),
+            ],
+        );
+        updates.push_str(&format!("update refs/remotes/origin/keep/t{n} {kept}\n"));
+    }
+    let mut child = std::process::Command::new("git")
+        .current_dir(&host.repo)
+        .args(["update-ref", "--stdin"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    use std::io::Write as _;
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(updates.as_bytes())
+        .unwrap();
+    assert!(child.wait().unwrap().success());
+    host
+}
+
+fn commit_on(host: &Host, branch: &str, file: &str) -> String {
+    run(&host.repo, &["checkout", "-q", branch]);
+    std::fs::write(host.repo.join(file), format!("{file}\n")).unwrap();
+    run(&host.repo, &["add", "."]);
+    run(
+        &host.repo,
+        &["commit", "-q", "-m", &format!("feat: {file}")],
+    );
+    let tip = run(&host.repo, &["rev-parse", "HEAD"]);
+    run(&host.repo, &["checkout", "-q", "main"]);
+    tip
+}
+
+#[test]
+fn branches_no_origin_tip_reaches_are_listed_in_process_as_git_lists_them() {
+    let host = host_with_many_origin_tips(80);
+    host.branch("work/a");
+    host.branch("work/b");
+    host.read();
+    let listed =
+        |rows: &[Value], branch: &str| rows.iter().any(|row| row["branch"]["branch"] == branch);
+    let walks = |calls: &[String]| {
+        calls
+            .iter()
+            .filter(|call| call.starts_with("rev-list --stdin"))
+            .count()
+    };
+
+    // A branch moving is derived again, and its listing is the walk over every origin tip:
+    // made in process, from what an earlier read kept of what those tips reach.
+    let b = commit_on(&host, "work/b", "b-more.txt");
+    let mut rows = Vec::new();
+    let calls = with_shim(&host, || rows = host.read().0);
+    assert_eq!(rows, host.uncached(), "work/b moved");
+    assert!(listed(&rows, "work/b"));
+    assert_eq!(walks(&calls), 0, "{calls:?}");
+
+    // An origin tip added beyond the branch's tip, so that it reaches the tip without
+    // being it: published, as git's walk says.
+    let tree = run(&host.repo, &["rev-parse", &format!("{b}^{{tree}}")]);
+    let beyond = run(
+        &host.repo,
+        &["commit-tree", &tree, "-p", &b, "-m", "chore: beyond work/b"],
+    );
+    run(
+        &host.repo,
+        &["update-ref", "refs/remotes/origin/keep/b", &beyond],
+    );
+    let (rows, _) = host.read();
+    assert_eq!(rows, host.uncached(), "an origin tip reaches work/b");
+    assert!(!listed(&rows, "work/b"));
+
+    // That tip taken away again: nothing else reached those commits, so what was kept of
+    // the tips' reach cannot be carried forward, and the branch is listed again.
+    run(
+        &host.repo,
+        &["update-ref", "-d", "refs/remotes/origin/keep/b"],
+    );
+    let (rows, _) = host.read();
+    assert_eq!(rows, host.uncached(), "the tip that reached work/b is gone");
+    assert!(listed(&rows, "work/b"));
+
+    // The base moving on: its old tip is still reached from its new one.
+    commit_on(&host, "main", "base-more.txt");
+    run(&host.repo, &["push", "-q", "origin", "main"]);
+    let main = run(&host.repo, &["rev-parse", "main"]);
+    run(
+        &host.repo,
+        &["update-ref", "refs/remotes/origin/main", &main],
+    );
+    commit_on(&host, "work/a", "a-more.txt");
+    let mut rows = Vec::new();
+    let calls = with_shim(&host, || rows = host.read().0);
+    assert_eq!(rows, host.uncached(), "the base moved on and work/a moved");
+    assert!(listed(&rows, "work/a") && listed(&rows, "work/b"));
+    assert_eq!(walks(&calls), 0, "{calls:?}");
+}
+
+#[test]
+fn packed_refs_read_in_one_pass_answer_as_git_reads_them() {
+    let host = host_with_many_origin_tips(80);
+    host.branch("work/a");
+    host.branch("work/b");
+    // Every ref packed, then one branch moved: its loose ref names a commit its packed
+    // entry, still in the file, does not.
+    run(&host.repo, &["pack-refs", "--all"]);
+    host.read();
+    // A branch cut since, whose ref is loose alone.
+    host.branch("work/c");
+    let moved = commit_on(&host, "work/a", "a-loose.txt");
+    let (rows, _) = host.read();
+    assert_eq!(rows, host.uncached(), "a loose ref over a packed one");
+    let tip = rows
+        .iter()
+        .find(|row| row["branch"]["branch"] == "work/a")
+        .map(|row| row["tip"].clone());
+    assert_eq!(tip, Some(json!(moved)), "the loose ref wins: {rows:?}");
+    assert!(
+        rows.iter().any(|row| row["branch"]["branch"] == "work/c"),
+        "a ref only loose is read too: {rows:?}"
+    );
+    // And packed again, with nothing loose left.
+    run(&host.repo, &["pack-refs", "--all"]);
+    let (rows, _) = host.read();
+    assert_eq!(rows, host.uncached(), "packed again");
+}
+
 #[test]
 fn a_session_scoped_read_writes_nothing_under_decisions() {
     let host = Host::new();

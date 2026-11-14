@@ -907,6 +907,10 @@ fn snapshot(at: &Path) -> Option<Snapshot> {
     kept.save();
     canonical_value(&std::fs::read(directory.join("HEAD")).ok()?)?;
     let mut packed_tips: BTreeMap<String, git2::Oid> = BTreeMap::new();
+    // Gathered and then built in one pass rather than inserted one by one: a checkout's
+    // packed refs number in the thousands, and inserting each into two maps was most of
+    // what reading them cost.
+    let mut listed: Vec<(String, git2::Oid)> = Vec::new();
     if common.join("packed-refs").exists() {
         let packed = std::fs::read_to_string(common.join("packed-refs")).ok()?;
         let mut previous = false;
@@ -924,16 +928,22 @@ fn snapshot(at: &Path) -> Option<Snapshot> {
                 if !canonical_oid(oid) || !crate::git::plainly_a_ref_name(name) {
                     return None;
                 }
-                if packed_tips
-                    .insert(name.to_owned(), git2::Oid::from_str(oid).ok()?)
-                    .is_some()
-                {
-                    return None;
-                }
-                names.insert(name.to_owned());
+                listed.push((name.to_owned(), git2::Oid::from_str(oid).ok()?));
                 previous = true;
             }
         }
+        // Git writes the file sorted, which makes this sort a single pass; a name the file
+        // holds twice is refused, as the inserts it replaces refused it.
+        listed.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        if listed.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+            return None;
+        }
+        let mut all: Vec<String> = std::mem::take(&mut names).into_iter().collect();
+        all.extend(listed.iter().map(|(name, _)| name.clone()));
+        all.sort_unstable();
+        all.dedup();
+        names = all.into_iter().collect();
+        packed_tips = listed.into_iter().collect();
     }
     if names.iter().any(|name| name.starts_with("refs/replace/")) {
         return None;
@@ -1073,7 +1083,7 @@ fn read_tips(
             .cloned()
             .or_else(|| packed.get(name).copied().map(RefValue::Direct))
     };
-    let mut tips = BTreeMap::new();
+    let mut tips = Vec::with_capacity(names.len());
     let mut symbolic = BTreeMap::new();
     for name in names {
         let named = match value(name)? {
@@ -1087,9 +1097,10 @@ fn read_tips(
                 named
             }
         };
-        tips.insert(name.clone(), named);
+        tips.push((name.clone(), named));
     }
-    Some((tips, symbolic))
+    // `names` is ordered, so these arrive sorted and the map is built in one pass.
+    Some((tips.into_iter().collect(), symbolic))
 }
 
 /// The refs as libgit2 lists them, where they are the ones `names` holds.

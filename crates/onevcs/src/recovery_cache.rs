@@ -639,6 +639,29 @@ fn admitted<'a>(
     readable_in_process(cwd, borrowing).then_some((cwd, borrowing))
 }
 
+/// The commits `git rev-list TIPS --not HIDDEN ALSO` prints, made in process where this
+/// read admits in-process answers for `cwd` (see [`crate::native_objects::unreached`]),
+/// or `None` for git to make.
+pub(crate) fn unreached(
+    cwd: &Path,
+    tips: &[&str],
+    hidden: &BTreeSet<String>,
+    also: &[&str],
+) -> Option<Vec<String>> {
+    let (cwd, borrowing) = admitted(cwd, &[])?;
+    let id = |text: &str| {
+        crate::git::ObjectId::parse(text).and_then(|id| git2::Oid::from_str(id.as_str()).ok())
+    };
+    let tips = tips.iter().map(|tip| id(tip)).collect::<Option<Vec<_>>>()?;
+    let hidden = hidden
+        .iter()
+        .map(|tip| id(tip))
+        .collect::<Option<BTreeSet<_>>>()?;
+    let also = also.iter().map(|tip| id(tip)).collect::<Option<Vec<_>>>()?;
+    let printed = crate::native_objects::unreached(cwd, borrowing, &tips, &hidden, &also)?;
+    Some(printed.into_iter().map(|id| id.to_string()).collect())
+}
+
 pub(crate) fn query(args: &[&str], cwd: Option<&Path>, env: &[(String, String)]) -> Option<Query> {
     if !ENABLED.with(std::cell::Cell::get) {
         return None;

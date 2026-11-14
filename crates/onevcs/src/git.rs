@@ -3263,6 +3263,15 @@ fn unpublished_among(
                 input.push_str(tip);
                 input.push('\n');
             }
+            // The same walk made in process where it can be, from what this host kept of
+            // the commits the origin's tips reach; git's otherwise.
+            let carried_tips: Vec<&str> = carried.iter().map(String::as_str).collect();
+            if let Some(printed) =
+                crate::recovery_cache::unreached(cwd, tips, &origin_tips, &carried_tips)
+            {
+                found.extend(printed.into_iter().map(|line| (carried.clone(), line)));
+                continue;
+            }
             let given = run_given(cwd, &["rev-list", "--stdin", "--"], input.as_bytes())?;
             if !given.ok() || !given.read_failures.is_empty() {
                 if undecided == Undecided::List {
