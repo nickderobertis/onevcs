@@ -845,7 +845,7 @@ races the in-process read against a close.
 
 `decisions.rs` is `$ONEVCS_HOME/decisions/v1/`: one file per branch and one `streams.json`
 per identity, each written by an atomic rename, read by this crate alone. Deleting the
-directory loses nothing but time. Five things are easy to undo.
+directory loses nothing but time. Six things are easy to undo.
 
 - **Only a branch's own inputs and what the base gained re-derive it.** The base's tip is
   no key: it moves on every read and can only make an unlanded branch landed, so a read
@@ -856,6 +856,12 @@ directory loses nothing but time. Five things are easy to undo.
   stall the host's answer. Anything that must re-derive leaves that scope and waits.
 - **The retirement class is recomputed every read**; only the derivation
   (`Listing::verdict`, tip-keyed) is kept, and a `consulted` one never is.
+- **A record is served only while every store it was read through still holds what it
+  held** (`Listing::stores`): the copy's own and each holder's its verdict judged. A run
+  clone borrows its lender's objects, so a lender's prune can take a commit a record read
+  with no branch, session or ref moving. Gaining objects keeps a record — each store's
+  listing carries the earlier generations it holds — and a store the record does not name
+  holds nothing for it. `decisions::*borrowed*` and `*store_lost*` journeys hold it.
 - **A session-scoped read writes nothing**, because writing cost more than the read. The
   host read, a branch-filtered read, and `decisions::refresh` (close, publication,
   landing) write; refresh runs only where a host read has already started recording.
