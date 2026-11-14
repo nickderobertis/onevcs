@@ -180,6 +180,14 @@ pub(super) fn journey(root: &Path) -> HostRecord {
     aged.verify()
         .expect("the aged state verifies for the count");
     let (git_executions, _count) = count_git(&fixture);
+    // Held here as well as reported, so a pull request whose read starts git again per
+    // checkout or per branch fails where the journey runs, whatever the host's load.
+    let threshold = super::churn::threshold(HOST_GIT_BUDGET);
+    assert!(
+        git_executions <= threshold,
+        "the host-wide warm read started {git_executions} git processes, over \
+         {HOST_GIT_BUDGET}'s {threshold}"
+    );
     aged.restore().expect("the records restore after the count");
     assert_every_mode_answers(&fixture, &aged, &outcomes, &uncached_rows, &want);
     let rederived = want.len();
@@ -466,6 +474,9 @@ fn count_git(fixture: &Fixture) -> (usize, Value) {
     let lines = std::fs::read_to_string(&log).unwrap_or_default();
     (lines.lines().count(), report)
 }
+
+/// The budget the host-wide warm read's git processes are held to.
+const HOST_GIT_BUDGET: &str = "recoverable-host-git-executions-warm";
 
 #[test]
 #[ignore = "measures the host workload alone, for a developer looking at it"]
