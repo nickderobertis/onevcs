@@ -128,7 +128,7 @@ fn answer(worktree: &Path, lookup: &Lookup) -> Result<bool> {
         // stands: the first read at rest again checks it exactly.
         Lookup::Exact => {
             rest::forget(worktree);
-            recorded::is_dirty(worktree, false)
+            recorded::is_dirty(worktree, recorded::Asking::Recorded)
         }
     }
 }
@@ -237,7 +237,11 @@ pub(crate) fn record_closed(worktree: &Path) {
         let Some((_, lifecycle)) = lifecycle(worktree, &sessions) else {
             return;
         };
-        let checked = || crate::checkout_reads::unturned(|| recorded::is_dirty(worktree, true));
+        let checked = || {
+            crate::checkout_reads::unturned(|| {
+                recorded::is_dirty(worktree, recorded::Asking::Fresh)
+            })
+        };
         let dirty = if crate::recovery_cache::enabled() {
             checked()
         } else {
@@ -319,7 +323,7 @@ mod rest {
         // Asked of git afresh, never from a record of the tree taken before this lifecycle
         // began: a session's owner may have died with its work uncommitted, and that work
         // is what this read exists to find.
-        let dirty = super::recorded::is_dirty(worktree, true)?;
+        let dirty = super::recorded::is_dirty(worktree, super::recorded::Asking::Fresh)?;
         record(worktree, lifecycle, dirty);
         Ok(dirty)
     }
@@ -378,10 +382,22 @@ mod recorded {
         files: BTreeSet<PathBuf>,
     }
 
-    /// `fresh` asks git whatever was recorded, and records what it answers.
-    pub(super) fn is_dirty(worktree: &Path, fresh: bool) -> Result<bool> {
+    /// Whether a worktree's recorded answer may stand for git's.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub(super) enum Asking {
+        /// The record answers while its stamps hold; git is asked where they do not.
+        Recorded,
+        /// Git is asked whatever was recorded, and what it answers is recorded.
+        Fresh,
+    }
+
+    pub(super) fn is_dirty(worktree: &Path, asking: Asking) -> Result<bool> {
         let path = record_path(worktree);
-        if let Some(record) = path.as_deref().filter(|_| !fresh).and_then(read) {
+        if let Some(record) = path
+            .as_deref()
+            .filter(|_| asking == Asking::Recorded)
+            .and_then(read)
+        {
             if record.version == VERSION
                 && record.worktree == worktree
                 && digest(worktree, &record.ignored, None).as_deref()
