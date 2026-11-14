@@ -99,6 +99,19 @@ test("CLI reader reports through the SDK without subprocess tools and names reco
     const accepted = run();
     assert.equal(accepted.status, 0, accepted.stderr);
     assert.ok(readFileSync(join(f.root, "result.json")).length > 0);
+    // The host-wide read's own count is reported, not the launcher's.
+    const host = spawnSync(process.execPath, [join(f.root, "scripts", "recoverable-git-count-budget.mjs"), "--scale", "host", "--warm"], {
+      encoding: "utf8", env: { PATH: "", ONEBUDGETSPEC_RESULT: join(f.root, "result.json") }
+    });
+    assert.equal(host.status, 0, host.stderr);
+    const hostResult = JSON.parse(readFileSync(join(f.root, "result.json"), "utf8"));
+    assert.equal(hostResult.value, 40);
+    assert.match(hostResult.detail, /host warm unfiltered Decision .* Git executable count/);
+    const unknown = spawnSync(process.execPath, [join(f.root, "scripts", "recoverable-git-count-budget.mjs"), "--scale", "host", "--cold"], {
+      encoding: "utf8", env: { PATH: "", ONEBUDGETSPEC_RESULT: join(f.root, "result.json") }
+    });
+    assert.notEqual(unknown.status, 0);
+    assert.match(unknown.stderr, /--scale host --warm/);
     rmSync(join(f.root, "target", "budget-records", "recoverable.json"));
     const refused = run();
     assert.notEqual(refused.status, 0);

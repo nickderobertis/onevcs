@@ -16,8 +16,13 @@ try {
     const mode = args[2].slice(2);
     value = workload[`${mode}_git`];
     description = `${mode} launcher Decision, scale ${workload.scale}, separate actual Git executable count`;
+  } else if (args.length === 3 && args[0] === "--scale" && args[1] === "host" && args[2] === "--warm") {
+    // The unfiltered read over the aged host-shaped fixture, from the state each timed
+    // call starts from: every git it starts, whichever path in the read starts it.
+    value = record.host.git_executions;
+    description = `host warm unfiltered Decision over the aged host-shaped fixture, separate actual Git executable count`;
   } else {
-    throw new Error("expected --scale 1|10 --cold|--warm, or --journey-time");
+    throw new Error("expected --scale 1|10 --cold|--warm, --scale host --warm, or --journey-time");
   }
   if (!report(value, `invocation ${record.build.run_id}: ${description}`)) {
     throw new Error("ONEBUDGETSPEC_RESULT is missing; invoke through 'just budgets'");
