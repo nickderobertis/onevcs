@@ -17,6 +17,9 @@ use serde_json::{json, Value};
 use super::decisions_support::{counting_git, onevcs_digest, run, set, with_shim, Host};
 use super::exclusive;
 
+#[path = "../../src/workspace_process_start.rs"]
+mod process_start;
+
 /// Long enough after a write that a read's own `git status` answer may be kept under it.
 fn settle() {
     std::thread::sleep(std::time::Duration::from_millis(1100));
@@ -86,18 +89,10 @@ fn claim() -> Value {
 }
 
 /// Rewrite a branch's session record open, owned by `owner`: a running process's pid and
-/// its start, as `/proc` gives it.
+/// its start, through the same portable lookup the product uses.
 fn own_by(host: &Host, branch: &str, owner: u32) {
-    let stat = std::fs::read_to_string(format!("/proc/{owner}/stat")).unwrap();
-    let started: u64 = stat
-        .rsplit_once(')')
-        .unwrap()
-        .1
-        .split_whitespace()
-        .nth(19)
-        .unwrap()
-        .parse()
-        .unwrap();
+    let started = process_start::process_started(owner)
+        .expect("the running owner has a process creation identity");
     let path = host
         .home
         .join("sessions")
