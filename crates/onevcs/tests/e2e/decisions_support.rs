@@ -117,6 +117,10 @@ impl Host {
         testing::write_registry(&home, &registry).unwrap();
         std::env::set_var("ONEVCS_HOME", &home);
         std::env::set_var("HOME", &root);
+        // Git reads the user's configuration directory from `XDG_CONFIG_HOME` before
+        // `$HOME/.config`, and a CI runner sets it: unset, the scratch home is the only
+        // user configuration a journey's git reads.
+        std::env::remove_var("XDG_CONFIG_HOME");
         let diagnostics = root.join("diagnostics.ndjson");
         std::env::set_var("ONEVCS_DECISION_DIAGNOSTICS", &diagnostics);
         std::env::remove_var("GIT_NAMESPACE");
