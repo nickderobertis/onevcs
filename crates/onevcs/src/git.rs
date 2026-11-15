@@ -3574,12 +3574,17 @@ pub fn is_dirty(cwd: &Path) -> Result<bool> {
 /// git's version — from 2.53 a racy entry is judged by the second, so the index is
 /// rewritten on every status until it was written a second after every file it lists —
 /// and a read writing it moves the input a kept cleanliness answer is stamped under.
+///
+/// That is this crate's default and not its policy: an operator who set
+/// `GIT_OPTIONAL_LOCKS` themselves keeps it, whatever its value, because whether git
+/// may refresh an index is their setting. A refresh it then makes is a write like any
+/// other, which a kept answer's stamps see and are not kept under.
 pub(crate) fn status_unwritten(args: &[&str], cwd: &Path) -> Result<Output> {
-    checked_with_env(
-        args,
-        Some(cwd),
-        &[("GIT_OPTIONAL_LOCKS".to_owned(), "0".to_owned())],
-    )
+    let env = match std::env::var_os("GIT_OPTIONAL_LOCKS") {
+        Some(_) => Vec::new(),
+        None => vec![("GIT_OPTIONAL_LOCKS".to_owned(), "0".to_owned())],
+    };
+    checked_with_env(args, Some(cwd), &env)
 }
 
 /// Stage everything in the worktree.

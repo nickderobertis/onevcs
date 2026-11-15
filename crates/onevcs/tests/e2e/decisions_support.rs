@@ -436,6 +436,10 @@ pub fn landed_state(row: &Value) -> &str {
 /// would make every read an uncached one.
 const COUNTED_LOG: &str = "ONEVCS_TEST_COUNTED_GIT_LOG";
 
+/// The variable naming the file the shim logs each command's `GIT_OPTIONAL_LOCKS` to, as
+/// git received it: `unset`, or `set:` and the value.
+const LOCKS_LOG: &str = "ONEVCS_TEST_OPTIONAL_LOCKS_LOG";
+
 /// Put this process's counting `git` first on `PATH`, once, before the library resolves
 /// its git: it resolves the program once per process, so a shim put there after the first
 /// read is never run, and a shim inside one host's scratch directory would be gone by the
@@ -451,7 +455,13 @@ fn counting_git_on_path() {
         std::fs::write(
             &shim,
             format!(
-                "#!/bin/sh\nif [ -n \"${COUNTED_LOG}\" ]; then printf '%s\\n' \"$*\" >> \"${COUNTED_LOG}\"; fi\nexec {real} \"$@\"\n",
+                "#!/bin/sh\n\
+                 if [ -n \"${COUNTED_LOG}\" ]; then printf '%s\\n' \"$*\" >> \"${COUNTED_LOG}\"; fi\n\
+                 if [ -n \"${LOCKS_LOG}\" ]; then \
+                 if [ -n \"${{GIT_OPTIONAL_LOCKS+set}}\" ]; then \
+                 printf 'set:%s\\t%s\\n' \"$GIT_OPTIONAL_LOCKS\" \"$*\" >> \"${LOCKS_LOG}\"; \
+                 else printf 'unset\\t%s\\n' \"$*\" >> \"${LOCKS_LOG}\"; fi; fi\n\
+                 exec {real} \"$@\"\n",
                 real = shell_quoted(&real.to_string_lossy()),
             ),
         )
@@ -487,6 +497,25 @@ pub fn with_shim(host: &Host, f: impl FnOnce()) -> Vec<String> {
         .unwrap_or_default()
         .lines()
         .map(str::to_owned)
+        .collect()
+}
+
+/// Every git command the library started while `f` ran, each with the
+/// `GIT_OPTIONAL_LOCKS` it was started under: `None` where it carried none.
+pub fn optional_locks_while(host: &Host, f: impl FnOnce()) -> Vec<(Option<String>, String)> {
+    let log = host.root.join("optional-locks.log");
+    let _ = std::fs::remove_file(&log);
+    std::env::set_var(LOCKS_LOG, &log);
+    f();
+    std::env::remove_var(LOCKS_LOG);
+    std::fs::read_to_string(log)
+        .unwrap_or_default()
+        .lines()
+        .map(|line| {
+            let (setting, args) = line.split_once('\t').expect("a logged command");
+            let setting = setting.strip_prefix("set:").map(str::to_owned);
+            (setting, args.to_owned())
+        })
         .collect()
 }
 
