@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.6](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.21.5...onevcs-testing-v0.21.6) - 2026-11-15
+
+### Performance
+
+- answer a warm host-wide recovery read in under a second ([#680](https://github.com/nickderobertis/onevcs/pull/680))
+
 ## [0.21.3](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.21.2...onevcs-testing-v0.21.3) - 2026-11-12
 
 ### Fixed
