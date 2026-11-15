@@ -891,6 +891,21 @@ pub const HOST: HostShape = HostShape {
 
 const HOST_SESSION: &str = "fixture-session-owner";
 
+/// Closed sessions of the first identity whose run clone is left with a worktree on the
+/// preserved branch, beside the many-path branches' own: a real host keeps preserved
+/// branches checked out in its pool slots and run clones, and a recovery read asks each
+/// of those worktrees whether it holds uncommitted work. The many-path ones are the large
+/// trees a host's slots hold; these are the many small ones. None is a branch
+/// [`age_host`] moves, so every one stays clean.
+const WORKED_COPIES: usize = 16;
+
+/// Whether a preserved branch's closed session keeps a worktree on it.
+fn worked_copy(at: usize, index: usize) -> bool {
+    (at == MANY_PATH_IDENTITY && index < HOST.many_path_branches)
+        || (at == 0
+            && (HOST.session_branches..HOST.session_branches + WORKED_COPIES).contains(&index))
+}
+
 /// The identity holding the many-path branches: one with no base gain, whose branches
 /// are not otherwise named by this fixture's aging.
 const MANY_PATH_IDENTITY: usize = 7;
@@ -990,6 +1005,7 @@ pub fn build_host(root: &Path) -> Result<Fixture> {
     }
     expected.sort_by(|a, b| (&a.identity, &*a.branch).cmp(&(&b.identity, &*b.branch)));
     testing::write_registry(&home, &registry)?;
+    settle_worktrees(&root)?;
     Ok(Fixture {
         root,
         home,
@@ -997,6 +1013,26 @@ pub fn build_host(root: &Path) -> Result<Fixture> {
         scale: Scale::One,
         expected,
     })
+}
+
+/// Leave every session worktree as a host's idle slots are: its index rewritten once, well
+/// after its files, so no later `git status` rewrites it, and that long enough ago that a
+/// read may keep what `git status` answered of it. A worktree checked out moments before
+/// its index was written reads as racily clean, and every status rewrites its index until
+/// one runs in a later tick.
+fn settle_worktrees(root: &Path) -> Result<()> {
+    let sessions = root.join("sessions");
+    let Ok(entries) = std::fs::read_dir(&sessions) else {
+        return Ok(());
+    };
+    for entry in entries {
+        let worktree = entry.map_err(io)?.path().join("worktree");
+        if worktree.is_dir() {
+            git(&worktree, &["status", "--porcelain"])?;
+        }
+    }
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    Ok(())
 }
 
 /// How many extra (loose) commits each preserved branch carries beyond its tip, so that
@@ -1327,12 +1363,13 @@ fn build_host_identity(
     let session_record = |branch: &Ref,
                           token: &Token,
                           class: Class,
-                          labels: BTreeMap<String, String>|
+                          labels: BTreeMap<String, String>,
+                          worked: bool|
      -> Result<(PathBuf, PathBuf)> {
         let run = root.join(format!("sessions/{token}"));
         let clone = run.join("clone");
         let worktree = run.join("worktree");
-        if class == Class::Live {
+        if class == Class::Live || worked {
             std::fs::create_dir_all(&run).map_err(io)?;
             git(
                 &repo,
@@ -1440,7 +1477,7 @@ fn build_host_identity(
     // Other classes' branches: landed, retirable, superseded, unknown and in-part work.
     for entry in &work {
         let (branch, token) = (entry.branch.clone(), entry.token.clone());
-        session_record(&branch, &token, Class::No, plain_labels(false))?;
+        session_record(&branch, &token, Class::No, plain_labels(false), false)?;
         let landed_sha = landing_marks
             .get(&*entry.branch)
             .map(|mark| landed[mark].clone());
@@ -1498,7 +1535,13 @@ fn build_host_identity(
         let marks = flight.run(&repo, &root.join(format!("h{at}-flight-marks")))?;
         let branch_ref = reference(branch.clone())?;
         let session = token(format!("s-flight-{at}"))?;
-        session_record(&branch_ref, &session, Class::Live, plain_labels(false))?;
+        session_record(
+            &branch_ref,
+            &session,
+            Class::Live,
+            plain_labels(false),
+            false,
+        )?;
         testing::write_events(
             home,
             &session,
@@ -1527,6 +1570,7 @@ fn record_preserved(
         &Token,
         Class,
         BTreeMap<String, String>,
+        bool,
     ) -> Result<(PathBuf, PathBuf)>,
     home: &Path,
     key: &str,
@@ -1545,6 +1589,7 @@ fn record_preserved(
         &session,
         Class::No,
         labels(at == 0 && index < HOST.session_branches),
+        worked_copy(at, index),
     )?;
     testing::write_events(home, &session, key, &events(branch, None))?;
     expected.push(Expected {

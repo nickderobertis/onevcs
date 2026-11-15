@@ -17,6 +17,8 @@ struct Snapshot {
     directory: PathBuf,
     #[cfg(unix)]
     common: PathBuf,
+    /// Each [`remote_digest`] this snapshot answered, by remote and the head left out.
+    remote_digests: RefCell<HashMap<(String, String), String>>,
 }
 /// A repository, and the store it is lent where it is lent one.
 type Lending = (PathBuf, Option<PathBuf>);
@@ -115,7 +117,7 @@ fn read<T>(repo: &Path, choose: impl FnOnce(&Snapshot) -> Option<T>) -> Option<T
         let mut snapshots = snapshots.borrow_mut();
         let snapshot = snapshots
             .entry(repo.to_owned())
-            .or_insert_with(|| settled_snapshot(repo))
+            .or_insert_with(|| settled_snapshot(repo).and_then(|built| kept(repo, built)))
             .as_ref()?;
         choose(snapshot)
     })
@@ -139,32 +141,50 @@ pub(crate) fn layout(repo: &Path) -> Option<(PathBuf, PathBuf)> {
 pub(crate) fn configuration(repo: &Path) -> Option<String> {
     read(repo, |snapshot| {
         let _ = snapshot;
-        let mut output = String::new();
-        frozen(repo, |configuration| {
-            let mut entries = configuration.entries(None).ok()?;
-            while let Some(entry) = entries.next() {
-                let entry = entry.ok()?;
-                let name = entry.name().ok()?;
-                if name.starts_with("include.") || name.starts_with("includeif.") {
-                    return None;
-                }
-                // A valueless entry is rendered as `git config --null --list` renders
-                // one: its name alone, with no newline, so the two renderings agree and
-                // the entry still moves the fingerprint.
-                if entry.has_value() {
-                    output.push_str(&format!(
-                        "native:{:?}\0{name}\n{}\0",
-                        entry.level(),
-                        entry.value().ok()?
-                    ));
-                } else {
-                    output.push_str(&format!("native:{:?}\0{name}\0", entry.level()));
-                }
-            }
-            Some(())
-        })?;
-        Some(output)
+        frozen(repo, rendered)
     })
+}
+
+/// A configuration as [`configuration`] renders it, or `None` where it includes another
+/// file.
+#[cfg(unix)]
+fn rendered(configuration: &git2::Config) -> Option<String> {
+    let mut output = String::new();
+    let mut entries = configuration.entries(None).ok()?;
+    while let Some(entry) = entries.next() {
+        let entry = entry.ok()?;
+        let name = entry.name().ok()?;
+        if name.starts_with("include.") || name.starts_with("includeif.") {
+            return None;
+        }
+        // A valueless entry is rendered as `git config --null --list` renders
+        // one: its name alone, with no newline, so the two renderings agree and
+        // the entry still moves the fingerprint.
+        if entry.has_value() {
+            output.push_str(&format!(
+                "native:{:?}\0{name}\n{}\0",
+                entry.level(),
+                entry.value().ok()?
+            ));
+        } else {
+            output.push_str(&format!("native:{:?}\0{name}\0", entry.level()));
+        }
+    }
+    Some(output)
+}
+
+/// A worktree's git directory and common directory, and its configuration rendered as
+/// [`configuration`] renders it, read without a snapshot of its refs: for a question
+/// about the worktree's files, which no ref answers.
+#[cfg(unix)]
+pub(crate) fn worktree_setting(worktree: &Path) -> Option<((PathBuf, PathBuf), String)> {
+    let repo = git2::Repository::open(worktree).ok()?;
+    if repo.is_bare() || canonical(repo.workdir()?)? != canonical(worktree)? {
+        return None;
+    }
+    let layout = (canonical(repo.path())?, canonical(repo.commondir())?);
+    let configuration = rendered(&repo.config().ok()?.snapshot().ok()?)?;
+    Some((layout, configuration))
 }
 /// `read` asked of the configuration a repository's snapshot froze.
 fn frozen<T>(repo: &Path, read: impl FnOnce(&git2::Config) -> Option<T>) -> Option<T> {
@@ -555,6 +575,43 @@ pub(crate) fn remote_heads(repo: &Path, remote: &str) -> Option<BTreeMap<String,
         )
     })
 }
+/// A digest of `remote`'s heads other than `HEAD` and `except`: each name and its tip in
+/// name order, as [`remote_heads`] lists them. Asked once per branch a read records, of
+/// one snapshot, so the snapshot keeps each answer it gives.
+pub(crate) fn remote_digest(repo: &Path, remote: &str, except: &str) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    read(repo, |snapshot| {
+        let key = (remote.to_owned(), except.to_owned());
+        if let Some(digest) = snapshot.remote_digests.borrow().get(&key) {
+            return Some(digest.clone());
+        }
+        let prefix = format!("refs/remotes/{remote}/");
+        let mut hasher = Sha256::new();
+        let mut hex = [0_u8; 40];
+        for (name, tip) in snapshot.tips.range(prefix.clone()..) {
+            let Some(name) = name.strip_prefix(&prefix) else {
+                break;
+            };
+            if name == "HEAD" || name == except {
+                continue;
+            }
+            for (at, byte) in tip.as_bytes().iter().enumerate() {
+                hex[at * 2] = b"0123456789abcdef"[usize::from(byte >> 4)];
+                hex[at * 2 + 1] = b"0123456789abcdef"[usize::from(byte & 0x0f)];
+            }
+            hasher.update(name.as_bytes());
+            hasher.update([0]);
+            hasher.update(&hex[..tip.as_bytes().len() * 2]);
+            hasher.update([0]);
+        }
+        let digest = format!("{:x}", hasher.finalize());
+        snapshot
+            .remote_digests
+            .borrow_mut()
+            .insert(key, digest.clone());
+        Some(digest)
+    })
+}
 pub(crate) fn worktrees(repo: &Path) -> Option<Vec<(PathBuf, Option<String>)>> {
     read(repo, |snapshot| Some(snapshot.worktrees.clone()))
 }
@@ -768,6 +825,55 @@ pub(crate) fn is_ancestor(
     })
 }
 
+/// A snapshot built here or on another thread, kept as this thread's with its
+/// repository's configuration frozen beside it, or `None` where that configuration
+/// changes what a ref name means or where refs are kept.
+fn kept(repo: &Path, snapshot: Snapshot) -> Option<Snapshot> {
+    let configuration = snapshot.repository.config().ok()?.snapshot().ok()?;
+    for key in [
+        "core.worktree",
+        "core.warnAmbiguousRefs",
+        "extensions.refStorage",
+        "extensions.objectFormat",
+    ] {
+        match configuration.get_entry(key) {
+            Err(error) if error.code() == git2::ErrorCode::NotFound => (),
+            _ => return None,
+        }
+    }
+    CONFIGURATIONS.with(|configurations| {
+        configurations
+            .borrow_mut()
+            .insert(repo.to_owned(), configuration)
+    });
+    Some(snapshot)
+}
+
+/// Snapshot several repositories at once, ahead of a read that asks them one by one: each
+/// is built on a thread of its own, as [`read`] would build it, under the turn this thread
+/// takes for it, and kept as this thread's, so the read's own asking finds it built.
+pub(crate) fn prefetch(repos: &[PathBuf]) {
+    if !crate::recovery_cache::enabled() {
+        return;
+    }
+    let wanted: Vec<&PathBuf> = repos
+        .iter()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .filter(|repo| SNAPSHOTS.with(|snapshots| !snapshots.borrow().contains_key(*repo)))
+        // A checkout that is gone is answered without a snapshot, and without a turn.
+        .filter(|repo| repo.is_dir() && keep_turn(repo).is_some())
+        .collect();
+    let built = crate::vcs::concurrently_on(SNAPSHOTTED, &wanted, |repo| settled_snapshot(repo));
+    for (repo, built) in wanted.into_iter().zip(built) {
+        let snapshot = built.and_then(|built| kept(repo, built));
+        SNAPSHOTS.with(|snapshots| snapshots.borrow_mut().insert(repo.clone(), snapshot));
+    }
+}
+
+/// Repositories [`prefetch`] snapshots at once.
+const SNAPSHOTTED: usize = 8;
+
 /// A snapshot of refs nothing moved while they were read.
 ///
 /// Other sessions' fetches rewrite a checkout's refs at any moment, and a snapshot
@@ -869,12 +975,29 @@ fn snapshot(at: &Path) -> Option<Snapshot> {
     }
     let mut names = BTreeSet::new();
     let mut loose = BTreeMap::new();
-    canonical_loose(&common.join("refs"), &common, &mut names, &mut loose)?;
+    let mut kept = LooseRefs::load(&common);
+    canonical_loose(
+        &common.join("refs"),
+        &common,
+        &mut names,
+        &mut loose,
+        &mut kept,
+    )?;
     if common != directory {
-        canonical_loose(&directory.join("refs"), &directory, &mut names, &mut loose)?;
+        canonical_loose(
+            &directory.join("refs"),
+            &directory,
+            &mut names,
+            &mut loose,
+            &mut kept,
+        )?;
     }
+    kept.save();
     canonical_value(&std::fs::read(directory.join("HEAD")).ok()?)?;
-    let mut packed_tips: BTreeMap<String, git2::Oid> = BTreeMap::new();
+    // Gathered and then merged with the loose refs in one pass rather than inserted one
+    // by one: a checkout's packed refs number in the thousands, and building maps of them
+    // to look each up again was most of what reading them cost.
+    let mut listed: Vec<(String, git2::Oid)> = Vec::new();
     if common.join("packed-refs").exists() {
         let packed = std::fs::read_to_string(common.join("packed-refs")).ok()?;
         let mut previous = false;
@@ -892,38 +1015,31 @@ fn snapshot(at: &Path) -> Option<Snapshot> {
                 if !canonical_oid(oid) || !crate::git::plainly_a_ref_name(name) {
                     return None;
                 }
-                if packed_tips
-                    .insert(name.to_owned(), git2::Oid::from_str(oid).ok()?)
-                    .is_some()
-                {
-                    return None;
-                }
-                names.insert(name.to_owned());
+                listed.push((name.to_owned(), git2::Oid::from_str(oid).ok()?));
                 previous = true;
             }
         }
-    }
-    if names.iter().any(|name| name.starts_with("refs/replace/")) {
-        return None;
-    }
-    let configuration = repo.config().ok()?.snapshot().ok()?;
-    for key in [
-        "core.worktree",
-        "core.warnAmbiguousRefs",
-        "extensions.refStorage",
-        "extensions.objectFormat",
-    ] {
-        match configuration.get_entry(key) {
-            Err(error) if error.code() == git2::ErrorCode::NotFound => (),
-            _ => return None,
+        // Git writes the file sorted, which makes this sort a single pass; a name the file
+        // holds twice is refused, as the inserts it replaces refused it.
+        listed.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        if listed.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+            return None;
         }
     }
-    let (mut tips, mut symbolic) = match (common == directory)
-        .then(|| read_tips(&names, &loose, &packed_tips))
-        .flatten()
+    if names
+        .iter()
+        .chain(listed.iter().map(|(name, _)| name))
+        .any(|name| name.starts_with("refs/replace/"))
     {
-        Some(read) => read,
-        None => iterated_tips(&repo, &names)?,
+        return None;
+    }
+    let (mut tips, mut symbolic) = if common == directory {
+        match read_tips(&names, &loose, &listed) {
+            Some(read) => read,
+            None => iterated_tips(&repo, &every_name(names, &listed))?,
+        }
+    } else {
+        iterated_tips(&repo, &every_name(names, &listed))?
     };
     let head = repo.find_reference("HEAD").ok()?;
     if let Some(target) = head.symbolic_target().ok()? {
@@ -949,11 +1065,6 @@ fn snapshot(at: &Path) -> Option<Snapshot> {
         worktrees.push((path.to_owned(), branch));
     }
     worktrees[1..].sort_by(|a, b| a.0.cmp(&b.0));
-    CONFIGURATIONS.with(|configurations| {
-        configurations
-            .borrow_mut()
-            .insert(at.to_owned(), configuration)
-    });
     Some(Snapshot {
         repository: repo,
         tips,
@@ -964,6 +1075,7 @@ fn snapshot(at: &Path) -> Option<Snapshot> {
         directory,
         #[cfg(unix)]
         common,
+        remote_digests: RefCell::new(HashMap::new()),
     })
 }
 fn canonical_oid(value: &str) -> bool {
@@ -1030,20 +1142,31 @@ impl RefValue {
 /// Answered only where one reading of those files answers it: a symbolic ref naming
 /// a ref outside them, or naming another symbolic one, is left to libgit2, which
 /// reads the files again and follows the chain however it goes on.
+///
+/// `names` are the loose refs `loose` holds, and `packed` the packed ones sorted by name
+/// with none twice: the two are merged in name order, a loose ref standing in for a packed
+/// one of its name as it does for git.
 fn read_tips(
     names: &BTreeSet<String>,
     loose: &BTreeMap<String, RefValue>,
-    packed: &BTreeMap<String, git2::Oid>,
+    packed: &[(String, git2::Oid)],
 ) -> Option<Tips> {
     let value = |name: &str| {
-        loose
-            .get(name)
-            .cloned()
-            .or_else(|| packed.get(name).copied().map(RefValue::Direct))
+        loose.get(name).cloned().or_else(|| {
+            packed
+                .binary_search_by(|(listed, _)| listed.as_str().cmp(name))
+                .ok()
+                .map(|at| RefValue::Direct(packed[at].1))
+        })
     };
-    let mut tips = BTreeMap::new();
+    let mut tips = Vec::with_capacity(names.len() + packed.len());
     let mut symbolic = BTreeMap::new();
+    let mut packed_only = packed.iter().peekable();
     for name in names {
+        while let Some((listed, tip)) = packed_only.next_if(|(listed, _)| listed < name) {
+            tips.push((listed.clone(), *tip));
+        }
+        packed_only.next_if(|(listed, _)| listed == name);
         let named = match value(name)? {
             RefValue::Direct(named) => named,
             RefValue::Symbolic(target) => {
@@ -1055,9 +1178,17 @@ fn read_tips(
                 named
             }
         };
-        tips.insert(name.clone(), named);
+        tips.push((name.clone(), named));
     }
-    Some((tips, symbolic))
+    tips.extend(packed_only.map(|(listed, tip)| (listed.clone(), *tip)));
+    // Both are ordered, so these arrive sorted and the map is built in one pass.
+    Some((tips.into_iter().collect(), symbolic))
+}
+
+/// The loose refs' names and the packed ones', as one set.
+fn every_name(mut names: BTreeSet<String>, packed: &[(String, git2::Oid)]) -> BTreeSet<String> {
+    names.extend(packed.iter().map(|(name, _)| name.clone()));
+    names
 }
 
 /// The refs as libgit2 lists them, where they are the ones `names` holds.
@@ -1094,6 +1225,7 @@ fn canonical_loose(
     directory: &Path,
     names: &mut BTreeSet<String>,
     values: &mut BTreeMap<String, RefValue>,
+    kept: &mut LooseRefs,
 ) -> Option<()> {
     if !path.exists() {
         return Some(());
@@ -1102,7 +1234,7 @@ fn canonical_loose(
         let entry = entry.ok()?;
         let metadata = entry.file_type().ok()?;
         if metadata.is_dir() {
-            canonical_loose(&entry.path(), directory, names, values)?;
+            canonical_loose(&entry.path(), directory, names, values, kept)?;
         } else if metadata.is_file() {
             let path = entry.path();
             let name = path.strip_prefix(directory).ok()?.to_str()?;
@@ -1110,12 +1242,180 @@ fn canonical_loose(
                 return None;
             }
             names.insert(name.to_owned());
-            values.insert(name.to_owned(), RefValue::of(&std::fs::read(&path).ok()?)?);
+            values.insert(name.to_owned(), RefValue::of(&kept.read(&entry)?)?);
         } else {
             return None;
         }
     }
     Some(())
+}
+
+/// What a repository's loose ref files held when last read, each kept under the stamp of
+/// the file it was read from — inode identity, size, mode, and modification and change
+/// times — in `$ONEVCS_HOME/cache/refs-v1/`, one file per git directory.
+///
+/// A read stats a loose ref rather than opening it while the file stands as it was read:
+/// git writes a ref by renaming a lock file onto it, which is a new inode, and any write in
+/// place moves its change time. A value is kept only where the file last changed at least
+/// [`SETTLED`] before it was read, so a write in the same clock tick as a read is never
+/// hidden behind an unchanged stamp. Deleting the directory loses nothing but time.
+struct LooseRefs {
+    #[cfg(unix)]
+    path: Option<PathBuf>,
+    #[cfg(unix)]
+    before: HashMap<PathBuf, ([u8; 64], Vec<u8>)>,
+    #[cfg(unix)]
+    after: HashMap<PathBuf, ([u8; 64], Vec<u8>)>,
+    #[cfg(unix)]
+    settled_before: Option<std::time::Duration>,
+}
+
+/// How long before a read a ref file must last have changed for its value to be kept.
+#[cfg(unix)]
+const SETTLED: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The kept file's first line: a file of any other shape keeps nothing.
+#[cfg(unix)]
+const LOOSE_REFS_VERSION: &str = "onevcs loose refs 1";
+
+impl LooseRefs {
+    #[cfg(unix)]
+    fn load(common: &Path) -> Self {
+        use sha2::{Digest, Sha256};
+        use std::os::unix::ffi::OsStrExt;
+        let path = crate::home::root().ok().map(|root| {
+            root.join("cache/refs-v1").join(format!(
+                "{:x}",
+                Sha256::digest(common.as_os_str().as_bytes())
+            ))
+        });
+        let before = path
+            .as_deref()
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .map(|text| parse_loose_refs(&text))
+            .unwrap_or_default();
+        let settled_before = std::time::SystemTime::now()
+            .checked_sub(SETTLED)
+            .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok());
+        Self {
+            path,
+            before,
+            after: HashMap::new(),
+            settled_before,
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn load(_: &Path) -> Self {
+        Self {}
+    }
+
+    /// A ref file's bytes: kept ones where its stamp is the one they were read under.
+    #[cfg(unix)]
+    fn read(&mut self, entry: &std::fs::DirEntry) -> Option<Vec<u8>> {
+        use std::os::unix::fs::MetadataExt;
+        let path = entry.path();
+        let metadata = entry.metadata().ok()?;
+        let fields: [u64; 8] = [
+            metadata.dev(),
+            metadata.ino(),
+            metadata.len(),
+            u64::from(metadata.mode()),
+            metadata.mtime().cast_unsigned(),
+            metadata.mtime_nsec().cast_unsigned(),
+            metadata.ctime().cast_unsigned(),
+            metadata.ctime_nsec().cast_unsigned(),
+        ];
+        let mut stamp = [0; 64];
+        for (at, field) in fields.iter().enumerate() {
+            stamp[at * 8..at * 8 + 8].copy_from_slice(&field.to_le_bytes());
+        }
+        if let Some((kept, value)) = self.before.get(&path) {
+            if *kept == stamp {
+                let value = value.clone();
+                self.after.insert(path, (stamp, value.clone()));
+                return Some(value);
+            }
+        }
+        let value = std::fs::read(&path).ok()?;
+        let at = |seconds: i64, nanos: i64| {
+            std::time::Duration::new(
+                u64::try_from(seconds).unwrap_or(u64::MAX),
+                u32::try_from(nanos).unwrap_or(0),
+            )
+        };
+        let settled = self.settled_before.is_some_and(|before| {
+            at(metadata.mtime(), metadata.mtime_nsec()) < before
+                && at(metadata.ctime(), metadata.ctime_nsec()) < before
+        });
+        if settled {
+            self.after.insert(path, (stamp, value.clone()));
+        }
+        Some(value)
+    }
+
+    #[cfg(not(unix))]
+    fn read(&mut self, entry: &std::fs::DirEntry) -> Option<Vec<u8>> {
+        std::fs::read(entry.path()).ok()
+    }
+
+    /// Keep what this read found, where it differs from what was kept.
+    fn save(self) {
+        #[cfg(unix)]
+        if self.after != self.before {
+            if let Some(path) = &self.path {
+                let mut text = String::from(LOOSE_REFS_VERSION);
+                text.push('\n');
+                for (file, (stamp, value)) in &self.after {
+                    let Some(file) = file.to_str() else { continue };
+                    if file.contains(['\t', '\n']) {
+                        continue;
+                    }
+                    text.push_str(file);
+                    text.push('\t');
+                    text.push_str(&hex(stamp));
+                    text.push('\t');
+                    text.push_str(&hex(value));
+                    text.push('\n');
+                }
+                let _ = crate::home::atomic_write(path, &text);
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+#[cfg(unix)]
+fn unhex(text: &str) -> Option<Vec<u8>> {
+    if !text.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..text.len())
+        .step_by(2)
+        .map(|at| u8::from_str_radix(text.get(at..at + 2)?, 16).ok())
+        .collect()
+}
+
+/// A kept file's entries; any line that is not one is left out, and a file of another
+/// version keeps nothing.
+#[cfg(unix)]
+fn parse_loose_refs(text: &str) -> HashMap<PathBuf, ([u8; 64], Vec<u8>)> {
+    let mut lines = text.lines();
+    if lines.next() != Some(LOOSE_REFS_VERSION) {
+        return HashMap::new();
+    }
+    lines
+        .filter_map(|line| {
+            let mut fields = line.split('\t');
+            let (file, stamp, value) = (fields.next()?, fields.next()?, fields.next()?);
+            let stamp: [u8; 64] = unhex(stamp)?.try_into().ok()?;
+            Some((PathBuf::from(file), (stamp, unhex(value)?)))
+        })
+        .collect()
 }
 
 #[cfg(all(test, unix))]

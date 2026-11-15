@@ -19,7 +19,7 @@
 
 #![cfg(unix)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
@@ -278,6 +278,405 @@ fn session_close_publication_and_landing_leave_their_branchs_record_current() {
         landed["landed"], true,
         "the landing is what the record says: {landed}"
     );
+}
+
+#[test]
+fn a_publication_that_closes_its_session_records_its_worktree_at_rest_for_the_next_read() {
+    let fixture = Fixture2::local(&crate::lifecycle::local_direct());
+    let world = &fixture.world;
+    let onevcs = || {
+        let mut command = world.onevcs();
+        command.env_remove("ONEVCS_DECISION_RECORD");
+        command
+    };
+    let rows = |uncached: bool| -> Vec<Value> {
+        let mut command = onevcs();
+        if uncached {
+            command.env("GIT_NAMESPACE", "");
+        }
+        let stdout = command
+            .args(["recoverable", "--all", "--json", "--detail", "decision"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        serde_json::from_slice(&stdout).unwrap()
+    };
+    let reason = |rows: &[Value]| {
+        rows.iter()
+            .find(|row| row["branch"]["branch"] == "work/rest")
+            .map(|row| row["retirement"]["reason"].clone())
+            .unwrap_or(Value::Null)
+    };
+    // No read before the close: a publication refreshes the decision record only where a
+    // host read has started recording, so nothing but the close itself can record here.
+    let stdout = onevcs()
+        .args(["session", "open", "project", "--branch", "work/rest"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let (token, tree) = (
+        crate::world::token_of(&stdout),
+        crate::world::worktree_of(&stdout),
+    );
+    std::fs::write(tree.join("rest.txt"), "work\n").unwrap();
+    run(&tree, &["add", "."]);
+    run(&tree, &["commit", "-q", "-m", "feat: rest"]);
+    let rest = world.home().join("cache/cleanliness/rest-v1");
+    let kept = || -> Vec<Value> {
+        std::fs::read_dir(&rest)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|file| serde_json::from_slice(&std::fs::read(file.path()).ok()?).ok())
+            .collect()
+    };
+    assert!(kept().is_empty(), "nothing is at rest before the close");
+
+    // The publication closes the session and leaves its worktree on the branch: what that
+    // worktree holds is recorded as the record closes, before any read asks.
+    onevcs().args(["publish", &token]).assert().success();
+    assert!(tree.is_dir());
+    let resolved = std::fs::canonicalize(&tree).unwrap();
+    let at_close: Vec<Value> = kept()
+        .into_iter()
+        .filter(|record| record["worktree"] == json!(resolved))
+        .collect();
+    assert_eq!(at_close.len(), 1, "{:?}", kept());
+    assert_eq!(at_close[0]["dirty"], json!(false));
+
+    // A close with recording turned off, or under a `GIT_*` override that makes every
+    // read an uncached one, records nothing.
+    for (branch, variable, value) in [
+        ("work/off", "ONEVCS_DECISION_RECORD", "off"),
+        ("work/override", "GIT_NAMESPACE", ""),
+    ] {
+        let stdout = onevcs()
+            .args(["session", "open", "project", "--branch", branch])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let (token, tree) = (
+            crate::world::token_of(&stdout),
+            crate::world::worktree_of(&stdout),
+        );
+        let file = format!("{}.txt", branch.replace('/', "-"));
+        std::fs::write(tree.join(&file), format!("{branch}\n")).unwrap();
+        run(&tree, &["add", "."]);
+        run(&tree, &["commit", "-q", "-m", &format!("feat: {branch}")]);
+        onevcs()
+            .env(variable, value)
+            .args(["publish", &token])
+            .assert()
+            .success();
+        let resolved = std::fs::canonicalize(&tree).unwrap();
+        assert!(
+            kept()
+                .iter()
+                .all(|record| record["worktree"] != json!(resolved)),
+            "{variable}={value:?} records nothing"
+        );
+    }
+
+    // The next read answers from it with no walk of the tree: an edit made by hand since,
+    // which no lifecycle event follows, is not seen. That is the rule's accepted gap, and
+    // the uncached read, which asks git, sees the edit.
+    std::fs::write(tree.join("rest.txt"), "edited by hand\n").unwrap();
+    let warm = rows(false);
+    assert_ne!(reason(&warm), json!("dirty-worktree"), "{warm:?}");
+    assert_eq!(reason(&rows(true)), json!("dirty-worktree"));
+}
+
+/// A checkout carrying more remote-tracking tips than an argument list does, each at a
+/// commit of its own off `main`: the shape whose unpublished branches are listed in one
+/// walk over all of those tips.
+fn host_with_many_origin_tips(tips: usize) -> Host {
+    let host = Host::new();
+    let main = run(&host.repo, &["rev-parse", "main"]);
+    let tree = run(&host.repo, &["rev-parse", "main^{tree}"]);
+    let mut updates = String::new();
+    for n in 0..tips {
+        let kept = run(
+            &host.repo,
+            &[
+                "commit-tree",
+                &tree,
+                "-p",
+                &main,
+                "-m",
+                &format!("chore: kept {n}"),
+            ],
+        );
+        updates.push_str(&format!("update refs/remotes/origin/keep/t{n} {kept}\n"));
+    }
+    let mut child = std::process::Command::new("git")
+        .current_dir(&host.repo)
+        .args(["update-ref", "--stdin"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    use std::io::Write as _;
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(updates.as_bytes())
+        .unwrap();
+    assert!(child.wait().unwrap().success());
+    host
+}
+
+fn commit_on(host: &Host, branch: &str, file: &str) -> String {
+    run(&host.repo, &["checkout", "-q", branch]);
+    std::fs::write(host.repo.join(file), format!("{file}\n")).unwrap();
+    run(&host.repo, &["add", "."]);
+    run(
+        &host.repo,
+        &["commit", "-q", "-m", &format!("feat: {file}")],
+    );
+    let tip = run(&host.repo, &["rev-parse", "HEAD"]);
+    run(&host.repo, &["checkout", "-q", "main"]);
+    tip
+}
+
+#[test]
+fn branches_no_origin_tip_reaches_are_listed_in_process_as_git_lists_them() {
+    let host = host_with_many_origin_tips(80);
+    host.branch("work/a");
+    host.branch("work/b");
+    host.read();
+    let listed =
+        |rows: &[Value], branch: &str| rows.iter().any(|row| row["branch"]["branch"] == branch);
+    let walks = |calls: &[String]| {
+        calls
+            .iter()
+            .filter(|call| call.starts_with("rev-list --stdin"))
+            .count()
+    };
+
+    // A branch moving is derived again, and its listing is the walk over every origin tip:
+    // made in process, from what an earlier read kept of what those tips reach.
+    let b = commit_on(&host, "work/b", "b-more.txt");
+    let mut rows = Vec::new();
+    let calls = with_shim(&host, || rows = host.read().0);
+    assert_eq!(rows, host.uncached(), "work/b moved");
+    assert!(listed(&rows, "work/b"));
+    assert_eq!(walks(&calls), 0, "{calls:?}");
+
+    // An origin tip added beyond the branch's tip, so that it reaches the tip without
+    // being it: published, as git's walk says.
+    let tree = run(&host.repo, &["rev-parse", &format!("{b}^{{tree}}")]);
+    let beyond = run(
+        &host.repo,
+        &["commit-tree", &tree, "-p", &b, "-m", "chore: beyond work/b"],
+    );
+    run(
+        &host.repo,
+        &["update-ref", "refs/remotes/origin/keep/b", &beyond],
+    );
+    let (rows, _) = host.read();
+    assert_eq!(rows, host.uncached(), "an origin tip reaches work/b");
+    assert!(!listed(&rows, "work/b"));
+
+    // That tip taken away again: nothing else reached those commits, so what was kept of
+    // the tips' reach cannot be carried forward, and the branch is listed again.
+    run(
+        &host.repo,
+        &["update-ref", "-d", "refs/remotes/origin/keep/b"],
+    );
+    let (rows, _) = host.read();
+    assert_eq!(rows, host.uncached(), "the tip that reached work/b is gone");
+    assert!(listed(&rows, "work/b"));
+
+    // The base moving on: its old tip is still reached from its new one.
+    commit_on(&host, "main", "base-more.txt");
+    run(&host.repo, &["push", "-q", "origin", "main"]);
+    let main = run(&host.repo, &["rev-parse", "main"]);
+    run(
+        &host.repo,
+        &["update-ref", "refs/remotes/origin/main", &main],
+    );
+    commit_on(&host, "work/a", "a-more.txt");
+    let mut rows = Vec::new();
+    let calls = with_shim(&host, || rows = host.read().0);
+    assert_eq!(rows, host.uncached(), "the base moved on and work/a moved");
+    assert!(listed(&rows, "work/a") && listed(&rows, "work/b"));
+    assert_eq!(walks(&calls), 0, "{calls:?}");
+}
+
+#[test]
+fn packed_refs_read_in_one_pass_answer_as_git_reads_them() {
+    let host = host_with_many_origin_tips(80);
+    host.branch("work/a");
+    host.branch("work/b");
+    // Every ref packed, then one branch moved: its loose ref names a commit its packed
+    // entry, still in the file, does not.
+    run(&host.repo, &["pack-refs", "--all"]);
+    host.read();
+    // A branch cut since, whose ref is loose alone.
+    host.branch("work/c");
+    let moved = commit_on(&host, "work/a", "a-loose.txt");
+    let (rows, _) = host.read();
+    assert_eq!(rows, host.uncached(), "a loose ref over a packed one");
+    let tip = rows
+        .iter()
+        .find(|row| row["branch"]["branch"] == "work/a")
+        .map(|row| row["tip"].clone());
+    assert_eq!(tip, Some(json!(moved)), "the loose ref wins: {rows:?}");
+    assert!(
+        rows.iter().any(|row| row["branch"]["branch"] == "work/c"),
+        "a ref only loose is read too: {rows:?}"
+    );
+    // And packed again, with nothing loose left.
+    run(&host.repo, &["pack-refs", "--all"]);
+    let (rows, _) = host.read();
+    assert_eq!(rows, host.uncached(), "packed again");
+}
+
+/// A kept reach with one reached commit taken out — `commit`, or the first after the tips
+/// — its count lowered to match and its digest left as it was.
+fn without_reached(kept: &[u8], header: usize, commit: Option<&str>) -> Vec<u8> {
+    let tips = u64::from_le_bytes(kept[header..header + 8].try_into().unwrap()) as usize;
+    let reached = u64::from_le_bytes(kept[header + 8..header + 16].try_into().unwrap()) as usize;
+    let ids = header + 16;
+    let first = ids + tips * 20;
+    let at = match commit {
+        None => first,
+        Some(commit) => {
+            let wanted: Vec<u8> = (0..40)
+                .step_by(2)
+                .map(|at| u8::from_str_radix(&commit[at..at + 2], 16).unwrap())
+                .collect();
+            match (0..reached)
+                .map(|n| first + n * 20)
+                .find(|at| kept[*at..*at + 20] == wanted[..])
+            {
+                Some(at) => at,
+                None => return kept.to_vec(),
+            }
+        }
+    };
+    let mut altered = kept.to_vec();
+    altered.drain(at..at + 20);
+    altered[header + 8..header + 16].copy_from_slice(&((reached - 1) as u64).to_le_bytes());
+    altered
+}
+
+#[test]
+fn a_kept_reach_that_is_damaged_or_cannot_be_written_is_walked_again() {
+    let host = host_with_many_origin_tips(80);
+    host.branch("work/a");
+    host.read();
+    let store = host.home.join("cache/reach-v1");
+    let kept = || -> PathBuf {
+        std::fs::read_dir(&store)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path()
+    };
+    let file = kept();
+    let whole = std::fs::read(&file).unwrap();
+    let version = b"onevcs reach 2\n";
+    assert!(whole.starts_with(version));
+    let damages: Vec<(&str, Vec<u8>)> = vec![
+        ("not one this build wrote", b"not a reach\n".to_vec()),
+        ("another version", {
+            let mut other = whole.clone();
+            other[version.len() - 2] = b'0';
+            other
+        }),
+        ("cut short", whole[..whole.len() - 100].to_vec()),
+        (
+            "a reached commit taken out, its count and digest left consistent with it",
+            without_reached(&whole, version.len(), None),
+        ),
+    ];
+    for (n, (damage, bytes)) in damages.into_iter().enumerate() {
+        std::fs::write(&file, bytes).unwrap();
+        commit_on(&host, "work/a", &format!("a-{n}.txt"));
+        let (rows, _) = host.read();
+        assert_eq!(rows, host.uncached(), "{damage}");
+        let rewritten = std::fs::read(kept()).unwrap();
+        assert!(
+            rewritten.starts_with(version),
+            "{damage}: walked again and kept"
+        );
+    }
+    // The commit that hides a published branch's tip taken out of a kept set, its digest
+    // left as it was: were the set read as kept, the branch would be listed as unpublished.
+    let b = host.branch("work/b");
+    let tree = run(&host.repo, &["rev-parse", &format!("{b}^{{tree}}")]);
+    let beyond = run(
+        &host.repo,
+        &["commit-tree", &tree, "-p", &b, "-m", "chore: beyond work/b"],
+    );
+    run(
+        &host.repo,
+        &["update-ref", "refs/remotes/origin/keep/b", &beyond],
+    );
+    let (rows, _) = host.read();
+    assert_eq!(rows, host.uncached(), "work/b published");
+    let bytes = std::fs::read(kept()).unwrap();
+    let altered = without_reached(&bytes, version.len(), Some(&b));
+    assert_ne!(altered, bytes, "the kept set holds work/b's tip");
+    std::fs::write(kept(), altered).unwrap();
+    // Another origin tip, so the branch is listed again against the kept set.
+    let main = run(&host.repo, &["rev-parse", "main"]);
+    let extra = run(
+        &host.repo,
+        &[
+            "commit-tree",
+            &tree,
+            "-p",
+            &main,
+            "-m",
+            "chore: another origin tip",
+        ],
+    );
+    run(
+        &host.repo,
+        &["update-ref", "refs/remotes/origin/keep/extra", &extra],
+    );
+    let (rows, _) = host.read();
+    assert_eq!(rows, host.uncached(), "a kept set altered under its digest");
+
+    std::fs::remove_dir_all(&store).unwrap();
+    std::fs::write(&store, "not a directory").unwrap();
+    for read in ["unwritable", "still unwritable"] {
+        commit_on(&host, "work/a", &format!("{read}.txt").replace(' ', "-"));
+        let (rows, _) = host.read();
+        assert_eq!(rows, host.uncached(), "{read}");
+    }
+    std::fs::remove_file(&store).unwrap();
+    commit_on(&host, "work/a", "writable.txt");
+    let (rows, _) = host.read();
+    assert_eq!(rows, host.uncached(), "writable again");
+    assert!(kept().exists());
+}
+
+#[test]
+fn an_origin_tip_whose_commit_cannot_be_read_leaves_the_listing_to_git() {
+    let host = host_with_many_origin_tips(80);
+    host.branch("work/a");
+    host.read();
+    // One origin tip's commit gone from the store.
+    let tip = run(&host.repo, &["rev-parse", "refs/remotes/origin/keep/t7"]);
+    let object = host
+        .repo
+        .join(".git/objects")
+        .join(&tip[..2])
+        .join(&tip[2..]);
+    std::fs::remove_file(&object).unwrap();
+    commit_on(&host, "work/a", "a-after-loss.txt");
+    let (rows, _) = host.read();
+    assert_eq!(rows, host.uncached(), "an unreadable origin tip");
 }
 
 #[test]
@@ -607,6 +1006,88 @@ fn each_way_a_base_gains_names_a_branch_rederives_only_that_branch() {
     assert!(every.contains("work/unrelated"), "{every:?}");
 }
 
+/// What the base gained is read the way every derivation reads history and paths: in
+/// process where it can be, so a warm read checking a moved base starts no git, and names
+/// exactly the branches the uncached read's answer says moved.
+#[test]
+fn what_a_base_gained_is_read_in_process_and_names_what_git_names() {
+    let host = Host::new();
+    host.branch("work/path");
+    host.branch("work/subject");
+    host.branch("work/unrelated");
+    host.read();
+    base_commit(&host, "chore: touches work/path's file", "work-path");
+    base_commit(&host, "feat: work/subject", "subject-carried");
+    gain_unrelated(&host, 3);
+    let mut rows = Vec::new();
+    let mut derived = BTreeSet::new();
+    let asked = with_shim(&host, || (rows, derived) = host.read());
+    let checks = host.checks();
+    assert_eq!(
+        rows,
+        host.uncached(),
+        "the warm read answers the uncached rows"
+    );
+    assert_eq!(derived, set(&["work/path", "work/subject"]));
+    assert_eq!(
+        checks.len(),
+        1,
+        "the one checkout's base was checked: {checks:?}"
+    );
+    assert_eq!(checks[0]["gained"], 5, "{checks:?}");
+    assert!(
+        asked.iter().all(|call| !call.starts_with("merge-base")
+            && !call.starts_with("log")
+            && !call.starts_with("diff")),
+        "nothing the check reads starts git: {asked:?}"
+    );
+}
+
+/// `merge-base --octopus` is answered in process only for commits on one line of
+/// ancestry, where its answer is the oldest of them. A base moved to a commit its
+/// records' base does not descend from is off that line, and git anchors the check.
+#[test]
+fn a_base_moved_off_the_line_its_records_were_decided_on_leaves_the_anchor_to_git() {
+    let host = Host::new();
+    host.branch("work/kept");
+    host.branch("work/touched");
+    gain_unrelated(&host, 2);
+    host.read();
+    let decided = run(&host.repo, &["rev-parse", "main"]);
+    // The base rewound one commit and moved on another way: neither tip descends from
+    // the other.
+    run(&host.repo, &["reset", "-q", "--hard", "main~1"]);
+    base_commit(&host, "chore: touches work/touched's file", "work-touched");
+    let current = run(&host.repo, &["rev-parse", "main"]);
+    assert!(
+        std::process::Command::new("git")
+            .args(["merge-base", "--is-ancestor", &decided, &current])
+            .current_dir(&host.repo)
+            .status()
+            .unwrap()
+            .code()
+            == Some(1)
+    );
+    let mut rows = Vec::new();
+    let mut derived = BTreeSet::new();
+    let asked = with_shim(&host, || (rows, derived) = host.read());
+    assert_eq!(
+        rows,
+        host.uncached(),
+        "the warm read answers the uncached rows"
+    );
+    assert!(
+        asked
+            .iter()
+            .any(|call| call.starts_with("merge-base --octopus")),
+        "git anchors a check off one line: {asked:?}"
+    );
+    assert!(
+        derived.contains("work/touched"),
+        "the path the base changed names its branch: {derived:?}"
+    );
+}
+
 #[test]
 fn a_partial_stream_line_and_a_removed_stream_answer_the_uncached_read() {
     let host = Host::new();
@@ -718,6 +1199,126 @@ fn a_disagreeing_copy_and_a_non_base_origin_ref_answer_the_uncached_read() {
     let (rows, _) = host.read();
     assert_eq!(rows, host.uncached(), "the origin reaches work/b");
     assert!(rows.iter().all(|row| row["branch"]["branch"] != "work/b"));
+}
+
+#[test]
+fn origin_tips_a_branch_was_checked_against_are_not_asked_about_again_while_unmoved() {
+    let host = Host::new();
+    host.branch("work/a");
+    host.branch("work/b");
+    host.read();
+    let unpublished_checks = |calls: &[String]| {
+        calls
+            .iter()
+            .filter(|call| call.starts_with("for-each-ref") && call.contains("--no-merged"))
+            .count()
+    };
+
+    // A non-base origin ref the records never saw: the first read asks whether each branch
+    // is still ahead of everything origin has…
+    run(
+        &host.repo,
+        &[
+            "update-ref",
+            "refs/remotes/origin/elsewhere",
+            &run(&host.repo, &["rev-parse", "main"]),
+        ],
+    );
+    let mut first = Vec::new();
+    let asked = with_shim(&host, || first = host.read().0);
+    assert_eq!(first, host.uncached(), "another origin ref");
+    assert!(unpublished_checks(&asked) > 0, "{asked:?}");
+    // …and the read after it, over the same origin tips, asks nothing of the sort.
+    let mut second = Vec::new();
+    let asked = with_shim(&host, || second = host.read().0);
+    assert_eq!(second, host.uncached(), "origin unmoved since");
+    assert_eq!(host.derived(), set(&[]));
+    assert_eq!(unpublished_checks(&asked), 0, "{asked:?}");
+
+    // Origin moving again is asked about again: here it reaches work/b's tip.
+    let tip = run(&host.repo, &["rev-parse", "work/b"]);
+    run(
+        &host.repo,
+        &["update-ref", "refs/remotes/origin/elsewhere", &tip],
+    );
+    let (rows, _) = host.read();
+    assert_eq!(rows, host.uncached(), "the origin reaches work/b");
+    assert!(rows.iter().all(|row| row["branch"]["branch"] != "work/b"));
+    assert!(rows.iter().any(|row| row["branch"]["branch"] == "work/a"));
+}
+
+#[test]
+fn one_read_that_moves_a_record_on_three_counts_keeps_all_three() {
+    let host = Host::new();
+    host.branch("work/a");
+    host.branch("work/b");
+    host.read();
+    let record = || -> Value {
+        serde_json::from_slice(&std::fs::read(host.record_path("work/a")).unwrap()).unwrap()
+    };
+    let before = record();
+
+    // At once: the base gains what names no branch, origin gains a ref that reaches none,
+    // and a closed session's clone comes to hold work/a at its tip.
+    gain_unrelated(&host, 2);
+    let main = run(&host.repo, &["rev-parse", "main"]);
+    run(
+        &host.repo,
+        &["update-ref", "refs/remotes/origin/elsewhere", &main],
+    );
+    let clone = host
+        .root
+        .join("runs")
+        .join(Host::token("work/a"))
+        .join("clone");
+    run(
+        &host.root,
+        &[
+            "clone",
+            "-q",
+            "--shared",
+            "--no-checkout",
+            host.repo.to_str().unwrap(),
+            clone.to_str().unwrap(),
+        ],
+    );
+    run(&clone, &["branch", "work/a", "origin/work/a"]);
+    let (rows, derived) = host.read();
+    assert_eq!(rows, host.uncached(), "all three moved");
+    assert_eq!(derived, set(&[]), "none of the three is a reason to derive");
+
+    let after = record();
+    assert_ne!(
+        after["decided_against"], before["decided_against"],
+        "{after}"
+    );
+    assert_ne!(
+        after["listing"]["origin"], before["listing"]["origin"],
+        "{after}"
+    );
+    let holders = |record: &Value| {
+        record["listing"]["verdict"]["retirement"]["holders"]
+            .as_array()
+            .map(Vec::len)
+    };
+    assert_eq!(holders(&before), Some(1), "{before}");
+    assert_eq!(holders(&after), Some(2), "{after}");
+
+    // So the read after it asks neither the base nor origin again.
+    let mut again = Vec::new();
+    let asked = with_shim(&host, || again = host.read().0);
+    assert_eq!(again, rows, "nothing moved since");
+    assert_eq!(host.derived(), set(&[]));
+    assert!(
+        asked.iter().all(|call| !call.contains("--no-merged")),
+        "{asked:?}"
+    );
+    assert_eq!(
+        host.checks(),
+        Vec::<Value>::new(),
+        "the base is not asked again"
+    );
+    assert_eq!(record(), after, "the read after it rewrites nothing");
 }
 
 /// A host shaped like the one whose warm read re-derived every branch: a registered

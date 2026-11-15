@@ -259,6 +259,11 @@ const POLL: Duration = Duration::from_millis(20);
 pub(crate) struct Look(std::sync::OnceLock<Vec<PathBuf>>);
 
 impl Look {
+    /// Take the look now, rather than the first time a run root is asked about.
+    pub(crate) fn take(&self) {
+        self.anybody_in(Path::new("/"));
+    }
+
     /// Whether [`holding`] would name anybody inside `run_root`, as of this look.
     pub(crate) fn anybody_in(&self, run_root: &Path) -> bool {
         self.0

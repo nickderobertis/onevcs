@@ -115,6 +115,7 @@ pub(crate) fn enabled() -> bool {
 
 pub(crate) fn clear() {
     crate::native_refs::clear();
+    crate::cleanliness::clear();
     CONTEXTS.with(|contexts| contexts.borrow_mut().clear());
     STORES.with(|stores| stores.borrow_mut().clear());
     COVERED.with(|covered| covered.borrow_mut().clear());
@@ -638,6 +639,34 @@ fn admitted<'a>(
     readable_in_process(cwd, borrowing).then_some((cwd, borrowing))
 }
 
+/// The commits `git rev-list TIPS --not HIDDEN ALSO` prints, made in process where this
+/// read admits in-process answers for `cwd` (see [`crate::native_objects::unreached`]),
+/// or `None` for git to make.
+pub(crate) fn unreached(
+    cwd: &Path,
+    tips: &[&str],
+    hidden: &BTreeSet<String>,
+    also: &[&str],
+) -> Option<Vec<String>> {
+    let (cwd, borrowing) = admitted(cwd, &[])?;
+    let id = |text: &str| {
+        (text.len() == 40
+            && text
+                .bytes()
+                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')))
+        .then(|| git2::Oid::from_str(text).ok())
+        .flatten()
+    };
+    let tips = tips.iter().map(|tip| id(tip)).collect::<Option<Vec<_>>>()?;
+    let hidden = hidden
+        .iter()
+        .map(|tip| id(tip))
+        .collect::<Option<BTreeSet<_>>>()?;
+    let also = also.iter().map(|tip| id(tip)).collect::<Option<Vec<_>>>()?;
+    let printed = crate::native_objects::unreached(cwd, borrowing, &tips, &hidden, &also)?;
+    Some(printed.into_iter().map(|id| id.to_string()).collect())
+}
+
 pub(crate) fn query(args: &[&str], cwd: Option<&Path>, env: &[(String, String)]) -> Option<Query> {
     if !ENABLED.with(std::cell::Cell::get) {
         return None;
@@ -988,6 +1017,12 @@ fn is_filter_driver(key: &str) -> bool {
     key.strip_prefix("filter.")
         .and_then(|rest| rest.rsplit_once('.'))
         .is_some_and(|(_, field)| matches!(field, "clean" | "smudge" | "process" | "required"))
+}
+
+/// The identity of the git this process runs, as every recovery key holds it.
+#[cfg(unix)]
+pub(crate) fn git_semantics() -> Option<String> {
+    semantics()
 }
 
 #[cfg(unix)]

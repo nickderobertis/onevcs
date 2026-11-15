@@ -28,6 +28,13 @@ budgets:
     direction: max
     threshold: 187
     description: Measured unchanged warm launcher Decision Git executable budget at the larger workload.
+  - id: recoverable-host-git-executions-warm
+    measure: reported
+    command: [node, scripts/recoverable-git-count-budget.mjs, --scale, host, --warm]
+    unit: executions
+    direction: max
+    threshold: 19
+    description: Measured warm Git executable budget of the host-wide unfiltered Decision read over onevcs_testing::recovery::HOST aged by age_host, from the state each timed host call starts from; every git that read starts goes through the counting shim, so a path that starts git per checkout or per branch is counted here, held to the warm launcher line.
   - id: recoverable-journey-time
     measure: reported
     command: [node, scripts/recoverable-git-count-budget.mjs, --journey-time]

@@ -2008,6 +2008,17 @@ pub(crate) fn terminate_group(child: &Child) {
 
 /// Whether `path` is inside the working tree of a non-bare repository.
 pub fn is_repo(path: &Path) -> bool {
+    // Git cannot be started in a directory that is not there, so its answer is already
+    // known: a host keeps a record of every session it ever opened, most of whose clones
+    // are long gone, and a read asked this of each of them by forking a child that then
+    // failed to enter the directory.
+    // llmlint: ignore[changed_behavior_has_e2e] the answer for such a path is unchanged —
+    // it was false before, from the spawn that failed — and the fork this removes never
+    // runs a program, so no journey's counting git can see it; the host recovery budget
+    // measures what it cost.
+    if !path.is_dir() {
+        return false;
+    }
     if let Some(found) = crate::native_refs::is_repo(path) {
         return found;
     }
@@ -3252,6 +3263,15 @@ fn unpublished_among(
                 input.push_str(tip);
                 input.push('\n');
             }
+            // The same walk made in process where it can be, from what this host kept of
+            // the commits the origin's tips reach; git's otherwise.
+            let carried_tips: Vec<&str> = carried.iter().map(String::as_str).collect();
+            if let Some(printed) =
+                crate::recovery_cache::unreached(cwd, tips, &origin_tips, &carried_tips)
+            {
+                found.extend(printed.into_iter().map(|line| (carried.clone(), line)));
+                continue;
+            }
             let given = run_given(cwd, &["rev-list", "--stdin", "--"], input.as_bytes())?;
             if !given.ok() || !given.read_failures.is_empty() {
                 if undecided == Undecided::List {
@@ -3541,9 +3561,25 @@ pub fn is_valid_branch_name(branch: &str) -> bool {
 
 /// Whether the worktree has staged or unstaged changes.
 pub fn is_dirty(cwd: &Path) -> Result<bool> {
-    Ok(!checked(&["status", "--porcelain"], Some(cwd))?
+    Ok(!status_unwritten(&["status", "--porcelain"], cwd)?
         .trimmed()
         .is_empty())
+}
+
+/// A `git status` that leaves the index as it found it, which is what every question
+/// this crate asks of a worktree's cleanliness is: a read.
+///
+/// Without optional locks git still answers exactly, and only skips refreshing the
+/// index's stat data on disk. That refresh is housekeeping whose frequency moves with
+/// git's version — from 2.53 a racy entry is judged by the second, so the index is
+/// rewritten on every status until it was written a second after every file it lists —
+/// and a read writing it moves the input a kept cleanliness answer is stamped under.
+pub(crate) fn status_unwritten(args: &[&str], cwd: &Path) -> Result<Output> {
+    checked_with_env(
+        args,
+        Some(cwd),
+        &[("GIT_OPTIONAL_LOCKS".to_owned(), "0".to_owned())],
+    )
 }
 
 /// Stage everything in the worktree.
@@ -3884,6 +3920,9 @@ pub(crate) fn octopus_base(
     decided: &BTreeSet<String>,
     batch: usize,
 ) -> Result<String> {
+    if let Some(oldest) = oldest_of_one_line(asked, current, decided) {
+        return Ok(oldest);
+    }
     let mut common = current.to_owned();
     let decided: Vec<&str> = decided.iter().map(String::as_str).collect();
     for chunk in decided.chunks(batch.saturating_sub(1).max(1)) {
@@ -3904,6 +3943,43 @@ pub(crate) fn octopus_base(
     }
     Ok(common)
 }
+
+/// What `merge-base --octopus` answers for `current` and `decided` where every two of them
+/// are one an ancestor of the other, as each is asked in process: the oldest, which every
+/// other descends from. Any other shape — two commits neither of which descends from the
+/// other, an ancestry this process cannot answer, more commits than [`ONE_LINE_LIMIT`] — is
+/// `None`, for git's walk to answer.
+fn oldest_of_one_line(
+    asked: Asked<'_>,
+    current: &str,
+    decided: &BTreeSet<String>,
+) -> Option<String> {
+    if decided.len() > ONE_LINE_LIMIT {
+        return None;
+    }
+    let env = asked.env();
+    let descends = |from: &str, to: &str| crate::native_refs::is_ancestor(asked.at, &env, from, to);
+    let commits: Vec<&str> = std::iter::once(current)
+        .chain(decided.iter().map(String::as_str))
+        .collect();
+    for (at, first) in commits.iter().enumerate() {
+        for second in &commits[at + 1..] {
+            if !(descends(first, second)? || descends(second, first)?) {
+                return None;
+            }
+        }
+    }
+    let mut oldest = current;
+    for commit in &commits[1..] {
+        if descends(commit, oldest)? {
+            oldest = commit;
+        }
+    }
+    Some(oldest.to_owned())
+}
+
+/// The most commits [`oldest_of_one_line`] compares two by two before leaving them to git.
+const ONE_LINE_LIMIT: usize = 16;
 
 /// How many files git says two commits differ in.
 ///
@@ -4027,11 +4103,6 @@ pub fn known_to_carry_changes<'a>(
         .split('\0')
         .filter(|path| !path.is_empty())
         .any(|path| touched.contains(path)))
-}
-
-/// How many files git says two commits differ in, for a caller holding a listing to it.
-pub(crate) fn count_files(cwd: Asked<'_>, from: &str, to: &str) -> Result<usize> {
-    counted_files(cwd, from, to)
 }
 
 /// Whether a whole-tree `diff --name-only -z` answered in full: a listing of text arrived

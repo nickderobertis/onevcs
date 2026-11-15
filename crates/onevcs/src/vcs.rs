@@ -667,6 +667,13 @@ fn collected(
     let branch_filter = narrowed
         .as_ref()
         .is_some_and(|only| !matches!(only.selecting, Selecting::Sessions));
+    // Where processes work is looked at once for the whole read. A read that reuses
+    // records looks before it checks any worktree: those checks run git inside run roots,
+    // and the look must see who else works there, not the read's own git.
+    let look = crate::processes::Look::default();
+    if reusing {
+        look.take();
+    }
     let (streams, answers, moved) = if reusing && narrowed.is_none() {
         let answers = crate::decisions::host_streams()?;
         let streams = answers.streams.clone();
@@ -722,9 +729,6 @@ fn collected(
         }
         true
     });
-    // Where processes work is looked at once for the whole read, the first time a
-    // branch's holder is asked about, rather than once per open session asked.
-    let look = crate::processes::Look::default();
     let scan = Scan {
         look: &look,
         registry: &registry,
@@ -896,6 +900,17 @@ struct Served {
     tips: BTreeMap<String, Vec<(PathBuf, String)>>,
 }
 
+/// Snapshot an identity's checkouts at once, ahead of a read that asks them one by one;
+/// a checkout a narrowed read does not look in is left alone, as that read leaves it.
+fn prefetch_snapshots(checkouts: &[PathBuf], narrowed: Option<&Narrowed>) {
+    let looked_in: Vec<PathBuf> = checkouts
+        .iter()
+        .filter(|repo| narrowed.is_none_or(|only| only.looks_in(repo)))
+        .cloned()
+        .collect();
+    crate::native_refs::prefetch(&looked_in);
+}
+
 /// The rows the records can answer for one identity, and the branches they cannot.
 ///
 /// Holds no turn and starts no process for a branch whose inputs held. A branch is sent
@@ -920,6 +935,8 @@ fn serve_recorded(
     let mut served = Served::default();
     let records = decisions::load(identity);
     let resolution = store::resolve(registry, identity)?;
+    let checkouts = workspace::checkouts_among(registry, &resolution, sessions);
+    prefetch_snapshots(&checkouts, narrowed.as_ref());
     let publication = resolution.publication.clone();
     let current = git::default_branch(&publication, "origin")
         .ok()
@@ -940,7 +957,6 @@ fn serve_recorded(
     let mut origin_digests: BTreeMap<PathBuf, Option<String>> = BTreeMap::new();
     let mut advertised: BTreeMap<PathBuf, Option<crate::native_refs::AdvertisedTips>> =
         BTreeMap::new();
-    let checkouts = workspace::checkouts_among(registry, &resolution, sessions);
     for repo in &checkouts {
         if narrowed.as_ref().is_some_and(|only| !only.looks_in(repo)) {
             continue;
@@ -1002,6 +1018,14 @@ fn serve_recorded(
     // or whose inputs moved is only a reason to derive its branch where a read reaches
     // it: a copy behind one that answers a row is never decided, so it has no record.
     let mut usable: BTreeMap<(String, PathBuf), Usable<'_>> = BTreeMap::new();
+    // The copies the check below found still unpublished under origin tips their record
+    // did not name, with the digest of those tips: the record is moved onto them, so an
+    // unchanged origin is not asked about again on every later read.
+    let mut reanchored: BTreeMap<(String, PathBuf), String> = BTreeMap::new();
+    // Each record this read moves forward — onto origin tips, a base commit or a verdict
+    // it checked it against — written once, after every check that moves it, so a later
+    // one never writes back what an earlier one replaced.
+    let mut rewritten: BTreeMap<(String, PathBuf), Decision> = BTreeMap::new();
     for (branch, seen_at) in &copies {
         let held = held_by(sessions, identity, branch)?;
         let digest = decisions::sessions_digest(sessions, identity, branch, &held);
@@ -1080,6 +1104,9 @@ fn serve_recorded(
                 {
                     usable.insert(key, Usable::No);
                     continue;
+                }
+                if let Some(Some(now)) = origin_digests.get(repo) {
+                    reanchored.insert(key.clone(), now.clone());
                 }
             }
             usable.insert(key, Usable::Row(decision));
@@ -1167,15 +1194,27 @@ fn serve_recorded(
                 // Checked against everything up to here and named by none of it: the
                 // next check starts here, so a branch re-derived by one gain is not
                 // named again by what the rest of its checkout had still to be read past.
-                let mut anchored = (*decision).clone();
-                anchored.decided_against = Some(compared.clone());
-                decisions::write(&anchored);
+                rewritten
+                    .entry(((*branch).clone(), repo.clone()))
+                    .or_insert_with(|| (*decision).clone())
+                    .decided_against = Some(compared.clone());
             }
         }
         decisions::note_check(identity, repo, gained.commits.len(), named, started);
     }
     for key in named_by_base {
         usable.insert(key, Usable::No);
+    }
+    if scan.writing {
+        for (key, origin) in reanchored {
+            if let Some(Usable::Row(decision)) = usable.get(&key) {
+                rewritten
+                    .entry(key)
+                    .or_insert_with(|| (*decision).clone())
+                    .listing
+                    .origin = origin;
+            }
+        }
     }
 
     // The fresh half of each retirement, for the branches that are served.
@@ -1191,6 +1230,26 @@ fn serve_recorded(
             .and_then(|only| (!only.looks_everywhere()).then_some(&only.checkouts)),
     )?
     .looking_once(scan.look);
+    // The worktrees the retirements below will ask whether they hold uncommitted work,
+    // read at once rather than one branch at a time: a branch whose kept verdict was
+    // decided before that question is never asked it.
+    crate::retire::prefetch_cleanliness(
+        &census,
+        copies.iter().filter_map(|(branch, seen_at)| {
+            let asked = !served.derive.contains(branch)
+                && seen_at.iter().any(|(repo, _)| {
+                    matches!(
+                        usable.get(&(branch.clone(), repo.clone())),
+                        Some(Usable::Row(decision)) if decision
+                            .listing
+                            .verdict
+                            .as_ref()
+                            .is_none_or(|kept| kept.reached != crate::verdict::Reached::Early)
+                    )
+                });
+            asked.then_some(branch)
+        }),
+    );
     // Each branch's copies are walked as the derivation walks them: a copy unlisted or
     // left out of the default report is passed over, and the first that answers a row
     // ends the walk. Reaching a copy no record can answer derives the whole branch.
@@ -1211,12 +1270,28 @@ fn serve_recorded(
                     break;
                 }
             };
-            let retirement = crate::retire::classify_offline_kept(
+            let classified = crate::retire::classify_offline_kept(
                 &census,
                 branch,
                 decision.listing.verdict.as_ref(),
-            )
-            .map(|(retirement, _)| retirement);
+            );
+            // A verdict derived again — its holders moved since it was kept — is kept in
+            // its place, as the derivation keeps the one it reaches, so the next read
+            // whose holders are these reuses it rather than deriving it once more.
+            if let Some((_, Some(verdict))) = &classified {
+                if scan.writing
+                    && decision.listing.verdict.as_ref() != Some(verdict)
+                    && verdict.retirement.reason != Some(crate::KeepReason::Unknown)
+                    && !verdict.host.failed()
+                {
+                    rewritten
+                        .entry((branch.clone(), repo.clone()))
+                        .or_insert_with(|| decision.clone())
+                        .listing
+                        .verdict = Some(verdict.clone());
+                }
+            }
+            let retirement = classified.map(|(retirement, _)| retirement);
             let Some(mut row) = decision.row.clone() else {
                 continue;
             };
@@ -1251,6 +1326,9 @@ fn serve_recorded(
         }
         served.rows.append(&mut rows);
         served.withheld_rows.append(&mut withheld_rows);
+    }
+    for decision in rewritten.values() {
+        decisions::write(decision);
     }
     Ok(served)
 }
@@ -1350,7 +1428,9 @@ fn scanned(identity: &str, scan: &Scan<'_>, only: Option<&BTreeSet<String>>) -> 
         ),
     > = BTreeMap::new();
     let _reads = crate::checkout_reads::identity(&resolution.key)?;
-    for repo in workspace::checkouts_among(registry, &resolution, sessions) {
+    let checkouts = workspace::checkouts_among(registry, &resolution, sessions);
+    prefetch_snapshots(&checkouts, narrowed.as_ref());
+    for repo in checkouts {
         // A checkout none of the selected sessions can be holding a branch in is
         // not opened: that is the difference between a filter that narrows the
         // answer and one that narrows the work, and on a host with forty retained
@@ -1706,10 +1786,14 @@ pub(crate) fn concurrently_on<T: Sync, R: Send>(
     items: &[T],
     work: impl Fn(&T) -> R + Sync,
 ) -> Vec<R> {
-    let workers = std::thread::available_parallelism()
-        .map_or(1, std::num::NonZeroUsize::get)
-        .min(most)
-        .min(items.len());
+    // Asked once per process: on Linux the answer reads the cgroup's CPU quota, four
+    // files, and a read that walks a large tree calls this once per directory.
+    static PARALLELISM: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let workers = (*PARALLELISM.get_or_init(|| {
+        std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
+    }))
+    .min(most)
+    .min(items.len());
     if workers <= 1 {
         return items.iter().map(&work).collect();
     }
