@@ -83,6 +83,7 @@ mod lfs_pointer;
 mod lock;
 mod merge_path;
 mod native_objects;
+mod native_reads;
 mod native_refs;
 mod ops;
 mod policy;
