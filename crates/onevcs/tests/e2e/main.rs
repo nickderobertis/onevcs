@@ -147,6 +147,12 @@ mod drafts;
 mod call_baseline;
 #[cfg(unix)]
 mod edges;
+// Linux only, like `repeated_reads`: `cost::Counting::inhabit` puts the counting `git`
+// on this process's own `PATH`, because the reads are the library's. The one program
+// substituted is `git`, with itself; its own header says so in full.
+#[cfg(target_os = "linux")]
+// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
+mod engine_step_reads;
 // Linux only: it lets a held fetch go once the kernel's lock table shows the second
 // fetch queued behind it, and `/proc/locks` is the only place an outside process can
 // read that. Its own header carries the reason in full.

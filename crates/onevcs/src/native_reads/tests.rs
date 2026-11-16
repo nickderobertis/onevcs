@@ -285,6 +285,9 @@ fn answered(w: &World) -> Vec<Vec<String>> {
         "rev-parse --verify -q missing".into(),
         "rev-parse --verify missing".into(),
         "rev-parse --verify HEAD^{commit}".into(),
+        "rev-parse --verify MERGE_HEAD^{commit}".into(),
+        "rev-parse --verify --quiet MERGE_HEAD^{commit}".into(),
+        "rev-parse --verify -q refs/heads/missing^{commit}".into(),
         "rev-parse --verify v1".into(),
         "rev-parse --verify v1^{commit}".into(),
         "rev-parse HEAD".into(),
@@ -310,7 +313,7 @@ fn answered(w: &World) -> Vec<Vec<String>> {
 fn beside() -> Vec<Vec<String>> {
     queries(&[
         "rev-parse --git-path hooks".into(),
-        "rev-parse --verify MERGE_HEAD^{commit}".into(),
+        "rev-parse MERGE_HEAD^{commit}".into(),
         format!("rev-parse --verify --quiet {MISSING}^{{commit}}"),
         "rev-parse --verify HEAD~1".into(),
         "rev-parse --short HEAD".into(),
@@ -788,6 +791,10 @@ fn a_short_name_both_a_branch_and_a_tag_resolve_is_left_to_git() {
             "rev-parse v1".into(),
             "cat-file -e v1^{commit}".into(),
             format!("merge-base --is-ancestor {} v1", w.first),
+            // git reads `-g` and hex digits as `describe` output, an abbreviated id.
+            format!("rev-parse --verify v1-1-g{}", &w.first[..7]),
+            format!("rev-parse --verify feature-g{}^{{commit}}", &w.second[..8]),
+            "rev-parse --verify --quiet nothing-gabcd".into(),
         ]),
         &[],
     );
@@ -919,21 +926,130 @@ fn make_writable(path: &Path) {
 }
 
 #[test]
+fn a_repository_carrying_onevcs_s_own_settings_is_answered_without_git() {
+    let w = world();
+    // How onevcs writes a checkout's retention and a clone's LFS store: a header and
+    // its one key on a line, after git's own sections. A remote and a branch whose
+    // names spell the words a configuration is refused over are plain too.
+    let config = w.clone.join(".git/config");
+    let mut text = std::fs::read_to_string(&config).expect("the clone's configuration");
+    text.push_str("\n[gc] auto = 0\n[gc] pruneExpire = never\n");
+    text.push_str(&format!(
+        "[lfs] storage = \"{}\"\n",
+        path_arg(&w.origin.join(".git/lfs")).replace('\\', "/")
+    ));
+    text.push_str("[remote \"worktree-include\"]\n\turl = /pool/2/worktree/extensions\n");
+    text.push_str("[branch \"a]b\"] merge = refs/heads/extensions\n");
+    std::fs::write(&config, text).expect("the settings written");
+    assert_eq!(
+        w.lab.git(&w.clone, &["config", "--get", "gc.pruneExpire"]),
+        "never",
+        "git reads the settings"
+    );
+    w.lab.answered_in_process(&w.clone, &answered(&w));
+}
+
+#[test]
 fn configuration_that_could_change_the_repository_format_is_read_as_not_plain() {
     // A line this scan cannot read, or a section that could bring in more, makes a
-    // repository git's whatever it holds.
+    // repository git's whatever it holds; the real repositories above prove the
+    // shapes git itself writes.
     for text in [
         "[extensions]\n\tobjectFormat = sha256\n",
+        "[extensions] refStorage = reftable\n",
         "[core]\n\trepositoryformatversion = 2\n",
         "[core]\n\tworktree = ../elsewhere\n",
+        "[core] worktree = ../elsewhere\n",
         "[include]\n\tpath = more.conf\n",
         "[includeIf \"gitdir:/x/\"]\n\tpath = more.conf\n",
-        "[core] bare = false\n",
+        "[core\n",
+        "[branch \"unterminated]\n",
     ] {
         assert!(!super::plain_configuration(text), "{text:?}");
     }
-    // A remote, branch or path merely spelling one of those words is plain.
     assert!(super::plain_configuration(
-        "[core]\n\trepositoryformatversion = 0\n[remote \"origin\"]\n\turl = /pool/2/worktree-include-extensions\n[branch \"worktree\"]\n\tremote = origin\n"
+        "[core]\n\trepositoryformatversion = 1\n[gc] auto = 0 ; kept\n[url \"http://[::1]/\"]\n\tinsteadOf = x\n"
     ));
+}
+
+/// The read calls of the representative sequence, as onevcs spells each shape, with
+/// how many of each it makes: `spike-launch-inventory`'s report gives the git starts
+/// `onevcs::git::bounded` made per subcommand in the Windows e2e tier (baseline point
+/// 1, run 43684231509 attempt 1); `spike-git-reads`' report gives how the Windows
+/// baseline split each subcommand across these shapes; each count is that split of
+/// that total, divided by 1,000 and rounded. The inventory gives no journey's own
+/// order, so the tier's mix stands in for its costliest journey's. Writes (`fetch`,
+/// `update-ref`, `clone`, `commit`, `push`, `add`, `merge`: 18 starts at this scale)
+/// are not replayed; no reader answers one, so they start git on both sides.
+const MIX: &[(&str, usize)] = &[
+    ("show-ref --verify --quiet refs/remotes/origin/main", 67),
+    ("rev-parse --verify origin/main^{commit}", 32),
+    ("symbolic-ref --short refs/remotes/origin/HEAD", 32),
+    ("rev-parse --is-inside-work-tree", 31),
+    ("rev-parse --abbrev-ref HEAD", 25),
+    (
+        "log --reverse --format=%H%x00%B%x00%x1e {first}..{second} --",
+        24,
+    ),
+    ("diff --name-only --no-renames -z {first} {second} --", 23),
+    ("cat-file -e {second}^{commit}", 23),
+    ("rev-parse --git-path hooks", 21),
+    ("merge-base --is-ancestor {first} {second}", 17),
+    ("rev-parse --git-common-dir", 15),
+    ("remote get-url origin", 11),
+    ("merge-base {first} {second}", 10),
+    ("for-each-ref --format=%(refname:short) refs/heads", 7),
+    ("rev-list --first-parent {first}..{second} --", 5),
+    ("status --porcelain", 4),
+    ("config --get core.hooksPath", 4),
+    ("worktree list --porcelain", 4),
+    ("rev-parse --show-toplevel", 3),
+    ("rev-parse HEAD", 2),
+    ("symbolic-ref -q refs/remotes/origin/HEAD", 2),
+    ("remote", 2),
+    ("ls-remote --heads origin", 1),
+];
+
+/// The git processes the sequence starts on this build: every one of its 365 reads
+/// started one on the commit before the in-process reader.
+const MIX_STARTS: usize = 134;
+
+/// [`MIX`] in a fixed order: one of each shape in turn, largest first, until each
+/// has been asked its count.
+fn sequence(w: &World) -> Vec<Vec<String>> {
+    let mut left: Vec<(String, usize)> = MIX
+        .iter()
+        .map(|(shape, count)| {
+            let spelled = shape
+                .replace("{first}", &w.first)
+                .replace("{second}", &w.second);
+            (spelled, *count)
+        })
+        .collect();
+    let mut asked = Vec::new();
+    while left.iter().any(|(_, count)| *count > 0) {
+        for (shape, count) in &mut left {
+            if *count > 0 {
+                *count -= 1;
+                asked.push(shape.clone());
+            }
+        }
+    }
+    queries(&asked)
+}
+
+#[test]
+fn the_tier_read_mix_starts_fewer_git_processes_for_the_same_answers() {
+    let w = world();
+    let reads = sequence(&w);
+    assert_eq!(reads.len(), 365, "the sequence asks every read of the mix");
+    let started: usize = w.lab.agree(&w.clone, &reads, &[]).iter().sum();
+    eprintln!(
+        "the representative sequence of {} reads started {started} git processes",
+        reads.len()
+    );
+    assert_eq!(
+        started, MIX_STARTS,
+        "the representative read sequence's git starts"
+    );
 }

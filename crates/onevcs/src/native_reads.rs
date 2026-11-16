@@ -219,6 +219,14 @@ fn short_hex(name: &str) -> bool {
     name.len() >= 4 && name.len() < 40 && name.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// A name git also reads as `git describe` output — anything, `-g`, then at least
+/// four hex digits — whose digits it looks up as an abbreviated object name.
+fn described(name: &str) -> bool {
+    name.rsplit_once("-g").is_some_and(|(_, digits)| {
+        digits.len() >= 4 && digits.bytes().all(|b| b.is_ascii_hexdigit())
+    })
+}
+
 /// `NAME` and `NAME^{commit}`, split.
 fn peeled(spec: &str) -> (&str, bool) {
     match spec.strip_suffix("^{commit}") {
@@ -240,13 +248,14 @@ fn lookup_name(name: &str) -> bool {
 /// Whether a repository's own configuration leaves its format and layout git's
 /// default: no `extensions` section (a reftable or SHA-256 repository declares one),
 /// no `include`/`includeIf` that could bring in more, no `core.worktree`, and a
-/// `core.repositoryformatversion` of 0 or 1. Anything this scan cannot read as one
-/// section header or one `key = value` line is not plain.
+/// `core.repositoryformatversion` of 0 or 1. Anything this scan cannot read as a
+/// section header, a `key = value` line, or a header and one key on one line (which
+/// onevcs's own settings are written as) is not plain.
 fn plain_configuration(config: &str) -> bool {
     let mut section = String::new();
     let mut continued = false;
     for raw in config.lines() {
-        let line = raw.trim();
+        let mut line = raw.trim();
         let continues = line.ends_with('\\');
         if std::mem::replace(&mut continued, continues)
             || line.is_empty()
@@ -255,18 +264,17 @@ fn plain_configuration(config: &str) -> bool {
             continue;
         }
         if let Some(header) = line.strip_prefix('[') {
-            let Some(header) = header.strip_suffix(']') else {
+            let Some((name, after)) = section_header(header) else {
                 return false;
             };
-            section = header
-                .split(|c: char| c.is_whitespace() || c == '"' || c == '.')
-                .next()
-                .unwrap_or_default()
-                .to_ascii_lowercase();
+            section = name;
             if matches!(section.as_str(), "extensions" | "include" | "includeif") {
                 return false;
             }
-            continue;
+            line = after.trim();
+            if line.is_empty() || line.starts_with(['#', ';']) {
+                continue;
+            }
         }
         let (key, value) = line.split_once('=').unwrap_or((line, ""));
         let key = key.trim().to_ascii_lowercase();
@@ -279,6 +287,29 @@ fn plain_configuration(config: &str) -> bool {
         }
     }
     true
+}
+
+/// A section header read from just past its `[`: the section's name, lowercased and
+/// without a legacy `.subsection`, and what follows the closing `]`. A quoted
+/// subsection is skipped by git's escapes, since it may itself hold a `]`.
+fn section_header(header: &str) -> Option<(String, &str)> {
+    let named = header.find(|c: char| c.is_whitespace() || c == '"' || c == ']')?;
+    let name = header[..named]
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let mut rest = header[named..].trim_start();
+    if let Some(quoted) = rest.strip_prefix('"') {
+        let mut escaped = false;
+        let closing = quoted.char_indices().find_map(|(at, c)| {
+            let ends = !escaped && c == '"';
+            escaped = !escaped && c == '\\';
+            ends.then_some(at)
+        })?;
+        rest = quoted[closing + 1..].trim_start();
+    }
+    Some((name, rest.strip_prefix(']')?))
 }
 
 /// What a ref name holds, as git reads it.
@@ -408,7 +439,7 @@ impl Asked<'_> {
     /// matches, and `None` where git would warn (two refs match, one dangles) or
     /// the name is not one this reads.
     fn resolve(&self, repo: &git2::Repository, name: &str) -> Option<Option<git2::Oid>> {
-        if !plain_name(name) || short_hex(name) || name == "FETCH_HEAD" {
+        if !plain_name(name) || short_hex(name) || described(name) || name == "FETCH_HEAD" {
             return None;
         }
         let hex = full_hex(name);
@@ -558,9 +589,9 @@ impl Asked<'_> {
         let (name, peel) = peeled(spec);
         let repo = self.open()?;
         let Some(oid) = self.resolve(&repo, name)? else {
-            // Nothing of that name: git says so, and only under --verify is what it
-            // says this short.
-            if !verify || peel {
+            // Nothing of that name: git says so, peeled or not, and only under
+            // --verify is what it says this short.
+            if !verify {
                 return None;
             }
             return Some(if quiet {
