@@ -1505,3 +1505,126 @@ fn a_read_answered_in_process_waits_out_a_teardown_of_its_checkout() {
     );
     assert_eq!(w.lab.starts(), before, "the read was answered in process");
 }
+
+#[test]
+fn a_ref_named_like_an_object_id_is_left_to_git() {
+    let w = world();
+    // A branch whose name is the first commit's id, pointing at the second: git
+    // reads the forty digits as the object, and warns that a ref shares the name.
+    w.lab.git(
+        &w.clone,
+        &["update-ref", &format!("refs/heads/{}", w.first), &w.second],
+    );
+    let first = &w.first;
+    w.lab.left_to_git(
+        &w.clone,
+        &queries(&[
+            format!("rev-parse --verify {first}"),
+            format!("rev-parse --verify {first}^{{commit}}"),
+            format!("cat-file -e {first}^{{commit}}"),
+        ]),
+        &[],
+    );
+    // A file of the second commit's id in the git directory is a root-level ref.
+    std::fs::write(
+        w.clone.join(".git").join(&w.second),
+        format!("{}\n", w.first),
+    )
+    .expect("a root-level ref named like an id");
+    w.lab.left_to_git(
+        &w.clone,
+        &queries(&[format!("rev-parse --verify {}", w.second)]),
+        &[],
+    );
+}
+
+#[test]
+fn a_short_name_another_ref_could_take_is_spelled_as_git_spells_it() {
+    let w = world();
+    // HEAD on branch `v1` beside tag `v1`: git shortens it past the tag.
+    w.lab.git(&w.clone, &["checkout", "-q", "-b", "v1"]);
+    w.lab.answered_in_process(
+        &w.clone,
+        &queries(&[
+            "symbolic-ref --short HEAD".into(),
+            "rev-parse --abbrev-ref HEAD".into(),
+        ]),
+    );
+    // A `refs/remotes/main` beside branch `main`: the strict and the loose spelling of
+    // HEAD differ, so which one git prints turns on core.warnAmbiguousRefs.
+    w.lab.git(&w.clone, &["checkout", "-q", "main"]);
+    w.lab
+        .git(&w.clone, &["update-ref", "refs/remotes/main", &w.first]);
+    for warn in ["true", "false"] {
+        w.lab
+            .git(&w.clone, &["config", "core.warnAmbiguousRefs", warn]);
+        w.lab.left_to_git(
+            &w.clone,
+            &queries(&["rev-parse --abbrev-ref HEAD".into()]),
+            &[],
+        );
+    }
+    // `symbolic-ref --short` always shortens loosely, so it is answered still.
+    w.lab
+        .answered_in_process(&w.clone, &queries(&["symbolic-ref --short HEAD".into()]));
+}
+
+#[test]
+fn a_name_that_peels_to_no_commit_is_left_to_git() {
+    let w = world();
+    let blob = w.lab.git(&w.clone, &["rev-parse", "HEAD:a.txt"]);
+    w.lab
+        .git(&w.clone, &["tag", "-a", "treetag", "-m", "a tree", &w.tree]);
+    let tree = &w.tree;
+    w.lab.left_to_git(
+        &w.clone,
+        &queries(&[
+            format!("rev-parse --verify {tree}^{{commit}}"),
+            format!("rev-parse --verify --quiet {blob}^{{commit}}"),
+            "rev-parse --verify treetag^{commit}".into(),
+            format!("cat-file -e {tree}^{{commit}}"),
+            "cat-file -e treetag^{commit}".into(),
+            format!("merge-base --is-ancestor {tree} {}", w.second),
+        ]),
+        &[],
+    );
+}
+
+#[test]
+fn a_pack_that_does_not_match_its_index_is_left_to_git() {
+    let w = world();
+    let pack = the_pack(&w);
+    let index = pack.with_extension("idx");
+    make_writable(&pack);
+    make_writable(&index);
+    let pack_bytes = std::fs::read(&pack).expect("the pack");
+    let index_bytes = std::fs::read(&index).expect("the index");
+    let put_back = || {
+        std::fs::write(&pack, &pack_bytes).expect("the pack put back");
+        std::fs::write(&index, &index_bytes).expect("the index put back");
+    };
+    w.lab.answered_in_process(&w.clone, &pack_reads(&w));
+
+    // An index whose pack is gone, and a pack whose index is gone.
+    std::fs::remove_file(&pack).expect("the pack removed");
+    w.lab.left_to_git(&w.clone, &pack_reads(&w), &[]);
+    put_back();
+    std::fs::remove_file(&index).expect("the index removed");
+    w.lab.left_to_git(&w.clone, &pack_reads(&w), &[]);
+    put_back();
+    // An index cut short.
+    std::fs::write(&index, &index_bytes[..index_bytes.len() / 2]).expect("the index cut");
+    w.lab.left_to_git(&w.clone, &pack_reads(&w), &[]);
+    put_back();
+    // A pack whose header is not a pack's, and one counting another number of objects.
+    let mut damaged = pack_bytes.clone();
+    damaged[..4].copy_from_slice(b"KCAP");
+    std::fs::write(&pack, &damaged).expect("the magic damaged");
+    w.lab.left_to_git(&w.clone, &pack_reads(&w), &[]);
+    let mut damaged = pack_bytes.clone();
+    damaged[11] = damaged[11].wrapping_add(1);
+    std::fs::write(&pack, &damaged).expect("the count damaged");
+    w.lab.left_to_git(&w.clone, &pack_reads(&w), &[]);
+    put_back();
+    w.lab.answered_in_process(&w.clone, &pack_reads(&w));
+}
