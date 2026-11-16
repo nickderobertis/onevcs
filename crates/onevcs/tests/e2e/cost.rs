@@ -75,8 +75,11 @@ fn git_is_resolved_once_and_missing_git_keeps_its_refusal() {
         1,
     );
     std::fs::write(&shim, removing).expect("shim removes itself after its first real Git call");
+    // A second start is what meets the removed shim, so every read is git's: an empty
+    // namespace refuses the in-process answers that start none.
     counting
         .onevcs(&fixture.world)
+        .env("GIT_NAMESPACE", "")
         .args(["register", &fixture.checkout.to_string_lossy()])
         .assert()
         .failure();

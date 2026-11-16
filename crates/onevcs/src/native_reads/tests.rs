@@ -1053,3 +1053,275 @@ fn the_tier_read_mix_starts_fewer_git_processes_for_the_same_answers() {
         "the representative read sequence's git starts"
     );
 }
+
+#[test]
+fn a_name_git_could_read_as_a_file_where_it_runs_is_left_to_git() {
+    let w = world();
+    std::fs::write(w.clone.join("main"), "a file named like the branch\n").expect("a file");
+    std::fs::write(w.clone.join("HEAD"), "a file named like HEAD\n").expect("a file");
+    w.lab.left_to_git(
+        &w.clone,
+        &queries(&[
+            "rev-parse main".into(),
+            "rev-parse HEAD".into(),
+            "rev-parse --abbrev-ref HEAD".into(),
+        ]),
+        &[],
+    );
+    // Under --verify a name is never a path, so the same names are answered.
+    w.lab.answered_in_process(
+        &w.clone,
+        &queries(&[
+            "rev-parse --verify main".into(),
+            "rev-parse --verify HEAD".into(),
+        ]),
+    );
+}
+
+#[test]
+fn a_name_that_is_a_file_where_onevcs_starts_git_instead_is_left_to_git() {
+    let w = world();
+    // A checkout under the state root's workspaces is read by `--git-dir` from the
+    // workspaces directory itself, so a file of the name there is one more place the
+    // name could be a path; the reader does not decide for that git, and asks it.
+    let workspaces = crate::home::workspaces_dir().expect("the workspaces directory");
+    std::fs::create_dir_all(&workspaces).expect("the workspaces directory exists");
+    let checkout = workspaces.join("checkout");
+    w.lab.git(
+        &workspaces,
+        &[
+            "clone",
+            "-q",
+            "--no-local",
+            &path_arg(&w.origin),
+            &path_arg(&checkout),
+        ],
+    );
+    let args = ["rev-parse", "main"];
+    assert_eq!(
+        w.lab.asked(&checkout, &args, &[]).1,
+        0,
+        "with no such file the read is answered in process"
+    );
+    std::fs::write(workspaces.join("main"), "a file named like the branch\n").expect("a file");
+    let (answer, started) = w.lab.asked(&checkout, &args, &[]);
+    assert_eq!(started, 1, "the read went to git");
+    let git_dir = path_arg(&checkout.join(".git"));
+    let expected = w.lab.truth(
+        &workspaces,
+        &["--git-dir", &git_dir, "rev-parse", "main"],
+        &[],
+    );
+    assert_eq!(
+        answer, expected,
+        "answered as git started where onevcs starts it"
+    );
+}
+
+#[test]
+fn dangling_cyclic_and_overlong_symbolic_refs_are_answered_as_git_does() {
+    let w = world();
+    let git = |args: &[&str]| w.lab.git(&w.clone, args);
+    git(&[
+        "symbolic-ref",
+        "refs/remotes/origin/HEAD",
+        "refs/remotes/origin/gone",
+    ]);
+    git(&["symbolic-ref", "refs/heads/loop-a", "refs/heads/loop-b"]);
+    git(&["symbolic-ref", "refs/heads/loop-b", "refs/heads/loop-a"]);
+    // chain-0 → chain-1 → … → chain-6 → main: seven links.
+    for link in 0..7 {
+        let next = if link == 6 {
+            "refs/heads/main".to_owned()
+        } else {
+            format!("refs/heads/chain-{}", link + 1)
+        };
+        git(&["symbolic-ref", &format!("refs/heads/chain-{link}"), &next]);
+    }
+    w.lab.answered_in_process(
+        &w.clone,
+        &queries(&[
+            "symbolic-ref --short refs/remotes/origin/HEAD".into(),
+            "symbolic-ref -q refs/remotes/origin/HEAD".into(),
+            "show-ref --verify --quiet refs/remotes/origin/HEAD".into(),
+            "symbolic-ref refs/heads/chain-3".into(),
+            "show-ref --verify --quiet refs/heads/chain-3".into(),
+        ]),
+    );
+    w.lab.left_to_git(
+        &w.clone,
+        &queries(&[
+            "rev-parse --verify origin/HEAD".into(),
+            "rev-parse --verify origin".into(),
+            "symbolic-ref refs/heads/loop-a".into(),
+            "rev-parse --verify refs/heads/loop-a".into(),
+            "symbolic-ref refs/heads/chain-0".into(),
+            "show-ref --verify --quiet refs/heads/chain-0".into(),
+        ]),
+        &[],
+    );
+}
+
+#[test]
+fn a_tag_chain_longer_than_the_reader_peels_is_left_to_git() {
+    let w = world();
+    // t2 → v1 → the first commit, and on to t9: nine tags deep.
+    let mut target = "v1".to_owned();
+    for n in 2..=9 {
+        let name = format!("t{n}");
+        w.lab
+            .git(&w.clone, &["tag", "-a", &name, "-m", &name, &target]);
+        target = name;
+    }
+    w.lab.answered_in_process(
+        &w.clone,
+        &queries(&[
+            "rev-parse --verify t3^{commit}".into(),
+            "cat-file -e t3^{commit}".into(),
+            "merge-base --is-ancestor t3 main".into(),
+        ]),
+    );
+    w.lab.left_to_git(
+        &w.clone,
+        &queries(&[
+            "rev-parse --verify t9^{commit}".into(),
+            "cat-file -e t9^{commit}".into(),
+            "merge-base --is-ancestor t9 main".into(),
+        ]),
+        &[],
+    );
+}
+
+fn borrowed_reads(w: &World) -> Vec<Vec<String>> {
+    queries(&[
+        format!("cat-file -e {}", w.second),
+        format!("cat-file -e {}^{{commit}}", w.second),
+        format!("merge-base --is-ancestor {} {}", w.first, w.second),
+        "rev-parse --verify main^{commit}".into(),
+    ])
+}
+
+#[test]
+fn alternates_the_reader_cannot_follow_exactly_are_left_to_git() {
+    let w = world();
+    let shared = w.lab.path().join("shared");
+    w.lab.git(
+        w.lab.path(),
+        &[
+            "clone",
+            "-q",
+            "--shared",
+            &path_arg(&w.origin),
+            &path_arg(&shared),
+        ],
+    );
+    let alternates = shared.join(".git/objects/info/alternates");
+    let lent = path_arg(&w.origin.join(".git/objects"));
+    w.lab.answered_in_process(&shared, &borrowed_reads(&w));
+
+    // A quoted path, which git unquotes by its own rules.
+    std::fs::write(&alternates, format!("\"{}\"\n", lent.replace('\\', "\\\\")))
+        .expect("a quoted alternate");
+    w.lab.left_to_git(&shared, &borrowed_reads(&w), &[]);
+
+    // A store that is not there, beside the one that is.
+    let nowhere = path_arg(&w.lab.path().join("nowhere/objects"));
+    std::fs::write(&alternates, format!("{lent}\n{nowhere}\n")).expect("a missing alternate");
+    w.lab.left_to_git(&shared, &borrowed_reads(&w), &[]);
+
+    // Six stores deep before the one holding the objects, and then a cycle.
+    let stores: Vec<PathBuf> = (1..=6)
+        .map(|n| w.lab.path().join(format!("store-{n}/objects")))
+        .collect();
+    for (n, store) in stores.iter().enumerate() {
+        std::fs::create_dir_all(store.join("info")).expect("a store");
+        let next = stores
+            .get(n + 1)
+            .map_or(lent.clone(), |next| path_arg(next));
+        std::fs::write(store.join("info/alternates"), format!("{next}\n")).expect("a link");
+    }
+    std::fs::write(&alternates, format!("{}\n", path_arg(&stores[0]))).expect("the chain");
+    w.lab.left_to_git(&shared, &borrowed_reads(&w), &[]);
+    std::fs::write(
+        stores[1].join("info/alternates"),
+        format!("{}\n{lent}\n", path_arg(&stores[0])),
+    )
+    .expect("a cycle");
+    w.lab.left_to_git(&shared, &borrowed_reads(&w), &[]);
+}
+
+#[test]
+fn an_ancestry_walk_longer_than_the_reader_walks_is_left_to_git() {
+    let lab = Lab::new();
+    let repo = lab.path().join("long");
+    std::fs::create_dir(&repo).expect("the repository's directory");
+    lab.git(&repo, &["init", "-q", "-b", "main"]);
+    // 2,100 commits on one line, past the reader's walk, made in one process.
+    let mut stream = String::new();
+    for n in 1..=2100_u32 {
+        stream.push_str(&format!(
+            "commit refs/heads/main\nmark :{n}\ncommitter Reads <reads@example.invalid> {} +0000\ndata 2\nc\n",
+            1_700_000_000 + n
+        ));
+        if n > 1 {
+            stream.push_str(&format!("from :{}\n", n - 1));
+        }
+        stream.push('\n');
+    }
+    let mut import = Command::new(&lab.real)
+        .args(["fast-import", "--quiet"])
+        .current_dir(&repo)
+        .stdin(Stdio::piped())
+        .spawn()
+        .expect("fast-import starts");
+    std::io::Write::write_all(
+        import.stdin.as_mut().expect("fast-import's input"),
+        stream.as_bytes(),
+    )
+    .expect("the history is written");
+    drop(import.stdin.take());
+    assert!(import.wait().expect("fast-import ends").success());
+    let root = lab.git(&repo, &["rev-parse", "main~2099"]);
+    let near = lab.git(&repo, &["rev-parse", "main~10"]);
+    lab.answered_in_process(
+        &repo,
+        &queries(&[format!("merge-base --is-ancestor {near} main")]),
+    );
+    lab.left_to_git(
+        &repo,
+        &queries(&[
+            format!("merge-base --is-ancestor {root} main"),
+            format!("merge-base --is-ancestor main {near}"),
+        ]),
+        &[],
+    );
+}
+
+#[test]
+fn a_host_without_git_refuses_a_read_the_reader_could_answer_as_it_always_did() {
+    let real = real_git();
+    let root = tempfile::tempdir().expect("a scratch root");
+    for (name, _) in std::env::vars_os() {
+        if name.to_string_lossy().starts_with("GIT_") {
+            std::env::remove_var(name);
+        }
+    }
+    let made = Command::new(&real)
+        .args(["init", "-q"])
+        .current_dir(root.path())
+        .output()
+        .expect("git runs");
+    assert!(made.status.success(), "a repository to read");
+    let empty = root.path().join("no-git");
+    std::fs::create_dir(&empty).expect("a PATH holding no git");
+    std::env::set_var("PATH", &empty);
+    assert!(
+        !Path::new(crate::git::git_program()).is_absolute(),
+        "this process finds no git"
+    );
+    // Asked of a repository the reader could read, the question is still put to git,
+    // and git's absence is the refusal every caller has always met here.
+    let refused = crate::git::run(&["rev-parse", "--is-inside-work-tree"], Some(root.path()))
+        .expect_err("with no git the read is refused");
+    assert!(refused.to_string().contains("cannot run git"), "{refused}");
+}

@@ -375,8 +375,10 @@ fn run_fed(
     }
     // The one-name reads answered from a repository opened for this call alone,
     // after every answer above and inside the checkout's turn the process would
-    // have run in.
-    if let Some(output) = cwd.filter(|_| input.is_none()).and_then(|cwd| {
+    // have run in. Only where git itself was found: on a host without it every read
+    // was git's refusal, and an answer here would move that refusal elsewhere.
+    let found = Path::new(git_program()).is_absolute();
+    if let Some(output) = cwd.filter(|_| input.is_none() && found).and_then(|cwd| {
         crate::native_reads::answer(args, cwd, env, || {
             from_outside(args, Some(cwd)).map(|(_, from)| from)
         })

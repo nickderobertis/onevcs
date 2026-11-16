@@ -64,7 +64,7 @@ pub(crate) fn answer(
     env: &[(String, String)],
     outside: impl FnOnce() -> Option<PathBuf>,
 ) -> Option<Output> {
-    if !shape_answered(args) || relocated(env) {
+    if !answered_subcommand(args) || relocated(env) {
         return None;
     }
     let layout = layout(cwd)?;
@@ -77,9 +77,10 @@ pub(crate) fn answer(
     asked.answer(args)
 }
 
-/// Whether `args` is one of the shapes answered here, decided before anything is
-/// read from disk so every other command costs nothing more than it did.
-fn shape_answered(args: &[&str]) -> bool {
+/// Whether `args` runs one of the subcommands some shape here answers, decided
+/// before anything is read from disk so every other command costs nothing more than
+/// it did; which shapes of it are answered is [`Asked::answer`]'s to decide.
+fn answered_subcommand(args: &[&str]) -> bool {
     matches!(
         args.first().copied(),
         Some("show-ref" | "symbolic-ref" | "rev-parse" | "cat-file" | "merge-base")

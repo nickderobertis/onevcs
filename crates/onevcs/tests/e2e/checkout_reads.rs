@@ -297,7 +297,10 @@ exec "$REAL_GIT" "$@"
             .env("READ_RELEASE", &self.release)
             .env("READ_LOG", fixture.world.path("reader.log"))
             .env("READ_ONCE", self.bin.join("read-once"))
-            .env("REAL_GIT", &self.real);
+            .env("REAL_GIT", &self.real)
+            // The held git child is this fixture's instrument, so every read is git's:
+            // an empty namespace refuses the in-process answers that start none.
+            .env("GIT_NAMESPACE", "");
         command
     }
 
