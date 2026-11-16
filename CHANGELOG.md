@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.67.3](https://github.com/nickderobertis/onevcs/compare/v0.67.2...v0.67.3) - 2026-11-16
+
+### Performance
+
+- *(git)* answer the engine's repeated repository reads without a git process each ([#696](https://github.com/nickderobertis/onevcs/pull/696))
+
 ## [0.67.2](https://github.com/nickderobertis/onevcs/compare/v0.67.1...v0.67.2) - 2026-11-16
 
 ### Fixed
