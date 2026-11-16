@@ -256,7 +256,7 @@ hold_reader() {
     fi
     if [ "${HOLD_READER:-}" = 1 ] && [ "$read_repo" = "$READ_CLONE" ]; then
         case "$*" in
-            "${HOLD_ARGS:-rev-parse --is-inside-work-tree}"*)
+            "${HOLD_ARGS:-merge-base}"*)
                 if [ ! -f "$READ_ONCE" ]; then
                     : > "$READ_ONCE"
                     printf 'inside\n' > "$READ_READY"
@@ -297,10 +297,7 @@ exec "$REAL_GIT" "$@"
             .env("READ_RELEASE", &self.release)
             .env("READ_LOG", fixture.world.path("reader.log"))
             .env("READ_ONCE", self.bin.join("read-once"))
-            .env("REAL_GIT", &self.real)
-            // The held git child is this fixture's instrument, so every read is git's:
-            // an empty namespace refuses the in-process answers that start none.
-            .env("GIT_NAMESPACE", "");
+            .env("REAL_GIT", &self.real);
         command
     }
 

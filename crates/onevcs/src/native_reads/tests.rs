@@ -1438,3 +1438,65 @@ fn a_path_another_user_owns_is_not_this_user_s() {
     let own = tempfile::tempdir().expect("a directory of this user's");
     assert_eq!(super::owned_by_this_user(own.path()), Some(true));
 }
+
+/// A close tears a checkout down under its identity's exclusive turn, and every read
+/// of a managed checkout takes that turn shared — the git child the journeys in
+/// `tests/e2e/checkout_reads.rs` hold is one such read. A read answered in process is
+/// held to the same turn: it waits out a teardown, starts no git, and then answers.
+/// Turns exclude one process from another, so the reader is this test binary run
+/// again as a process of its own, in the same lab.
+#[test]
+fn a_read_answered_in_process_waits_out_a_teardown_of_its_checkout() {
+    const CHILD: &str = "NATIVE_READS_TURN_READER";
+    let args = ["rev-parse", "--abbrev-ref", "HEAD"];
+    if let Some(checkout) = std::env::var_os(CHILD) {
+        let output = crate::git::run(&args, Some(Path::new(&checkout))).expect("the read runs");
+        print!("{}|{}|{}", output.status, output.stdout, output.stderr);
+        return;
+    }
+    let w = world();
+    let identity = "example.invalid/lab/turns";
+    let checkout = crate::workspace::identity_dir(identity)
+        .expect("the identity's directory")
+        .join("runs/s-turns/clone");
+    std::fs::create_dir_all(checkout.parent().expect("a run root")).expect("the run root");
+    w.lab.git(
+        w.lab.path(),
+        &[
+            "clone",
+            "-q",
+            "--no-local",
+            &path_arg(&w.origin),
+            &path_arg(&checkout),
+        ],
+    );
+    let expected = w.lab.truth(&checkout, &args, &[]);
+    let teardown = crate::checkout_reads::teardown(identity).expect("the teardown's turn");
+    let before = w.lab.starts();
+    let mut reader = Command::new(std::env::current_exe().expect("this test binary"))
+        .args([
+            "--exact",
+            "native_reads::tests::a_read_answered_in_process_waits_out_a_teardown_of_its_checkout",
+            "--nocapture",
+            "--quiet",
+        ])
+        .env(CHILD, &checkout)
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("the reader starts");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert!(
+        reader.try_wait().expect("the reader is asked").is_none(),
+        "the read waits while the teardown holds the checkout's identity"
+    );
+    drop(teardown);
+    let output = reader.wait_with_output().expect("the reader ends");
+    assert!(output.status.success(), "the reader read");
+    let printed = String::from_utf8_lossy(&output.stdout);
+    let (status, stdout, stderr) = &expected;
+    assert!(
+        printed.contains(&format!("{status}|{stdout}|{stderr}")),
+        "answered as git does: {printed:?}"
+    );
+    assert_eq!(w.lab.starts(), before, "the read was answered in process");
+}
