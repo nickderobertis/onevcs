@@ -305,6 +305,11 @@ fn answered(w: &World) -> Vec<Vec<String>> {
         format!("merge-base --is-ancestor {first} origin/main"),
         format!("merge-base --is-ancestor {first} {first}"),
         "merge-base --is-ancestor v1 main".into(),
+        // git reads a whole object name in either case.
+        format!("rev-parse --verify {}", second.to_uppercase()),
+        format!("cat-file -e {}", first.to_uppercase()),
+        format!("cat-file -e {}", MISSING.to_uppercase()),
+        format!("merge-base --is-ancestor {} {second}", first.to_uppercase()),
     ])
 }
 
@@ -951,9 +956,10 @@ fn a_repository_carrying_onevcs_s_own_settings_is_answered_without_git() {
 
 #[test]
 fn configuration_that_could_change_the_repository_format_is_read_as_not_plain() {
-    // A line this scan cannot read, or a section that could bring in more, makes a
-    // repository git's whatever it holds; the real repositories above prove the
-    // shapes git itself writes.
+    // The shapes here are ones `git config` never writes — a section and its key on
+    // one line, an unterminated header — so no repository git builds holds them; a
+    // hand-written file can. The shapes git does write are held through real
+    // repositories by `configuration_git_could_read_differently_is_left_to_git`.
     for text in [
         "[extensions]\n\tobjectFormat = sha256\n",
         "[extensions] refStorage = reftable\n",
@@ -1324,4 +1330,78 @@ fn a_host_without_git_refuses_a_read_the_reader_could_answer_as_it_always_did() 
     let refused = crate::git::run(&["rev-parse", "--is-inside-work-tree"], Some(root.path()))
         .expect_err("with no git the read is refused");
     assert!(refused.to_string().contains("cannot run git"), "{refused}");
+}
+
+#[test]
+fn configuration_git_could_read_differently_is_left_to_git() {
+    let lab = Lab::new();
+    let repo = initialised(&lab, "configured", &[]);
+    let reads = plain_reads(&lab, &repo);
+    let config = repo.join(".git/config");
+    let plain = std::fs::read_to_string(&config).expect("the configuration");
+    let included = lab.path().join("included.conf");
+    std::fs::write(&included, "[user]\n\tname = Included\n").expect("an included file");
+    let top = path_arg(&repo).replace('\\', "/");
+    for (setting, value) in [
+        ("include.path", path_arg(&included).replace('\\', "/")),
+        ("includeIf.gitdir:/nowhere/.path", "more.conf".to_owned()),
+        ("core.worktree", top),
+        ("core.repositoryformatversion", "2".to_owned()),
+    ] {
+        lab.git(&repo, &["config", setting, &value]);
+        lab.left_to_git(&repo, &reads, &[]);
+        std::fs::write(&config, &plain).expect("the configuration put back");
+    }
+    // A line git cannot parse: git refuses the repository, and so does the reader.
+    std::fs::write(&config, format!("{plain}[core\n")).expect("a broken line");
+    lab.left_to_git(&repo, &reads, &[]);
+    std::fs::write(&config, &plain).expect("the configuration put back");
+    lab.answered_in_process(&repo, &reads);
+}
+
+#[test]
+fn a_repository_this_cannot_find_the_way_git_does_is_left_to_git() {
+    let w = world();
+    let reads = queries(&[
+        "rev-parse --is-inside-work-tree".into(),
+        "show-ref --verify --quiet refs/heads/main".into(),
+        "rev-parse --verify main".into(),
+    ]);
+    // A `.git` file that is not a gitfile, and one naming nothing.
+    let pointing = w.lab.path().join("pointing");
+    std::fs::create_dir(&pointing).expect("a directory");
+    std::fs::write(pointing.join(".git"), "not a gitfile\n").expect("a malformed gitfile");
+    w.lab.left_to_git(&pointing, &reads, &[]);
+    std::fs::write(pointing.join(".git"), "gitdir: ../nowhere\n").expect("a gitfile to nothing");
+    w.lab.left_to_git(&pointing, &reads, &[]);
+    // A linked worktree whose `commondir` names a directory that is not a repository.
+    let linked = w.lab.path().join("linked");
+    w.lab.git(
+        &w.clone,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "side",
+            &path_arg(&linked),
+            "origin/main",
+        ],
+    );
+    w.lab.answered_in_process(&linked, &reads);
+    let commondir = w.clone.join(".git/worktrees/linked/commondir");
+    std::fs::write(&commondir, "../../../nowhere\n").expect("a commondir to nothing");
+    w.lab.left_to_git(&linked, &reads, &[]);
+    // A directory that does not exist is git's to refuse; nothing is answered for it.
+    let gone = w.lab.path().join("gone");
+    let before = w.lab.starts();
+    assert!(
+        crate::git::run(&["rev-parse", "--is-inside-work-tree"], Some(&gone)).is_err(),
+        "a read from nowhere is refused"
+    );
+    assert_eq!(
+        w.lab.starts(),
+        before,
+        "git could not even be started there"
+    );
 }

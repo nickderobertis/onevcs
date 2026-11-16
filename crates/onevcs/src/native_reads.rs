@@ -166,6 +166,9 @@ fn layout(cwd: &Path) -> Option<Layout> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
+        // git refuses a repository another user owns unless `safe.directory` says
+        // otherwise; that is left to git. No journey makes one: it needs a second
+        // account and a privileged `chown`, which the suite's hosts do not grant.
         let owned = top.as_deref().unwrap_or(&git_dir);
         // SAFETY: geteuid takes nothing and cannot fail.
         if std::fs::metadata(owned).ok()?.uid() != unsafe { libc::geteuid() } {
@@ -208,11 +211,9 @@ fn plain_name(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'_' | b'-' | b'.'))
 }
 
-fn full_hex(name: &str) -> bool {
-    name.len() == 40
-        && name
-            .bytes()
-            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+/// A whole SHA-1 object name, in either case: git reads one as the object itself.
+fn full_object_id(name: &str) -> bool {
+    name.len() == 40 && name.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// A name git might read as an abbreviated object name.
@@ -228,7 +229,6 @@ fn described(name: &str) -> bool {
     })
 }
 
-/// `NAME` and `NAME^{commit}`, split.
 fn peeled(spec: &str) -> (&str, bool) {
     match spec.strip_suffix("^{commit}") {
         Some(name) => (name, true),
@@ -332,7 +332,6 @@ fn split<'a>(rest: &[&'a str], allowed: &[&str]) -> Option<(Vec<&'a str>, Vec<&'
         .then_some((flags, names))
 }
 
-/// One read, in the repository `layout` names.
 struct Asked<'a> {
     cwd: &'a Path,
     outside: Option<&'a Path>,
@@ -443,7 +442,7 @@ impl Asked<'_> {
         if !plain_name(name) || short_hex(name) || described(name) || name == "FETCH_HEAD" {
             return None;
         }
-        let hex = full_hex(name);
+        let hex = full_object_id(name);
         let mut found = None;
         let mut matches = 0;
         for (index, rule) in RULES.iter().enumerate() {
@@ -629,7 +628,7 @@ impl Asked<'_> {
         } else {
             // A miss is an answer only for a name that is the object itself: a ref
             // naming an object the store lacks is a damaged repository, and git's.
-            full_hex(name).then(|| reply(1, "", ""))
+            full_object_id(name).then(|| reply(1, "", ""))
         }
     }
 
