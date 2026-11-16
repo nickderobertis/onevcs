@@ -373,6 +373,19 @@ fn run_fed(
         reads::remember(args, cwd, env, &output);
         return Ok(output);
     }
+    // The one-name reads answered from a repository opened for this call alone,
+    // after every answer above and inside the checkout's turn the process would
+    // have run in. Only where git itself was found: on a host without it every read
+    // was git's refusal, and an answer here would move that refusal elsewhere.
+    let found = Path::new(git_program()).is_absolute();
+    if let Some(output) = cwd.filter(|_| input.is_none() && found).and_then(|cwd| {
+        crate::native_reads::answer(args, cwd, env, || {
+            from_outside(args, Some(cwd)).map(|(_, from)| from)
+        })
+    }) {
+        reads::remember(args, cwd, env, &output);
+        return Ok(output);
+    }
     let hooked = runs_repository_hooks(args);
     // A command that runs the repository's hooks reaches them through shims that
     // hand each hook the environment of the tree it starts in — see [`HookShims`].

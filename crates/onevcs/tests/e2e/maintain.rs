@@ -1724,7 +1724,10 @@ exit "$result"
                 command
                     .env("PATH", std::env::join_paths(paths).expect("wrapper PATH"))
                     .env("ONEVCS_REAL_GIT", &real_git)
-                    .env("ONEVCS_DECLARATION_CHECKOUT", &fixture.checkout);
+                    .env("ONEVCS_DECLARATION_CHECKOUT", &fixture.checkout)
+                    // The wrapper denies search after a read git runs, so every read is
+                    // git's: an empty namespace refuses the in-process answers.
+                    .env("GIT_NAMESPACE", "");
             } else {
                 std::fs::set_permissions(&document, std::fs::Permissions::from_mode(0o000))
                     .expect("deny document reads");

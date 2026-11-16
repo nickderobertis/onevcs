@@ -256,7 +256,7 @@ hold_reader() {
     fi
     if [ "${HOLD_READER:-}" = 1 ] && [ "$read_repo" = "$READ_CLONE" ]; then
         case "$*" in
-            "${HOLD_ARGS:-rev-parse --is-inside-work-tree}"*)
+            "${HOLD_ARGS:-merge-base}"*)
                 if [ ! -f "$READ_ONCE" ]; then
                     : > "$READ_ONCE"
                     printf 'inside\n' > "$READ_READY"
