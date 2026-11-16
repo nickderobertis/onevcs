@@ -18,7 +18,8 @@ use crate::cost::Counting;
 use crate::honesty::inhabit;
 use crate::lifecycle::{local_direct, Fixture};
 
-/// The steps an engine run takes over the session between opening and closing it.
+/// More than one, so a read every step repeats is counted each time it starts git
+/// rather than once.
 const STEPS: usize = 3;
 
 /// The `git` processes the steps and the close start on this build. On the commit
