@@ -14,7 +14,9 @@ use std::path::PathBuf;
 
 use serde_json::{json, Value};
 
-use super::decisions_support::{counting_git, onevcs_digest, run, set, with_shim, Host};
+use super::decisions_support::{
+    counting_git, onevcs_digest, optional_locks_while, run, set, with_shim, Host,
+};
 use super::exclusive;
 
 #[path = "../../src/workspace_process_start.rs"]
@@ -404,6 +406,142 @@ fn a_worked_copy_that_changes_between_reads_is_read_afresh() {
     let (rows, _) = host.read();
     assert_eq!(rows, host.uncached(), "the worktree left the branch");
     assert_ne!(reason(&rows), json!("dirty-worktree"));
+}
+
+/// A worktree's index file's stamp: what moves when git writes it.
+fn index_stamp(worktree: &std::path::Path) -> (std::time::SystemTime, u64) {
+    use std::os::unix::fs::MetadataExt;
+    let index = worktree.join(run(worktree, &["rev-parse", "--git-path", "index"]));
+    let metadata = std::fs::metadata(index).unwrap();
+    (metadata.modified().unwrap(), metadata.ino())
+}
+
+#[test]
+fn a_status_read_takes_no_optional_locks_unless_the_operator_set_their_own() {
+    let _exclusive = exclusive();
+    let (host, worktrees) = host_with_worked_copies(1);
+    // Stamped ahead of every read here, so no answer is kept and each read asks git.
+    std::fs::File::options()
+        .write(true)
+        .open(worktrees[0].join("seed.txt"))
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(3600))
+        .unwrap();
+    for (setting, reaches) in [
+        (None, "0"),
+        (Some("1"), "1"),
+        (Some("true"), "true"),
+        (Some("0"), "0"),
+        (Some(""), ""),
+    ] {
+        match setting {
+            Some(value) => std::env::set_var("GIT_OPTIONAL_LOCKS", value),
+            None => std::env::remove_var("GIT_OPTIONAL_LOCKS"),
+        }
+        let mut rows = Vec::new();
+        let started = optional_locks_while(&host, || rows = host.read().0);
+        let statuses: Vec<_> = started
+            .iter()
+            .filter(|(_, args)| args.starts_with("status"))
+            .collect();
+        assert!(
+            !statuses.is_empty(),
+            "the operator's setting {setting:?}: the read asked git about the worktree: {started:?}"
+        );
+        for (carried, args) in statuses {
+            assert_eq!(
+                carried.as_deref(),
+                Some(reaches),
+                "the operator's setting {setting:?} reaches `git {args}` as it was set"
+            );
+        }
+        assert_eq!(rows, host.uncached(), "{setting:?}");
+    }
+    std::env::remove_var("GIT_OPTIONAL_LOCKS");
+}
+
+#[test]
+fn a_read_whose_optional_locks_let_git_refresh_the_index_still_answers_exactly() {
+    let _exclusive = exclusive();
+    std::env::set_var("GIT_OPTIONAL_LOCKS", "1");
+    let (host, worktrees) = host_with_worked_copies(2);
+    let worktree = &worktrees[0];
+    let tracked = worktree.join("seed.txt");
+    let reason = |rows: &[Value]| retirement_reason(rows, "work/w0");
+    settle();
+    let (rows, _) = host.read();
+    assert_eq!(rows, host.uncached(), "nothing moved");
+    let not_dirty = reason(&rows);
+    assert_ne!(not_dirty, json!("dirty-worktree"));
+
+    // A tracked file rewritten with what it already held: its stat moves and its content
+    // does not, so a git allowed optional locks refreshes the index as it reads.
+    let steps: Vec<Step<'_>> = vec![
+        (
+            "a tracked file rewritten unchanged",
+            Box::new(|| {
+                let held = std::fs::read(&tracked).unwrap();
+                std::fs::write(&tracked, held).unwrap();
+            }),
+            "clean",
+        ),
+        (
+            "a tracked file edited",
+            Box::new(|| std::fs::write(&tracked, "edited\n").unwrap()),
+            "dirty-worktree",
+        ),
+        (
+            "the edit put back by hand",
+            Box::new(|| {
+                let committed = run(worktree, &["show", "HEAD:seed.txt"]);
+                std::fs::write(&tracked, format!("{committed}\n")).unwrap();
+            }),
+            "clean",
+        ),
+    ];
+    for (step, change, expected) in steps {
+        settle();
+        host.read();
+        change();
+        let before = index_stamp(worktree);
+        let (rows, _) = host.read();
+        // Only a file whose content matches the index is refreshed in it; an edited one
+        // stays stale there, whoever reads it.
+        if expected == "clean" {
+            assert_ne!(
+                index_stamp(worktree),
+                before,
+                "{step}: the operator's setting let the read refresh the index"
+            );
+        }
+        assert_eq!(rows, host.uncached(), "{step}");
+        let answered = reason(&rows);
+        if expected == "clean" {
+            assert_eq!(answered, not_dirty, "{step}");
+        } else {
+            assert_eq!(answered, json!(expected), "{step}");
+        }
+        // Every read after it answers the same, and once git stops rewriting the index —
+        // an entry refreshed in the second the index was written is racily clean, so the
+        // next read hashes and writes it again — the answer is kept and git is asked no
+        // more.
+        let mut asked = Vec::new();
+        for _ in 0..3 {
+            settle();
+            let (again, statuses) = counted_read(&host, step);
+            assert_eq!(again, rows, "{step}, then nothing moved");
+            asked.push(statuses);
+            if statuses == 0 {
+                break;
+            }
+        }
+        assert_eq!(
+            asked.last(),
+            Some(&0),
+            "{step}: the answer came to be kept: {asked:?}"
+        );
+    }
+    std::env::remove_var("GIT_OPTIONAL_LOCKS");
 }
 
 #[test]
