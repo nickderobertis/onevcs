@@ -163,23 +163,30 @@ fn layout(cwd: &Path) -> Option<Layout> {
     {
         return None;
     }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        // git refuses a repository another user owns unless `safe.directory` says
-        // otherwise; that is left to git. No journey makes one: it needs a second
-        // account and a privileged `chown`, which the suite's hosts do not grant.
-        let owned = top.as_deref().unwrap_or(&git_dir);
-        // SAFETY: geteuid takes nothing and cannot fail.
-        if std::fs::metadata(owned).ok()?.uid() != unsafe { libc::geteuid() } {
-            return None;
-        }
+    if !owned_by_this_user(top.as_deref().unwrap_or(&git_dir))? {
+        return None;
     }
     Some(Layout {
         git_dir,
         common_dir,
         top,
     })
+}
+
+/// Whether this process's user owns `path`. git refuses a repository another user
+/// owns unless `safe.directory` admits it, and libgit2 may read `safe.directory`
+/// from a file git does not, so such a repository is git's. On Windows libgit2's own
+/// owner check stands in, which refuses where it cannot match git.
+#[cfg(unix)]
+fn owned_by_this_user(path: &Path) -> Option<bool> {
+    use std::os::unix::fs::MetadataExt;
+    // SAFETY: geteuid takes nothing and cannot fail.
+    Some(std::fs::metadata(path).ok()?.uid() == unsafe { libc::geteuid() })
+}
+
+#[cfg(not(unix))]
+fn owned_by_this_user(_path: &Path) -> Option<bool> {
+    Some(true)
 }
 
 /// git's `ref_rev_parse_rules`, in order: the prefix and suffix each turns a short
@@ -709,11 +716,13 @@ impl Objects {
             let path = directory.join(fan).join(rest);
             match std::fs::File::open(&path) {
                 Ok(file) => {
-                    let mut stream = flate2::read::ZlibDecoder::new(file);
+                    let length = file.metadata().ok()?.len();
+                    let mut stream =
+                        flate2::bufread::ZlibDecoder::new(std::io::BufReader::new(file));
                     std::io::copy(&mut stream, &mut std::io::sink()).ok()?;
-                    // Bytes after the stream's end are a file git refuses too.
-                    let mut after = [0_u8; 1];
-                    if stream.into_inner().read(&mut after).ok()? != 0 {
+                    // Bytes after the stream's end are a file git refuses too; the
+                    // decoder reads ahead, so what it consumed is what is counted.
+                    if stream.total_in() != length {
                         return None;
                     }
                 }

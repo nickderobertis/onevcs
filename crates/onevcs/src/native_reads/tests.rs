@@ -1405,3 +1405,36 @@ fn a_repository_this_cannot_find_the_way_git_does_is_left_to_git() {
         "git could not even be started there"
     );
 }
+
+#[test]
+fn a_loose_object_with_bytes_after_its_stream_is_left_to_git() {
+    let w = world();
+    let head = &w.second;
+    let path = loose(&w.origin, head);
+    let mut bytes = std::fs::read(&path).expect("the loose object");
+    bytes.extend_from_slice(b"bytes after the object's end");
+    make_writable(&path);
+    std::fs::write(&path, &bytes).expect("bytes appended to the object");
+    w.lab.left_to_git(&w.origin, &reads_needing(&w, head), &[]);
+}
+
+/// A repository another user owns is git's: git refuses it unless `safe.directory`
+/// admits it. Declined as a journey because making one needs a second account and a
+/// privileged `chown`, which no host this suite runs on grants; held instead at the
+/// check `layout` makes, against a path the host's root user owns.
+#[cfg(unix)]
+#[test]
+fn a_path_another_user_owns_is_not_this_user_s() {
+    use std::os::unix::fs::MetadataExt;
+    let root_owned = Path::new("/");
+    assert_eq!(
+        std::fs::metadata(root_owned).expect("/").uid(),
+        0,
+        "/ is root's"
+    );
+    // SAFETY: geteuid takes nothing and cannot fail.
+    let this_user = unsafe { libc::geteuid() };
+    assert_eq!(super::owned_by_this_user(root_owned), Some(this_user == 0));
+    let own = tempfile::tempdir().expect("a directory of this user's");
+    assert_eq!(super::owned_by_this_user(own.path()), Some(true));
+}
