@@ -324,6 +324,11 @@ fn beside() -> Vec<Vec<String>> {
         "rev-parse --short HEAD".into(),
         "show-ref --heads".into(),
         "symbolic-ref -q --no-recurse refs/remotes/origin/HEAD".into(),
+        // git reads its arguments in order: a flag after a name is git's to word.
+        "rev-parse HEAD --verify".into(),
+        "rev-parse main --verify --quiet".into(),
+        "rev-parse missing --verify".into(),
+        "symbolic-ref HEAD --short".into(),
         "log --format=%H -1 origin/main --".into(),
     ])
 }

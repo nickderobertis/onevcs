@@ -329,14 +329,18 @@ enum Held {
     Dangling,
 }
 
-/// The flags of a read, split from the names it asks about; `None` where a flag
-/// is not one of `allowed`.
+/// The flags of a read, split from the names after them; `None` where a flag is not
+/// one of `allowed`, or comes after a name — git reads its arguments in order, so
+/// `rev-parse HEAD --verify` prints HEAD before refusing, which only git words.
 fn split<'a>(rest: &[&'a str], allowed: &[&str]) -> Option<(Vec<&'a str>, Vec<&'a str>)> {
-    let (flags, names): (Vec<&str>, Vec<&str>) = rest.iter().partition(|a| a.starts_with('-'));
-    flags
+    let named = rest
         .iter()
-        .all(|flag| allowed.contains(flag))
-        .then_some((flags, names))
+        .position(|arg| !arg.starts_with('-'))
+        .unwrap_or(rest.len());
+    let (flags, names) = rest.split_at(named);
+    (flags.iter().all(|flag| allowed.contains(flag))
+        && names.iter().all(|name| !name.starts_with('-')))
+    .then(|| (flags.to_vec(), names.to_vec()))
 }
 
 struct Asked<'a> {
