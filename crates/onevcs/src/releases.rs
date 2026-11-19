@@ -90,9 +90,7 @@ pub(crate) struct ReleaseChangeKey {
 /// The release-targets file read for one optional key alone: each rule's `installs`,
 /// the registry-qualified artifacts the repositories it matches run.
 ///
-/// Read beside [`ReleasesFile`] for the reason [`ReleaseChangeRules`] is: the key is
-/// additive, [`ReleaseRule`] stays as consumers construct it, and the rule a key belongs
-/// to is the one at the same position. Each entry is held to the identifier grammar a
+/// Read as [`ReleaseChangeRules`] is. Each entry is held to the identifier grammar a
 /// producer's declaration is, so a misspelt artifact is refused where it is read rather
 /// than compared, never matching, against every producer's.
 #[derive(Debug, Clone, Deserialize)]

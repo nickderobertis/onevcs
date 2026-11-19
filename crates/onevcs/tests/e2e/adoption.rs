@@ -1293,7 +1293,6 @@ fn a_published_wait_on_a_default_another_repository_installs_is_default_taken() 
             Completes(true, Some("npm")),
             "published",
         ),
-        // A producer with no default is the published-no-target rule's alone.
     ] {
         ask_both(&host, case, expect, rung);
     }
@@ -1315,6 +1314,23 @@ fn a_published_wait_on_a_default_another_repository_installs_is_default_taken() 
         &host,
         (p, c, &["--adoption", "published"]),
         Never(&["uninstalled", "default-taken"]),
+        "published",
+    );
+
+    // The consumer installing the default too does not answer it: another repository's
+    // rule still installs it, so the default says nothing about this consumer.
+    host.releases(
+        "fast",
+        &[
+            (&host.producer, "    default_target: npm\n"),
+            (&host.direct, "    installs: [npm:producer-cli]\n"),
+            (&host.consumer, "    installs: [npm:producer-cli]\n"),
+        ],
+    );
+    ask_both(
+        &host,
+        (p, c, &["--adoption", "published"]),
+        Never(&["default-taken"]),
         "published",
     );
 
