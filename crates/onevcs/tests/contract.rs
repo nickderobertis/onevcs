@@ -11226,6 +11226,7 @@ fn the_adoption_amendment_states_the_surface_the_crate_exports() {
         "`uninstalled`",
         "`default-taken`",
         "installs: [npm:onetaskgraph-cli, pypi:onejudge-cli]",
+        "**`rule` is an open set within version 1.**",
         "adds an `installs` field",
         "exits `0` for `completes`, `1` for `never-completes` and `3` for `unanswered`",
     ] {

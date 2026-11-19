@@ -1490,3 +1490,71 @@ fn the_first_matching_rule_declares_a_consumers_installs_and_no_matching_rule_is
     let document: Value = serde_json::from_str(&stdout).expect("one JSON document");
     assert!(document.get("installs").is_none(), "{document:#}");
 }
+
+/// The ids version 1 carried before `installs` existed.
+const V1_FIRST_RULES: [&str; 2] = ["published-no-target", "consumes-undeclared-target"];
+
+/// The whole of what a version 1 reader may rely on: the version and the state. No
+/// `deny_unknown_fields` and no `rule`, because `rule` is an open set within version 1.
+#[derive(serde::Deserialize)]
+struct RoutedOnState {
+    schema_version: u32,
+    state: onevcs::AdoptionState,
+}
+
+/// The two installs rules stay inside version 1: a host declaring no
+/// `installs` never prints either, and a reader routing on `state` reads a verdict
+/// carrying a rule id it does not know — one of these, or one a later build adds.
+#[test]
+fn version_1_verdicts_carry_a_new_rule_only_where_installs_is_declared_and_route_on_state() {
+    let host = Host::new();
+    let (producer, consumer) = (spelled(&host.producer), spelled(&host.consumer));
+
+    // Two installs-free documents, with and without a producer default, over every case.
+    let (direct, producing): (&Path, &Path) = (&host.direct, &host.producer);
+    for document in [
+        &[(direct, "    adoption: fast\n")][..],
+        &[
+            (direct, "    adoption: fast\n"),
+            (producing, "    default_target: npm\n"),
+        ][..],
+    ] {
+        host.releases("published", document);
+        for (from, by, args) in cases(&host) {
+            let (_, printed) = host.check(&from, &by, &args);
+            assert_eq!(printed["schema_version"], 1, "{printed:#}");
+            for rule in rules(&printed) {
+                assert!(V1_FIRST_RULES.contains(&rule), "{rule} on {printed:#}");
+            }
+        }
+    }
+
+    // Declaring installs is what brings the new ids, still at version 1.
+    host.releases(
+        "published",
+        &[
+            (&host.producer, "    default_target: npm\n"),
+            (&host.direct, "    installs: [npm:producer-cli]\n"),
+            (&host.consumer, "    installs: [crate:producer]\n"),
+        ],
+    );
+    let (code, printed) = host.check(&producer, &consumer, &[]);
+    assert_eq!(code, 1);
+    assert_eq!(printed["schema_version"], 1);
+    assert_eq!(rules(&printed), ["uninstalled", "default-taken"]);
+
+    // A reader that knows only the first two ids — or none — still routes it, and so
+    // does one meeting an id no build writes yet.
+    let mut future = printed.clone();
+    future["refusals"][0]["rule"] = json!("a-rule-no-build-writes-yet");
+    for document in [printed, future] {
+        let routed: RoutedOnState =
+            serde_json::from_value(document.clone()).expect("a version 1 reader reads it");
+        assert_eq!(routed.schema_version, onevcs::ADOPTION_VERDICT_VERSION);
+        assert_eq!(
+            routed.state,
+            onevcs::AdoptionState::NeverCompletes,
+            "{document:#}"
+        );
+    }
+}

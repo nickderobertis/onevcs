@@ -7321,6 +7321,13 @@ producer resolves it — and `null` otherwise; `state` is `completes`, `never-co
 or `unanswered`; `refusals` is empty unless `never-completes`, and `unanswered` is
 `null` unless `unanswered`.
 
+**`rule` is an open set within version 1.** `uninstalled` and `default-taken` joined it
+without a version bump, because no field moved and a host that declares no `installs`
+never writes either — its verdicts are the documents version 1 always printed. So a
+reader routes on `state`, and must accept a refusal whose `rule` it does not know rather
+than refuse the verdict; the generated schema enumerates the ids this build writes, and
+is not a promise that no later build of version 1 adds one.
+
 The command line is its rendering:
 
 ```
