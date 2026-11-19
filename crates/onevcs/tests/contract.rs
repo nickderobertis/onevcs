@@ -11213,7 +11213,7 @@ fn the_adoption_amendment_states_the_surface_the_crate_exports() {
         "pub const ADOPTION_VERDICT_VERSION: u32 = 1;",
         "pub enum AdoptionState { Completes, NeverCompletes, Unanswered }",
         "pub struct AdoptionRefusal { pub rule: AdoptionRule, pub reason: String }",
-        "pub enum AdoptionRule { PublishedNoTarget, ConsumesUndeclaredTarget }",
+        "pub enum AdoptionRule { PublishedNoTarget, ConsumesUndeclaredTarget, Uninstalled, DefaultTaken }",
         "pub enum AdoptionSource { Rule { index: usize, file: PathBuf }, Default { file: PathBuf }, BuiltIn }",
     ] {
         assert!(declarations.contains(declared), "{declared}");
@@ -11223,6 +11223,10 @@ fn the_adoption_amendment_states_the_surface_the_crate_exports() {
          [--consumes <TARGET>] [--policy <MERGE_POLICY>] [--json]",
         "`published-no-target`",
         "`consumes-undeclared-target`",
+        "`uninstalled`",
+        "`default-taken`",
+        "installs: [npm:onetaskgraph-cli, pypi:onejudge-cli]",
+        "adds an `installs` field",
         "exits `0` for `completes`, `1` for `never-completes` and `3` for `unanswered`",
     ] {
         assert!(section.contains(phrase), "{phrase}");
@@ -11249,6 +11253,8 @@ fn the_adoption_amendment_states_the_surface_the_crate_exports() {
     let _ = |rule: onevcs::AdoptionRule| match rule {
         onevcs::AdoptionRule::PublishedNoTarget => (),
         onevcs::AdoptionRule::ConsumesUndeclaredTarget => (),
+        onevcs::AdoptionRule::Uninstalled => (),
+        onevcs::AdoptionRule::DefaultTaken => (),
     };
     let _ = |source: onevcs::AdoptionSource| match source {
         onevcs::AdoptionSource::Rule { index: _, file: _ } => (),
@@ -11348,6 +11354,8 @@ fn the_adoption_amendment_states_the_surface_the_crate_exports() {
             onevcs::AdoptionRule::ConsumesUndeclaredTarget,
             "consumes-undeclared-target",
         ),
+        (onevcs::AdoptionRule::Uninstalled, "uninstalled"),
+        (onevcs::AdoptionRule::DefaultTaken, "default-taken"),
     ] {
         assert_eq!(serde_json::to_value(rule).expect("a word"), json!(spelled));
         assert_eq!(rule.as_str(), spelled);

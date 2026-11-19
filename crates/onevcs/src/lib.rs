@@ -818,7 +818,7 @@ pub fn adoption_for(repo: &str) -> Result<Adoption> {
 /// host's own configuration — the producer's resolved targets and `default_target`
 /// (the same three layers [`release_targets`] resolves), the adoption rungs, and the
 /// consumer's resolved publication policy — so an engine or a host asks this rather
-/// than restating any rule over them. Two rules, each refusing by its
+/// than restating any rule over them. Four rules, each refusing by its
 /// [`AdoptionRule`] id with a reason naming the consumer, the producer and what to
 /// change:
 ///
@@ -826,7 +826,16 @@ pub fn adoption_for(repo: &str) -> Result<Adoption> {
 ///   producer, the query names no `consumes`, and the producer resolves no
 ///   `default_target`;
 /// - `consumes-undeclared-target`: the `consumes` names a target the producer does not
-///   resolve.
+///   resolve;
+/// - `uninstalled`: the consumer's rule in the release-targets file declares
+///   `installs`, the producer releases, and the target the wait resolves to is an
+///   artifact that list does not name;
+/// - `default-taken`: the effective rung is `published`, no `consumes` is named, and
+///   the producer's resolved `default_target` is an artifact a rule *not* matching the
+///   consumer declares it `installs`.
+///
+/// A target's artifact is the `id` the producer's own declaration gives it; a target
+/// only this host names has none, and neither `installs` rule refuses a wait on it.
 ///
 /// A producer *releases* when it is a different identity from the consumer and
 /// resolves at least one target; the first rule applies only behind one, and the

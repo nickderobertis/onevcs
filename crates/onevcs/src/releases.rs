@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use crate::declaration::{Declaration, InstructionTemplate};
+use crate::declaration::{Declaration, InstructionTemplate, RegistryId};
 use crate::rules::RuleMatch;
 
 /// The version of the release-targets file this build writes, and the oldest it
@@ -85,6 +85,28 @@ pub(crate) struct ReleaseChangeRule {
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct ReleaseChangeKey {
     pub(crate) head: HeadGlob,
+}
+
+/// The release-targets file read for one optional key alone: each rule's `installs`,
+/// the registry-qualified artifacts the repositories it matches run.
+///
+/// Read beside [`ReleasesFile`] for the reason [`ReleaseChangeRules`] is: the key is
+/// additive, [`ReleaseRule`] stays as consumers construct it, and the rule a key belongs
+/// to is the one at the same position. Each entry is held to the identifier grammar a
+/// producer's declaration is, so a misspelt artifact is refused where it is read rather
+/// than compared, never matching, against every producer's.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct InstallsRules {
+    #[serde(default)]
+    pub(crate) repositories: Vec<InstallsRule>,
+}
+
+/// One rule's `installs`, where it carries one. Absent and `[]` are two statements: the
+/// first says nothing about what the repository runs, the second that it runs nothing.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct InstallsRule {
+    #[serde(default)]
+    pub(crate) installs: Option<Vec<RegistryId>>,
 }
 
 /// A glob over branch names — `*` any run of characters, `?` exactly one, every other

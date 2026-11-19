@@ -7202,7 +7202,7 @@ pub struct AdoptionVerdict { pub schema_version: u32, pub consumer: String, pub 
                              pub refusals: Vec<AdoptionRefusal>, pub unanswered: Option<String> }
 pub enum AdoptionState { Completes, NeverCompletes, Unanswered }
 pub struct AdoptionRefusal { pub rule: AdoptionRule, pub reason: String }
-pub enum AdoptionRule { PublishedNoTarget, ConsumesUndeclaredTarget }
+pub enum AdoptionRule { PublishedNoTarget, ConsumesUndeclaredTarget, Uninstalled, DefaultTaken }
 
 // `RulesCheck` gains one field, `pub release: ReleaseFacts`: the facts `rules check` prints.
 pub struct ReleaseFacts { pub adoption: Option<ResolvedAdoption>,
@@ -7221,7 +7221,7 @@ exactly as `adoption_for` resolves them; `consumes` to the producer's `default_t
 `consumer_policy` to the consumer repository's resolved `publication`.
 
 A producer **releases** when it is a different identity from the consumer and resolves
-at least one target through the three layers `release_targets` resolves. Two rules,
+at least one target through the three layers `release_targets` resolves. Four rules,
 each refusing by its id with a `reason` naming the consumer, the producer and what to
 change:
 
@@ -7230,12 +7230,53 @@ change:
   nothing can ever release the hold.
 - `consumes-undeclared-target` — the `consumes` names a target the producer does not
   resolve; the reason lists the targets it does resolve.
+- `uninstalled` — the consumer's rule declares `installs` (below), the producer releases,
+  and the target the wait resolves to (the `consumes`, else the producer's
+  `default_target`) is an artifact that list does not name: no dispatch of the consumer
+  ever runs it. The reason names the artifact and the producer's targets the consumer
+  does install, to name as its `consumes`.
+- `default-taken` — the effective rung is `published`, no `consumes` is named, the
+  producer releases and its `default_target` resolves, and that target's artifact is in
+  the `installs` of a rule that does not match the consumer: the default serves another
+  repository's install and says nothing about what this consumer consumes. The reason
+  names the artifact and asks for a `consumes` target. It applies whatever the
+  consumer's own rule declares, and beside `uninstalled` where both hold.
 
 The first applies only behind a releasing producer. The `consumes` rule applies
 whenever a `consumes` is named, a producer that releases nothing included, because a
 wait on a target nobody publishes is no less endless for it. With no `consumes` named, a
 producer that is the consumer's own identity or resolves no target answers `completes`
 with `releasing: false`. Refusals are listed in the order above.
+
+**`installs`: what a consumer runs.** A rule of `$ONEVCS_HOME/releases.yml` (the
+`repositories:` list) may carry an optional key beside its `match:`:
+
+```yaml
+repositories:
+  - match: {name: onepipeline}
+    installs: [npm:onetaskgraph-cli, pypi:onejudge-cli]
+```
+
+Each entry is an artifact id in the `<registry>:<package>` form a producer's
+`release-targets.toml` gives a target's `id`, held to that grammar where it is read. The
+key declares that the repositories the rule matches run exactly those artifacts — a
+dispatch of that consumer runs nothing it does not list, so `installs: []` runs nothing
+and an absent key states nothing. The rule a repository's `installs` comes from is the
+one that matches it first, as for every key; a later rule that also matches it is
+neither its own nor another repository's. `ReleaseRule` does not change and the file's
+`version` stays `1`; an older `onevcs` ignores the key. A file that declares no
+`installs` gives every verdict it gave before the key existed.
+
+A target's **artifact id** is the `id` its producer's own declaration gives it, where
+that declared target is what resolved — declared, or overridden by this host under the
+same name. A target only this host names has no id, and neither installs rule refuses a
+wait on one: an id nobody stated cannot be compared. An `installs` entry that is not an
+identifier answers `unanswered` from this check, as any release-targets file that does
+not read does.
+
+`onevcs release targets <repo> --json` adds an `installs` field, the list as declared,
+when the rule that matches the repository declares one, and omits it otherwise; the
+text rendering ends with an `installs:` line under the same condition.
 
 **The consumer's publication policy decides no rule.** A consumer whose publication
 opens no change request (`local-direct`) completes under either adoption and with or
@@ -7249,9 +7290,9 @@ the query states none, so a consumer whose rules file does not read answers
 host has not registered, a release-targets file that does not read, a producer whose own
 `release-targets.toml` this build cannot read, and a producer whose `default_target`
 names no target it resolves each answer `unanswered` with the reason. `Err` is reserved
-for nothing a configuration can cause. Which artifacts one host installs, and whether a
-repository is that host's own, are facts this crate does not hold, so no rule here reads
-them: those stay the host's.
+for nothing a configuration can cause. Which artifacts a consumer installs is this
+crate's to read once a host declares it in `installs`; whether a repository is a host's
+own is a fact this crate does not hold, so no rule here reads it.
 
 `AdoptionVerdict` is declared once, in the crate, and its JSON form is its `Serialize`
 — the `JsonSchema` derived beside it is that document's schema, and the journeys

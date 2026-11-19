@@ -11,16 +11,21 @@
 //! target are each [`AdoptionState::Unanswered`] carrying the reason, because a plan
 //! refused for what this host cannot see is a plan refused that would have run.
 //!
-//! What stays out is anything this crate does not hold: which artifacts one host
-//! installs, and whether a repository is that host's own, are the host's rules.
+//! Which artifacts a consumer runs is this crate's too once a host states it: a rule of
+//! `$ONEVCS_HOME/releases.yml` may declare `installs`, and the two rules over it
+//! (`uninstalled`, `default-taken`) are stated here beside the others. A target whose
+//! artifact id cannot be read — one only this host names, so no declaration gives it an
+//! id — is never refused by either: an id nobody stated cannot be compared.
+//! Whether a repository is a host's own stays that host's rule.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::declaration::RegistryId;
 use crate::error::Result;
 use crate::registry::Registry;
 use crate::release;
-use crate::releases::{Adoption, RepositoryReleases, TargetName};
+use crate::releases::{Adoption, RepositoryReleases, TargetName, TargetSource};
 use crate::rules::MergePolicy;
 use crate::{policy, store};
 
@@ -127,6 +132,13 @@ pub enum AdoptionRule {
     PublishedNoTarget,
     /// The consumer names a target the producer does not resolve.
     ConsumesUndeclaredTarget,
+    /// The consumer's rule declares `installs`, and the target its wait resolves to is
+    /// an artifact that list does not name: no dispatch of the consumer ever runs it.
+    Uninstalled,
+    /// A `published` consumer names no target, and the producer's `default_target` is an
+    /// artifact a rule not matching the consumer declares it installs: the default serves
+    /// another repository's install and says nothing about this consumer's.
+    DefaultTaken,
 }
 
 impl AdoptionRule {
@@ -135,6 +147,8 @@ impl AdoptionRule {
         match self {
             AdoptionRule::PublishedNoTarget => "published-no-target",
             AdoptionRule::ConsumesUndeclaredTarget => "consumes-undeclared-target",
+            AdoptionRule::Uninstalled => "uninstalled",
+            AdoptionRule::DefaultTaken => "default-taken",
         }
     }
 }
@@ -166,6 +180,7 @@ impl std::fmt::Display for AdoptionState {
 struct Consumer {
     identity: String,
     adoption: Adoption,
+    installs: release::Installs,
 }
 
 /// Answer one query against this host's state root.
@@ -234,7 +249,7 @@ pub(crate) fn check(query: &AdoptionQuery) -> Result<AdoptionVerdict> {
     Ok(decide(query, &consumer, &producer))
 }
 
-/// The consumer's identity and its effective rung.
+/// The consumer's identity, its effective rung, and what the `installs` keys say of it.
 ///
 /// No rule reads the consumer's publication any more, but where the query states no
 /// node-level policy the repository's is still resolved, so a rules file that does not
@@ -250,6 +265,7 @@ fn consumer(registry: &Registry, query: &AdoptionQuery) -> Result<Consumer> {
     Ok(Consumer {
         identity: read.releases.identity,
         adoption: query.adoption.unwrap_or(read.releases.adoption),
+        installs: release::installs(registry, &query.consumer)?,
     })
 }
 
@@ -272,6 +288,18 @@ fn producer(registry: &Registry, repo: &str) -> std::result::Result<RepositoryRe
     Ok(read.releases)
 }
 
+/// An `installs` list as a refusal quotes it.
+fn listed(ids: &[RegistryId]) -> String {
+    match ids.is_empty() {
+        true => "none".to_owned(),
+        false => ids
+            .iter()
+            .map(RegistryId::to_string)
+            .collect::<Vec<String>>()
+            .join(", "),
+    }
+}
+
 /// The rules over facts that were all read.
 fn decide(
     query: &AdoptionQuery,
@@ -288,6 +316,20 @@ fn decide(
             .map(|target| target.name.to_string())
             .collect::<Vec<String>>()
             .join(", "),
+    };
+    // A target's artifact id is the declaration's, and only where the declaration's
+    // target is what resolved: one this host names alone carries no id to compare.
+    let artifact = |name: &TargetName| -> Option<&RegistryId> {
+        match producer.sources.get(name) {
+            Some(TargetSource::Declared | TargetSource::Override) => producer
+                .declaration
+                .declared()?
+                .targets
+                .iter()
+                .find(|target| target.name == *name)
+                .map(|target| &target.id),
+            _ => None,
+        }
     };
     let (who, from) = (&consumer.identity, &producer.identity);
     let mut refusals = Vec::new();
@@ -332,6 +374,70 @@ fn decide(
             .filter(|name| resolves(name))
             .cloned(),
     };
+    // The producer's targets whose artifact the consumer installs: the `consumes` a
+    // refusal below can name as the remedy.
+    let installed = || {
+        let named: Vec<String> = producer
+            .targets
+            .iter()
+            .filter(|candidate| {
+                artifact(&candidate.name).is_some_and(|id| {
+                    consumer
+                        .installs
+                        .own
+                        .as_ref()
+                        .is_some_and(|own| own.contains(id))
+                })
+            })
+            .map(|candidate| candidate.name.to_string())
+            .collect();
+        match named.is_empty() {
+            true => format!("none of {from}'s targets is an artifact it installs"),
+            false => format!("it installs {from}'s {}", named.join(", ")),
+        }
+    };
+    if let (Some(own), Some((name, id))) = (
+        consumer.installs.own.as_ref(),
+        target
+            .as_ref()
+            .and_then(|name| artifact(name).map(|id| (name, id))),
+    ) {
+        if !own.contains(id) {
+            refusals.push(AdoptionRefusal {
+                rule: AdoptionRule::Uninstalled,
+                reason: format!(
+                    "the consumer {who} waits on the target {name:?} of the producer {from}, \
+                     the artifact {id}, which this host's releases.yml does not list in the \
+                     consumer's `installs` ({listed}): no dispatch of {who} ever runs it, so \
+                     the wait is on something it never adopts. Name a `consumes` target whose \
+                     artifact the consumer installs — {installed} — or add {id} to its \
+                     `installs`",
+                    listed = listed(own),
+                    installed = installed(),
+                ),
+            });
+        }
+    }
+    let taken = match (query.consumes.as_ref(), target.as_ref()) {
+        (None, Some(default)) if consumer.adoption == Adoption::Published => artifact(default)
+            .filter(|id| consumer.installs.elsewhere.contains(*id))
+            .map(|id| (default, id)),
+        _ => None,
+    };
+    if let Some((default, id)) = taken {
+        refusals.push(AdoptionRefusal {
+            rule: AdoptionRule::DefaultTaken,
+            reason: format!(
+                "the consumer {who} adopts `published` behind the producer {from} naming no \
+                 target, so its wait falls to {from}'s `default_target` {default:?} — the \
+                 artifact {id}, which this host's releases.yml declares another repository \
+                 installs. That default serves that repository's install and says nothing \
+                 about what {who} consumes. Name a `consumes` target for the consumer — \
+                 {installed}",
+                installed = installed(),
+            ),
+        });
+    }
     AdoptionVerdict {
         schema_version: ADOPTION_VERDICT_VERSION,
         consumer: consumer.identity.clone(),
