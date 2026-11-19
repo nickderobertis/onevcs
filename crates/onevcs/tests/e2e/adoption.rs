@@ -1205,6 +1205,27 @@ fn a_wait_on_an_artifact_the_consumer_does_not_install_is_uninstalled() {
     assert!(reason.contains("(none)"), "{reason}");
     assert!(reason.contains("none of"), "{reason}");
 
+    // A host override of a declared target keeps the declaration's artifact id, so a wait
+    // on it is compared — and refused — as the declared target would be.
+    host.releases(
+        "fast",
+        &[
+            (
+                &host.producer,
+                "    targets:\n      - {name: npm, style: human-step, action: \"Publish it.\"}\n",
+            ),
+            (&host.consumer, "    installs: [crate:producer]\n"),
+        ],
+    );
+    ask_both(
+        &host,
+        (p, c, &["--consumes", "npm"]),
+        Never(&["uninstalled"]),
+        "fast",
+    );
+    let (code, verdict) = host.check(p, c, &["--consumes", "npm"]);
+    refused(code, &verdict, "uninstalled", "npm:producer-cli");
+
     // A target only this host names carries no artifact id, so it is never refused.
     host.releases(
         "fast",
@@ -1378,6 +1399,15 @@ fn release_targets_reports_the_installs_its_rule_declares_and_nothing_where_none
     let (_, stdout, _) = targets(&host, &host.producer, false);
     assert!(!stdout.contains("installs:"), "{stdout}");
 
+    // `installs: []` is a statement, so it is reported: an empty list, and `none`.
+    host.releases("fast", &[(&host.consumer, "    installs: []\n")]);
+    let (code, stdout, stderr) = targets(&host, &host.consumer, true);
+    assert_eq!(code, 0, "{stderr}");
+    let document: Value = serde_json::from_str(&stdout).expect("one JSON document");
+    assert_eq!(document["installs"], json!([]));
+    let (_, stdout, _) = targets(&host, &host.consumer, false);
+    assert!(stdout.ends_with("installs: none\n"), "{stdout}");
+
     // An entry that is no artifact id is refused where it is read: by the targets
     // verb naming the file, and as unanswered by the adoption check.
     host.releases("fast", &[(&host.consumer, "    installs: [producer]\n")]);
@@ -1391,4 +1421,56 @@ fn release_targets_reports_the_installs_its_rule_declares_and_nothing_where_none
         &["--consumes", "crate"],
     );
     unanswered(code, &verdict, "names no registry");
+}
+
+/// Which rule's `installs` describes a repository is first-match, like every key, and a
+/// later rule that also matches it is not another repository's install.
+#[test]
+fn the_first_matching_rule_declares_a_consumers_installs_and_no_matching_rule_is_elsewhere() {
+    use Expect::{Completes, Never};
+    let host = Host::new();
+    inhabit(&host.world);
+    let (p, c) = (spelled(&host.producer), spelled(&host.consumer));
+    let (p, c) = (p.as_str(), c.as_str());
+
+    // The first match declares installs: it wins over a later match's, and the later
+    // match's artifact is not taken by another repository.
+    host.releases(
+        "fast",
+        &[
+            (&host.producer, "    default_target: npm\n"),
+            (&host.consumer, "    installs: [crate:producer]\n"),
+            (&host.consumer, "    installs: [npm:producer-cli]\n"),
+        ],
+    );
+    ask_both(&host, (p, c, &[]), Never(&["uninstalled"]), "fast");
+    ask_both(
+        &host,
+        (p, c, &["--adoption", "published"]),
+        Never(&["uninstalled"]),
+        "published",
+    );
+
+    // The first match declares none: the consumer states nothing about what it runs,
+    // and a later match naming the producer's default is still not elsewhere.
+    host.releases(
+        "fast",
+        &[
+            (&host.producer, "    default_target: npm\n"),
+            (&host.consumer, "    adoption: fast\n"),
+            (&host.consumer, "    installs: [crate:producer]\n"),
+            (&host.consumer, "    installs: [npm:producer-cli]\n"),
+        ],
+    );
+    ask_both(&host, (p, c, &[]), Completes(true, Some("npm")), "fast");
+    ask_both(
+        &host,
+        (p, c, &["--adoption", "published"]),
+        Completes(true, Some("npm")),
+        "published",
+    );
+    let (code, stdout, stderr) = targets(&host, &host.consumer, true);
+    assert_eq!(code, 0, "{stderr}");
+    let document: Value = serde_json::from_str(&stdout).expect("one JSON document");
+    assert!(document.get("installs").is_none(), "{document:#}");
 }
