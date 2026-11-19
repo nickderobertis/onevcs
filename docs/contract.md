@@ -7252,6 +7252,9 @@ with `releasing: false`. Refusals are listed in the order above.
 `repositories:` list) may carry an optional key beside its `match:`:
 
 ```yaml
+version: 1
+default:
+  adoption: published
 repositories:
   - match: {name: onepipeline}
     installs: [npm:onetaskgraph-cli, pypi:onejudge-cli]

@@ -1,64 +1,24 @@
 Ok(
-    RulesFile {
+    ReleasesFile {
         version: 1,
-        trailer_prefix: None,
-        rules: [
-            Rule {
-                match: RuleMatch {
-                    host: Some(
-                        "github.com",
-                    ),
-                    owner: Some(
-                        "acme-corp",
-                    ),
-                    name: Some(
-                        "*",
-                    ),
-                    path: None,
-                },
-                publication: Some(
-                    ChangeOpen,
-                ),
-                approvals: Some(
-                    Required,
-                ),
-                drafts: None,
-                visibility: None,
-                base_merge: None,
-                checks: None,
-            },
-            Rule {
+        repositories: [
+            ReleaseRule {
                 match: RuleMatch {
                     host: None,
                     owner: None,
-                    name: None,
-                    path: Some(
-                        "~/projects/*",
+                    name: Some(
+                        "onepipeline",
                     ),
+                    path: None,
                 },
-                publication: Some(
-                    LocalDirect,
-                ),
-                approvals: None,
-                drafts: None,
-                visibility: None,
-                base_merge: None,
-                checks: None,
+                adoption: None,
+                default_target: None,
+                declaration: None,
+                targets: [],
             },
         ],
-        default: Policy {
-            publication: ChangeOpen,
-            approvals: Required,
-            drafts: None,
-            base_merge: None,
-            checks: None,
+        default: ReleaseDefault {
+            adoption: Published,
         },
     },
-)
-Ok(
-    Err(
-        Invalid {
-            reason: "the rules file at contract-block-13 has rule 2 combining publication: local-direct with approvals: required, which merges without the host ever evaluating an approval",
-        },
-    ),
 )
