@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.68.0](https://github.com/nickderobertis/onevcs/compare/v0.67.3...v0.68.0) - 2026-11-19
+
+### Added
+
+- *(adoption)* [**breaking**] refuse a release wait on an artifact the consumer's declared installs do not hold ([#702](https://github.com/nickderobertis/onevcs/pull/702))
+
 ## [0.67.3](https://github.com/nickderobertis/onevcs/compare/v0.67.2...v0.67.3) - 2026-11-16
 
 ### Performance
