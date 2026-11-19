@@ -20,14 +20,14 @@
 //!   `NoRelease`, because nothing being released now proves nothing was released
 //!   then.
 
-use std::collections::{btree_map, BTreeMap};
+use std::collections::{btree_map, BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use url::Url;
 
-use crate::declaration::{self, Declaration, DeclaredTarget};
+use crate::declaration::{self, Declaration, DeclaredTarget, RegistryId};
 use crate::error::{self, Result};
 use crate::event::EventKind;
 use crate::host::Hosting;
@@ -443,19 +443,7 @@ pub(crate) fn release_change_head(
     else {
         return Ok((key, None));
     };
-    let path = default_path()?;
-    let raw = std::fs::read_to_string(&path).map_err(|failure| {
-        error::invalid(format!(
-            "cannot read the release-targets file at {}: {failure}",
-            path.display()
-        ))
-    })?;
-    let rules: crate::releases::ReleaseChangeRules = yaml::from_str(&raw).map_err(|failure| {
-        error::invalid(format!(
-            "the release-targets file at {} is malformed: {failure}",
-            path.display()
-        ))
-    })?;
+    let rules: crate::releases::ReleaseChangeRules = rule_keys()?;
     let head = rules
         .repositories
         .into_iter()
@@ -463,6 +451,63 @@ pub(crate) fn release_change_head(
         .and_then(|rule| rule.release_change)
         .map(|change| change.head);
     Ok((key, head))
+}
+
+/// The release-targets file read again for one optional key of its rules, which the
+/// caller pairs with [`load`]'s rules by position.
+fn rule_keys<T: serde::de::DeserializeOwned>() -> Result<T> {
+    let path = default_path()?;
+    let raw = std::fs::read_to_string(&path).map_err(|failure| {
+        error::invalid(format!(
+            "cannot read the release-targets file at {}: {failure}",
+            path.display()
+        ))
+    })?;
+    yaml::from_str(&raw).map_err(|failure| {
+        error::invalid(format!(
+            "the release-targets file at {} is malformed: {failure}",
+            path.display()
+        ))
+    })
+}
+
+/// What the release-targets file's `installs` keys say about one repository.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Installs {
+    /// The `installs` of the rule that matches the repository, where it declares one.
+    pub(crate) own: Option<Vec<RegistryId>>,
+    /// Every artifact a rule that does **not** match the repository declares it installs:
+    /// what some other repository on this host runs.
+    pub(crate) elsewhere: BTreeSet<RegistryId>,
+}
+
+/// The `installs` keys as they bear on one repository argument, after the document is
+/// held to every check a release verb holds it to.
+///
+/// A host with no release-targets file declares no installs. Every rule is asked whether
+/// it matches, not just the first that does: a later rule that also matches this
+/// repository describes it, so its installs are not another repository's.
+pub(crate) fn installs(registry: &Registry, repo: &str) -> Result<Installs> {
+    let (key, publication) = locate(registry, repo)?;
+    let file = load()?;
+    if file.repositories.is_empty() {
+        return Ok(Installs::default());
+    }
+    let declared: crate::releases::InstallsRules = rule_keys()?;
+    let normalized = store::normalize(&key);
+    let checkout = publication.as_deref().unwrap_or(Path::new(""));
+    let mut answer = Installs::default();
+    let mut first = true;
+    for (rule, keys) in file.repositories.iter().zip(declared.repositories) {
+        if policy::matches(&rule.r#match, &normalized, checkout) {
+            if std::mem::take(&mut first) {
+                answer.own = keys.installs;
+            }
+        } else {
+            answer.elsewhere.extend(keys.installs.unwrap_or_default());
+        }
+    }
+    Ok(answer)
 }
 
 /// The identity a repository argument names, and its publication checkout when it

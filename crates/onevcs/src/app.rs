@@ -2736,12 +2736,37 @@ fn print_release_facts(release: &crate::ReleaseFacts) {
 /// Both renderings are one answer: [`crate::release_targets`] is what was found,
 /// and `--json` and the table are two spellings of it rather than two readings of
 /// the configuration.
+///
+/// The matched rule's `installs` is the one field beside that answer: it is read from
+/// the same host document for the same repository, and reported only where declared,
+/// so a host that declares none prints exactly what `release_targets` serializes.
 fn release_targets(args: &ReleaseTargetsArgs) -> Result<u8> {
     let releases = crate::release_targets(&args.repo)?;
+    let installs = crate::release::installs(&crate::store::load()?, &args.repo)?.own;
     if args.json {
-        return print_json(&releases);
+        let mut document = serde_json::to_value(&releases).map_err(serialization)?;
+        if let (Some(object), Some(installs)) = (document.as_object_mut(), installs) {
+            object.insert(
+                "installs".to_owned(),
+                serde_json::to_value(installs).map_err(serialization)?,
+            );
+        }
+        return print_json(&document);
     }
     print_releases(&releases);
+    if let Some(installs) = installs {
+        println!(
+            "installs: {}",
+            match installs.is_empty() {
+                true => "none".to_owned(),
+                false => installs
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<String>>()
+                    .join(", "),
+            }
+        );
+    }
     Ok(0)
 }
 

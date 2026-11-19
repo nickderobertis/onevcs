@@ -916,7 +916,27 @@ fn every_printed_verdict_matches_the_schema_generated_from_the_crate_type() {
     assert_eq!(properties, stated);
     let mut states = std::collections::BTreeSet::new();
     let mut refused = std::collections::BTreeSet::new();
-    for (producer, consumer, args) in cases(&host) {
+    let mut asked = cases(&host);
+    let installs_from = asked.len();
+    // The two installs rules, each asked under a document that declares what they read.
+    let (producer, consumer) = (spelled(&host.producer), spelled(&host.consumer));
+    asked.push((
+        producer.clone(),
+        consumer.clone(),
+        vec!["--consumes", "npm"],
+    ));
+    asked.push((producer, consumer, vec!["--adoption", "published"]));
+    for (at, (producer, consumer, args)) in asked.into_iter().enumerate() {
+        if at == installs_from {
+            host.releases(
+                "published",
+                &[
+                    (&host.producer, "    default_target: npm\n"),
+                    (&host.direct, "    installs: [npm:producer-cli]\n"),
+                    (&host.consumer, "    installs: [crate:producer]\n"),
+                ],
+            );
+        }
         let (_, printed) = host.check(&producer, &consumer, &args);
         if let Err(failure) = validator.validate(&printed) {
             panic!("{printed:#} does not match the schema: {failure}");
@@ -942,7 +962,12 @@ fn every_printed_verdict_matches_the_schema_generated_from_the_crate_type() {
     );
     assert_eq!(
         refused.into_iter().collect::<Vec<_>>(),
-        ["consumes-undeclared-target", "published-no-target"]
+        [
+            "consumes-undeclared-target",
+            "default-taken",
+            "published-no-target",
+            "uninstalled"
+        ]
     );
 }
 
@@ -1094,4 +1119,442 @@ fn rules_check_reports_an_unreadable_declaration_as_a_finding() {
         stderr.contains("onevcs: release finding: invalid input: the release-targets file at"),
         "{stderr}"
     );
+}
+
+/// The consumer's own `installs`: a wait on an artifact it does not run is refused, and
+/// one on an artifact it runs — or on a target with no artifact id to compare — is not.
+#[test]
+fn a_wait_on_an_artifact_the_consumer_does_not_install_is_uninstalled() {
+    use Expect::{Completes, Never};
+    let host = Host::new();
+    inhabit(&host.world);
+    let (p, s, c) = (
+        spelled(&host.producer),
+        spelled(&host.silent),
+        spelled(&host.consumer),
+    );
+    let (p, s, c) = (p.as_str(), s.as_str(), c.as_str());
+    host.releases(
+        "fast",
+        &[
+            (&host.producer, "    default_target: npm\n"),
+            (&host.consumer, "    installs: [crate:producer]\n"),
+        ],
+    );
+    for (case, expect, rung) in [
+        // The default is an artifact the consumer does not install, under either rung.
+        ((p, c, &[][..]), Never(&["uninstalled"]), "fast"),
+        // A named `consumes` it does not install is refused the same way.
+        (
+            (p, c, &["--consumes", "npm"][..]),
+            Never(&["uninstalled"]),
+            "fast",
+        ),
+        // The near misses: a `consumes` naming the artifact it installs, under either rung.
+        (
+            (p, c, &["--consumes", "crate"][..]),
+            Completes(true, Some("crate")),
+            "fast",
+        ),
+        (
+            (
+                p,
+                c,
+                &["--adoption", "published", "--consumes", "crate"][..],
+            ),
+            Completes(true, Some("crate")),
+            "published",
+        ),
+        // A producer that releases nothing is no wait at all.
+        ((s, c, &[][..]), Completes(false, None), "fast"),
+        // A `consumes` naming nothing the producer resolves is that rule's alone: there
+        // is no artifact to compare.
+        (
+            (p, c, &["--consumes", "wheel"][..]),
+            Never(&["consumes-undeclared-target"]),
+            "fast",
+        ),
+    ] {
+        ask_both(&host, case, expect, rung);
+    }
+
+    // The reason names the artifact and the remedy: the target it does install.
+    let (code, verdict) = host.check(p, c, &[]);
+    refused(code, &verdict, "uninstalled", "npm:producer-cli");
+    let reason = verdict["refusals"][0]["reason"].as_str().expect("a reason");
+    assert!(reason.contains("`consumes`"), "{reason}");
+    assert!(reason.contains("'s crate"), "{reason}");
+    assert_eq!(verdict["target"], "npm");
+
+    // `installs: []` runs nothing, so every wait on a declared artifact is uninstalled.
+    host.releases(
+        "fast",
+        &[
+            (&host.producer, "    default_target: npm\n"),
+            (&host.consumer, "    installs: []\n"),
+        ],
+    );
+    ask_both(
+        &host,
+        (p, c, &["--consumes", "crate"]),
+        Never(&["uninstalled"]),
+        "fast",
+    );
+    let (_, verdict) = host.check(p, c, &["--consumes", "crate"]);
+    let reason = verdict["refusals"][0]["reason"].as_str().expect("a reason");
+    assert!(reason.contains("(none)"), "{reason}");
+    assert!(reason.contains("none of"), "{reason}");
+
+    // A host override of a declared target keeps the declaration's artifact id, so a wait
+    // on it is compared — and refused — as the declared target would be.
+    host.releases(
+        "fast",
+        &[
+            (
+                &host.producer,
+                "    targets:\n      - {name: npm, style: human-step, action: \"Publish it.\"}\n",
+            ),
+            (&host.consumer, "    installs: [crate:producer]\n"),
+        ],
+    );
+    ask_both(
+        &host,
+        (p, c, &["--consumes", "npm"]),
+        Never(&["uninstalled"]),
+        "fast",
+    );
+    let (code, verdict) = host.check(p, c, &["--consumes", "npm"]);
+    refused(code, &verdict, "uninstalled", "npm:producer-cli");
+
+    // A target only this host names carries no artifact id, so it is never refused.
+    host.releases(
+        "fast",
+        &[
+            (
+                &host.producer,
+                "    targets:\n      - {name: wheel, style: human-step, action: \"Upload it.\"}\n",
+            ),
+            (&host.consumer, "    installs: [crate:producer]\n"),
+        ],
+    );
+    ask_both(
+        &host,
+        (p, c, &["--consumes", "wheel"]),
+        Completes(true, Some("wheel")),
+        "fast",
+    );
+}
+
+/// A producer's `default_target` another repository installs is no answer for a
+/// `published` consumer that names no target.
+#[test]
+fn a_published_wait_on_a_default_another_repository_installs_is_default_taken() {
+    use Expect::{Completes, Never};
+    let host = Host::new();
+    inhabit(&host.world);
+    let (p, c, d) = (
+        spelled(&host.producer),
+        spelled(&host.consumer),
+        spelled(&host.direct),
+    );
+    let (p, c, d) = (p.as_str(), c.as_str(), d.as_str());
+    host.releases(
+        "fast",
+        &[
+            (&host.producer, "    default_target: npm\n"),
+            (&host.direct, "    installs: [npm:producer-cli]\n"),
+        ],
+    );
+    for (case, expect, rung) in [
+        (
+            (p, c, &["--adoption", "published"][..]),
+            Never(&["default-taken"]),
+            "published",
+        ),
+        // Each condition's near miss: a `fast` rung, a named `consumes` — even the very
+        // default — and the repository that does install it.
+        ((p, c, &[][..]), Completes(true, Some("npm")), "fast"),
+        (
+            (p, c, &["--adoption", "published", "--consumes", "npm"][..]),
+            Completes(true, Some("npm")),
+            "published",
+        ),
+        (
+            (
+                p,
+                c,
+                &["--adoption", "published", "--consumes", "crate"][..],
+            ),
+            Completes(true, Some("crate")),
+            "published",
+        ),
+        (
+            (p, d, &["--adoption", "published"][..]),
+            Completes(true, Some("npm")),
+            "published",
+        ),
+    ] {
+        ask_both(&host, case, expect, rung);
+    }
+    let (code, verdict) = host.check(p, c, &["--adoption", "published"]);
+    refused(code, &verdict, "default-taken", "npm:producer-cli");
+    let reason = verdict["refusals"][0]["reason"].as_str().expect("a reason");
+    assert!(reason.contains("`consumes`"), "{reason}");
+
+    // Both installs rules, in order, where both hold.
+    host.releases(
+        "fast",
+        &[
+            (&host.producer, "    default_target: npm\n"),
+            (&host.direct, "    installs: [npm:producer-cli]\n"),
+            (&host.consumer, "    installs: [crate:producer]\n"),
+        ],
+    );
+    ask_both(
+        &host,
+        (p, c, &["--adoption", "published"]),
+        Never(&["uninstalled", "default-taken"]),
+        "published",
+    );
+
+    // The consumer installing the default too does not answer it: another repository's
+    // rule still installs it, so the default says nothing about this consumer.
+    host.releases(
+        "fast",
+        &[
+            (&host.producer, "    default_target: npm\n"),
+            (&host.direct, "    installs: [npm:producer-cli]\n"),
+            (&host.consumer, "    installs: [npm:producer-cli]\n"),
+        ],
+    );
+    ask_both(
+        &host,
+        (p, c, &["--adoption", "published"]),
+        Never(&["default-taken"]),
+        "published",
+    );
+
+    // A default nobody else installs serves this consumer as before.
+    host.releases(
+        "fast",
+        &[
+            (&host.producer, "    default_target: npm\n"),
+            (&host.direct, "    installs: [crate:producer]\n"),
+        ],
+    );
+    ask_both(
+        &host,
+        (p, c, &["--adoption", "published"]),
+        Completes(true, Some("npm")),
+        "published",
+    );
+
+    // No default: the existing rule answers, and `default-taken` has nothing to read.
+    host.releases(
+        "fast",
+        &[(&host.direct, "    installs: [npm:producer-cli]\n")],
+    );
+    ask_both(
+        &host,
+        (p, c, &["--adoption", "published"]),
+        Never(&["published-no-target"]),
+        "published",
+    );
+}
+
+/// `onevcs release targets REPO --json`, parsed, with its exit code.
+fn targets(host: &Host, repo: &Path, json: bool) -> (i32, String, String) {
+    let output = host
+        .world
+        .onevcs()
+        .args(["release", "targets", &spelled(repo)])
+        .args(json.then_some("--json"))
+        .output()
+        .expect("the binary runs");
+    (
+        output.status.code().expect("an exit code"),
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn release_targets_reports_the_installs_its_rule_declares_and_nothing_where_none_is() {
+    let host = Host::new();
+    host.releases(
+        "fast",
+        &[(
+            &host.consumer,
+            "    installs: [crate:producer, \"npm:@acme/cli\"]\n",
+        )],
+    );
+
+    let (code, stdout, stderr) = targets(&host, &host.consumer, true);
+    assert_eq!(code, 0, "{stderr}");
+    let document: Value = serde_json::from_str(&stdout).expect("one JSON document");
+    assert_eq!(
+        document["installs"],
+        json!(["crate:producer", "npm:@acme/cli"])
+    );
+    let (code, stdout, stderr) = targets(&host, &host.consumer, false);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(
+        stdout.ends_with("installs: crate:producer, npm:@acme/cli\n"),
+        "{stdout}"
+    );
+
+    // A repository whose rule declares none carries no such field, and its document is
+    // exactly the library's answer.
+    inhabit(&host.world);
+    let (code, stdout, stderr) = targets(&host, &host.producer, true);
+    assert_eq!(code, 0, "{stderr}");
+    let document: Value = serde_json::from_str(&stdout).expect("one JSON document");
+    assert!(document.get("installs").is_none(), "{document:#}");
+    let library = onevcs::release_targets(&spelled(&host.producer)).expect("its targets");
+    assert_eq!(document, serde_json::to_value(library).expect("serializes"));
+    let (_, stdout, _) = targets(&host, &host.producer, false);
+    assert!(!stdout.contains("installs:"), "{stdout}");
+
+    // `installs: []` is a statement, so it is reported: an empty list, and `none`.
+    host.releases("fast", &[(&host.consumer, "    installs: []\n")]);
+    let (code, stdout, stderr) = targets(&host, &host.consumer, true);
+    assert_eq!(code, 0, "{stderr}");
+    let document: Value = serde_json::from_str(&stdout).expect("one JSON document");
+    assert_eq!(document["installs"], json!([]));
+    let (_, stdout, _) = targets(&host, &host.consumer, false);
+    assert!(stdout.ends_with("installs: none\n"), "{stdout}");
+
+    // An entry that is no artifact id is refused where it is read: by the targets
+    // verb naming the file, and as unanswered by the adoption check.
+    host.releases("fast", &[(&host.consumer, "    installs: [producer]\n")]);
+    let (code, _, stderr) = targets(&host, &host.consumer, true);
+    assert_ne!(code, 0);
+    assert!(stderr.contains("releases.yml"), "{stderr}");
+    assert!(stderr.contains("names no registry"), "{stderr}");
+    let (code, verdict) = host.check(
+        &spelled(&host.producer),
+        &spelled(&host.consumer),
+        &["--consumes", "crate"],
+    );
+    unanswered(code, &verdict, "names no registry");
+}
+
+/// Which rule's `installs` describes a repository is first-match, like every key, and a
+/// later rule that also matches it is not another repository's install.
+#[test]
+fn the_first_matching_rule_declares_a_consumers_installs_and_no_matching_rule_is_elsewhere() {
+    use Expect::{Completes, Never};
+    let host = Host::new();
+    inhabit(&host.world);
+    let (p, c) = (spelled(&host.producer), spelled(&host.consumer));
+    let (p, c) = (p.as_str(), c.as_str());
+
+    // The first match declares installs: it wins over a later match's, and the later
+    // match's artifact is not taken by another repository.
+    host.releases(
+        "fast",
+        &[
+            (&host.producer, "    default_target: npm\n"),
+            (&host.consumer, "    installs: [crate:producer]\n"),
+            (&host.consumer, "    installs: [npm:producer-cli]\n"),
+        ],
+    );
+    ask_both(&host, (p, c, &[]), Never(&["uninstalled"]), "fast");
+    ask_both(
+        &host,
+        (p, c, &["--adoption", "published"]),
+        Never(&["uninstalled"]),
+        "published",
+    );
+
+    // The first match declares none: the consumer states nothing about what it runs,
+    // and a later match naming the producer's default is still not elsewhere.
+    host.releases(
+        "fast",
+        &[
+            (&host.producer, "    default_target: npm\n"),
+            (&host.consumer, "    adoption: fast\n"),
+            (&host.consumer, "    installs: [crate:producer]\n"),
+            (&host.consumer, "    installs: [npm:producer-cli]\n"),
+        ],
+    );
+    ask_both(&host, (p, c, &[]), Completes(true, Some("npm")), "fast");
+    ask_both(
+        &host,
+        (p, c, &["--adoption", "published"]),
+        Completes(true, Some("npm")),
+        "published",
+    );
+    let (code, stdout, stderr) = targets(&host, &host.consumer, true);
+    assert_eq!(code, 0, "{stderr}");
+    let document: Value = serde_json::from_str(&stdout).expect("one JSON document");
+    assert!(document.get("installs").is_none(), "{document:#}");
+}
+
+/// The ids version 1 carried before `installs` existed.
+const V1_FIRST_RULES: [&str; 2] = ["published-no-target", "consumes-undeclared-target"];
+
+/// The whole of what a version 1 reader may rely on: the version and the state. No
+/// `deny_unknown_fields` and no `rule`, because `rule` is an open set within version 1.
+#[derive(serde::Deserialize)]
+struct RoutedOnState {
+    schema_version: u32,
+    state: onevcs::AdoptionState,
+}
+
+/// The two installs rules stay inside version 1: a host declaring no
+/// `installs` never prints either, and a reader routing on `state` reads a verdict
+/// carrying a rule id it does not know — one of these, or one a later build adds.
+#[test]
+fn version_1_verdicts_carry_a_new_rule_only_where_installs_is_declared_and_route_on_state() {
+    let host = Host::new();
+    let (producer, consumer) = (spelled(&host.producer), spelled(&host.consumer));
+
+    // Two installs-free documents, with and without a producer default, over every case.
+    let (direct, producing): (&Path, &Path) = (&host.direct, &host.producer);
+    for document in [
+        &[(direct, "    adoption: fast\n")][..],
+        &[
+            (direct, "    adoption: fast\n"),
+            (producing, "    default_target: npm\n"),
+        ][..],
+    ] {
+        host.releases("published", document);
+        for (from, by, args) in cases(&host) {
+            let (_, printed) = host.check(&from, &by, &args);
+            assert_eq!(printed["schema_version"], 1, "{printed:#}");
+            for rule in rules(&printed) {
+                assert!(V1_FIRST_RULES.contains(&rule), "{rule} on {printed:#}");
+            }
+        }
+    }
+
+    // Declaring installs is what brings the new ids, still at version 1.
+    host.releases(
+        "published",
+        &[
+            (&host.producer, "    default_target: npm\n"),
+            (&host.direct, "    installs: [npm:producer-cli]\n"),
+            (&host.consumer, "    installs: [crate:producer]\n"),
+        ],
+    );
+    let (code, printed) = host.check(&producer, &consumer, &[]);
+    assert_eq!(code, 1);
+    assert_eq!(printed["schema_version"], 1);
+    assert_eq!(rules(&printed), ["uninstalled", "default-taken"]);
+
+    // A reader that knows only the first two ids — or none — still routes it, and so
+    // does one meeting an id no build writes yet.
+    let mut future = printed.clone();
+    future["refusals"][0]["rule"] = json!("a-rule-no-build-writes-yet");
+    for document in [printed, future] {
+        let routed: RoutedOnState =
+            serde_json::from_value(document.clone()).expect("a version 1 reader reads it");
+        assert_eq!(routed.schema_version, onevcs::ADOPTION_VERDICT_VERSION);
+        assert_eq!(
+            routed.state,
+            onevcs::AdoptionState::NeverCompletes,
+            "{document:#}"
+        );
+    }
 }
