@@ -303,17 +303,31 @@ const LIMITED: &str = "limited=";
 const RESUME: &str = "resume=";
 
 /// The call `args` makes, named for a message without the repository it addresses:
-/// the `gh` subcommand a GraphQL call is, or the REST path with the two segments past
-/// `repos/` that name a repository spelled as GitHub's documentation spells them.
+/// the `gh` subcommand a GraphQL call is, or the REST method and path with the two
+/// segments past `repos/` that name a repository spelled as GitHub's documentation
+/// spells them. `gh api` sends a GET unless it is told a method, or handed fields,
+/// which it sends as a POST.
 pub(crate) fn what_was_asked(args: &[&str]) -> String {
     match args {
-        ["api", path, ..] => {
+        ["api", "graphql", ..] => "GitHub's GraphQL API (gh api graphql)".to_owned(),
+        ["api", path, rest @ ..] => {
             let path = path.split('?').next().unwrap_or_default();
             let mut segments = path.split('/').collect::<Vec<_>>();
             if segments.first() == Some(&"repos") && segments.len() >= 3 {
                 segments.splice(1..3, ["{owner}", "{repo}"]);
             }
-            format!("GitHub's REST API (GET /{})", segments.join("/"))
+            let named = rest
+                .windows(2)
+                .find(|pair| matches!(pair[0], "--method" | "-X"))
+                .map(|pair| pair[1].to_ascii_uppercase());
+            let fields = rest.iter().any(|argument| {
+                matches!(
+                    *argument,
+                    "-f" | "-F" | "--field" | "--raw-field" | "--input"
+                )
+            });
+            let method = named.unwrap_or_else(|| if fields { "POST" } else { "GET" }.to_owned());
+            format!("GitHub's REST API ({method} /{})", segments.join("/"))
         }
         [command, subcommand, ..] if !subcommand.starts_with('-') => {
             format!("GitHub's GraphQL API (gh {command} {subcommand})")
@@ -336,18 +350,21 @@ fn server_failure(written: &str) -> Option<u16> {
 
 /// When `resource` — `core` or `graphql` — of this credential's allowance resets, as
 /// GitHub's `rate_limit` endpoint says, which answers whatever is left of the
-/// allowance itself. `None` where it cannot be read or names a moment already passed.
+/// allowance itself. `None` where it cannot be read, where the allowance is not spent,
+/// or where it names a moment already passed.
 fn limit_reset(resource: &str) -> Option<i64> {
     let answer = attempt(&["api", "rate_limit"]).ok()?;
     if answer.code != Some(0) {
         return None;
     }
     let value: Value = serde_json::from_str(answer.stdout.trim()).ok()?;
-    let reset = value
-        .get("resources")?
-        .get(resource)?
-        .get("reset")?
-        .as_i64()?;
+    let allowance = value.get("resources")?.get(resource)?;
+    // An allowance with requests left is not what refused the call — that is the
+    // secondary limiter, which nothing reports — so its reset is not one to wait for.
+    if allowance.get("remaining")?.as_i64()? != 0 {
+        return None;
+    }
+    let reset = allowance.get("reset")?.as_i64()?;
     (reset > time::OffsetDateTime::now_utc().unix_timestamp()).then_some(reset)
 }
 
@@ -365,10 +382,15 @@ pub struct Unanswered {
     pub said: String,
     /// What `gh` wrote, which may name the repository it asked about.
     pub detail: String,
-    /// Whether the host refused it for a rate limit, rather than failing or never
-    /// being reached: only such a request is one it is safe to send again whatever
+    /// The rate limit the host refused it for, or `None` where it failed or was never
+    /// reached instead: only a refused request is one it is safe to send again whatever
     /// it would have changed, because the host did nothing with it.
-    pub limited: bool,
+    pub rate_limit: Option<RateLimit>,
+}
+
+/// A rate limit a request was refused for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RateLimit {
     /// The moment, in seconds since the Unix epoch, the host named for asking again —
     /// its rate limit's reset, or `Retry-After` from when it answered — where it named
     /// one. Nothing is to be sent before it.
@@ -390,8 +412,9 @@ impl Unanswered {
             reason: format!(
                 "{UNANSWERED}{}\n{LIMITED}{} {RESUME}{}\n{}",
                 self.said.replace('\n', " "),
-                u8::from(self.limited),
-                self.resume
+                u8::from(self.rate_limit.is_some()),
+                self.rate_limit
+                    .and_then(|limit| limit.resume)
                     .map_or_else(|| "-".to_owned(), |at| at.to_string()),
                 self.detail
             ),
@@ -416,14 +439,13 @@ impl Unanswered {
             "-" => None,
             at => Some(at.parse().ok()?),
         };
-        if said.is_empty() {
+        if said.is_empty() || (!limited && resume.is_some()) {
             return None;
         }
         Some(Unanswered {
             said: said.to_owned(),
             detail: detail.to_owned(),
-            limited,
-            resume,
+            rate_limit: limited.then_some(RateLimit { resume }),
         })
     }
 
@@ -440,9 +462,15 @@ impl Unanswered {
         let call = what_was_asked(args);
         let graphql = !matches!(args.first(), Some(&"api")) || lowered.contains("graphql");
         if lowered.contains("rate limit") || lowered.contains("(http 429)") {
-            let resource = if graphql { "graphql" } else { "core" };
-            let resume = limit_reset(resource);
-            let which = if lowered.contains("secondary rate limit") {
+            let secondary = lowered.contains("secondary rate limit");
+            // A secondary limit is not the allowance `rate_limit` reports, so its reset
+            // is not one to wait for, and it is not asked.
+            let resume = if secondary {
+                None
+            } else {
+                limit_reset(if graphql { "graphql" } else { "core" })
+            };
+            let which = if secondary {
                 "a secondary rate limit"
             } else {
                 "its rate limit"
@@ -456,26 +484,21 @@ impl Unanswered {
             return Some(Unanswered {
                 said,
                 detail: String::new(),
-                limited: true,
-                // A secondary limit is not the allowance `rate_limit` reports, so its
-                // reset is not one to wait for.
-                resume: resume.filter(|_| !lowered.contains("secondary rate limit")),
+                rate_limit: Some(RateLimit { resume }),
             });
         }
         if let Some(status) = server_failure(&written) {
             return Some(Unanswered {
                 said: format!("{call} failed on the host's side: HTTP {status}"),
                 detail: String::new(),
-                limited: false,
-                resume: None,
+                rate_limit: None,
             });
         }
         if lowered.contains("error connecting to") {
             return Some(Unanswered {
                 said: format!("{call} gave no HTTP response"),
                 detail: String::new(),
-                limited: false,
-                resume: None,
+                rate_limit: None,
             });
         }
         None
@@ -534,18 +557,22 @@ impl Unanswered {
                 let reset = response
                     .moment("x-ratelimit-reset")
                     .map(time::OffsetDateTime::unix_timestamp);
+                // A `Retry-After` too large to name a moment names none.
                 let after = retry.and_then(|retry| {
-                    i64::try_from(retry)
-                        .ok()
-                        .map(|retry| time::OffsetDateTime::now_utc().unix_timestamp() + retry)
+                    i64::try_from(retry).ok().and_then(|retry| {
+                        time::OffsetDateTime::now_utc()
+                            .unix_timestamp()
+                            .checked_add(retry)
+                    })
                 });
                 return Some(Unanswered {
                     said,
                     detail,
-                    limited: true,
                     // The later of the two where the host named both: before either,
                     // the request is refused again.
-                    resume: reset.max(after),
+                    rate_limit: Some(RateLimit {
+                        resume: reset.max(after),
+                    }),
                 });
             }
             Some(_) => return None,
@@ -553,8 +580,7 @@ impl Unanswered {
         Some(Unanswered {
             said,
             detail,
-            limited: false,
-            resume: None,
+            rate_limit: None,
         })
     }
 }

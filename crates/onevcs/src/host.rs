@@ -1284,37 +1284,12 @@ impl GitHub {
             "repos/{}/commits/{sha}/check-runs?per_page={PAGE}",
             self.repo
         ))?;
-        let total = runs.get("total_count").and_then(serde_json::Value::as_u64);
-        let runs = runs
-            .get("check_runs")
-            .and_then(serde_json::Value::as_array)
-            .ok_or_else(|| {
-                invalid(format!(
-                    "GitHub returned a non-list of check runs on {sha}: {runs}"
-                ))
-            })?;
-        // A page that held entries back says how many there are, and a build that read
-        // the short list as the whole answer would wait for a check it was never shown.
-        if let Some(total) = total.filter(|total| *total > runs.len() as u64) {
-            return Err(invalid(format!(
-                "GitHub reports {total} check runs on {sha} and returned {}, so this build has \
-                 not been shown all of them",
-                runs.len()
-            )));
-        }
+        let runs = whole(&runs, "check_runs", "check runs", sha)?;
         let statuses = self.rest(&format!(
             "repos/{}/commits/{sha}/status?per_page={PAGE}",
             self.repo
         ))?;
-        let statuses = statuses
-            .get("statuses")
-            .and_then(serde_json::Value::as_array)
-            .ok_or_else(|| {
-                invalid(format!(
-                    "GitHub answered about the commit statuses on {sha} with something that \
-                     lists none: {statuses}"
-                ))
-            })?;
+        let statuses = whole(&statuses, "statuses", "commit statuses", sha)?;
         if runs.is_empty() && statuses.is_empty() {
             return Ok(Vec::new());
         }
@@ -1999,6 +1974,43 @@ fn listed<'a>(
     Ok(entries)
 }
 
+/// The `field` list of one REST answer about commit `sha`'s `what`, refused where it
+/// is not a list or where the answer does not say how many there are, or says there
+/// are more than it returned: a build that read a short page as the whole answer would
+/// wait for a check it was never shown, or wave a merge past one.
+fn whole<'a>(
+    value: &'a serde_json::Value,
+    field: &str,
+    what: &str,
+    sha: &str,
+) -> Result<&'a Vec<serde_json::Value>> {
+    let entries = value
+        .get(field)
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| {
+            invalid(format!(
+                "GitHub returned a non-list of {what} on {sha}: {value}"
+            ))
+        })?;
+    let total = value
+        .get("total_count")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| {
+            invalid(format!(
+                "GitHub did not say how many {what} there are on {sha}, so whether it showed \
+                 all of them cannot be read: {value}"
+            ))
+        })?;
+    if total > entries.len() as u64 {
+        return Err(invalid(format!(
+            "GitHub reports {total} {what} on {sha} and returned {}, so this build has not been \
+             shown all of them",
+            entries.len()
+        )));
+    }
+    Ok(entries)
+}
+
 /// Whether a workflow run or a check suite GitHub reported has completed: its
 /// `status` is `completed`. Anything else — `queued`, `in_progress`, `waiting`,
 /// `requested`, `pending`, or no status at all — is work still going.
@@ -2209,8 +2221,8 @@ impl RemoteHost for GitHub {
                 .to_string();
             let head_sha = pull_head(item)?;
             let text = |name: &str| match item.get(name) {
-                // GitHub answers an empty body as null.
-                Some(serde_json::Value::Null) => Some(""),
+                // GitHub answers an empty body as null; a title is never empty.
+                Some(serde_json::Value::Null) if name == "body" => Some(""),
                 other => other.and_then(serde_json::Value::as_str),
             };
             let description = match (text("title"), text("body")) {

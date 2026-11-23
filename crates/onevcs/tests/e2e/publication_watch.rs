@@ -588,6 +588,43 @@ fn a_cancellation_ends_the_checks_watch_of_a_ready_change_within_a_second() {
     continues(&world, &origin, &session, 1);
 }
 
+// llmlint: ignore[expensive_tests_stay_behind_their_own_edge] it is one of this module's
+// cancellation journeys, over the publication's own merge path — the inputs the e2e tier
+// is keyed on — and waits only the 300ms every cancellation here settles for.
+#[test]
+fn a_cancellation_ends_a_wait_on_a_host_that_has_not_answered_within_a_second() {
+    // The check runs are refused for a rate limit whose reset is a minute away, well
+    // inside the bound: the publication waits for it, and a cancellation ends that wait
+    // as it ends every other one.
+    let world = World::new();
+    let (origin, session) = publishing(&world, DIRECT_READY, "feature/cancel-wait", None);
+    std::env::set_var("ONEVCS_CHECKS_TIMEOUT_SECONDS", "120");
+    world.host_checks(&[pending()]);
+    world.host_does_not_answer("/check-runs?per_page", "rate-limited-for:60");
+
+    let (published, took) = cancel_once(
+        &session,
+        "the publication waited on its host",
+        || !world.events_of(&session.token.0, "host-wait").is_empty(),
+        || {},
+    );
+    assert_cancelled_and_kept(&world, &origin, &session, &published, took, Some(1));
+    let PublishOutcome::Failed { reason, .. } = &published.outcome else {
+        unreachable!("asserted above")
+    };
+    assert!(reason.contains("waited on its host"), "{reason}");
+    assert_eq!(
+        world
+            .host_calls()
+            .iter()
+            .filter(|call| call.contains("/check-runs?per_page"))
+            .count(),
+        1,
+        "nothing was asked again before the cancellation: {:?}",
+        world.host_calls()
+    );
+}
+
 #[test]
 fn a_cancellation_ends_a_drafts_settle_within_a_second() {
     let world = World::new();

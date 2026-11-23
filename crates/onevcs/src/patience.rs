@@ -35,17 +35,6 @@ const LONGEST_BACKOFF: Duration = Duration::from_secs(60);
 /// moment behind the host's does not send it before the allowance is back.
 const PAST_THE_RESET: Duration = Duration::from_secs(1);
 
-/// Whether a request may be sent again after the host failed it rather than refused
-/// it: only one that changes nothing there.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Again {
-    /// A read: sent again after any request the host did not answer.
-    Always,
-    /// A write: sent again only after a rate limit, which the host refused before
-    /// doing anything with it. A write that failed or went unreached may have landed.
-    OnlyRateLimited,
-}
-
 /// A host that waits out its own unanswered requests until `bound`.
 pub(crate) struct Patient<'a> {
     host: &'a dyn RemoteHost,
@@ -80,7 +69,7 @@ impl<'a> Patient<'a> {
 
     /// Answer `request`, asking it again for as long as the host does not answer it and
     /// the next attempt would still fall inside the bound.
-    fn ask<T>(&self, again: Again, request: impl Fn() -> Result<T>) -> Result<T> {
+    fn ask<T>(&self, request: impl Fn() -> Result<T>) -> Result<T> {
         let mut attempt: u32 = 0;
         loop {
             let error = match request() {
@@ -90,9 +79,6 @@ impl<'a> Patient<'a> {
             let Some(unanswered) = gh::Unanswered::of(&error) else {
                 return Err(error);
             };
-            if again == Again::OnlyRateLimited && !unanswered.limited {
-                return Err(error);
-            }
             attempt += 1;
             let wait = self.wait_for(&unanswered, attempt);
             let now = Instant::now();
@@ -113,7 +99,7 @@ impl<'a> Patient<'a> {
     /// limit named, and otherwise a backoff that doubles from one second and never
     /// shrinks.
     fn wait_for(&self, unanswered: &gh::Unanswered, attempt: u32) -> Duration {
-        if let (true, Some(resume)) = (unanswered.limited, unanswered.resume) {
+        if let Some(resume) = unanswered.rate_limit.and_then(|limit| limit.resume) {
             let now = time::OffsetDateTime::now_utc();
             let at = time::OffsetDateTime::from_unix_timestamp(resume).unwrap_or(now);
             let left = Duration::try_from(at - now).unwrap_or(Duration::ZERO);
@@ -143,7 +129,7 @@ impl<'a> Patient<'a> {
         let Value::Object(payload) = json!({
             "call": call,
             "reason": unanswered.said,
-            "rate_limited": unanswered.limited,
+            "rate_limited": unanswered.rate_limit.is_some(),
             "attempt": attempt,
             "until": ids::stamp(until),
             "bound": ids::stamp(bound),
@@ -161,15 +147,17 @@ impl<'a> Patient<'a> {
     }
 }
 
+/// Every read waits; of the writes, the three a publication makes after its push —
+/// opening its change request, lifting its draft and merging it — wait too, each asking
+/// the host first whether it already happened. The writes a publication never makes
+/// pass straight through, so no retry is decided here for a write nothing has weighed.
 impl RemoteHost for Patient<'_> {
     fn read_standing_comment(
         &self,
         change: &crate::host::ChangeId,
         key: &str,
     ) -> Result<Option<crate::StandingComment>> {
-        self.ask(Again::Always, || {
-            self.host.read_standing_comment(change, key)
-        })
+        self.ask(|| self.host.read_standing_comment(change, key))
     }
 
     fn upsert_standing_comment(
@@ -179,14 +167,12 @@ impl RemoteHost for Patient<'_> {
         body: &str,
         expected_head: Option<&str>,
     ) -> Result<crate::StandingCommentOutcome> {
-        self.ask(Again::OnlyRateLimited, || {
-            self.host
-                .upsert_standing_comment(change, key, body, expected_head)
-        })
+        self.host
+            .upsert_standing_comment(change, key, body, expected_head)
     }
 
     fn authenticated_user(&self) -> Result<String> {
-        self.ask(Again::Always, || self.host.authenticated_user())
+        self.ask(|| self.host.authenticated_user())
     }
 
     /// Opened again only where the host holds no change request for the branch: one the
@@ -194,7 +180,7 @@ impl RemoteHost for Patient<'_> {
     /// change request for one branch.
     fn open_change(&self, req: ChangeSpec) -> Result<ChangeRequest> {
         let first = std::cell::Cell::new(true);
-        self.ask(Again::Always, || {
+        self.ask(|| {
             if !first.replace(false) {
                 if let Some(opened) = self
                     .host
@@ -210,15 +196,15 @@ impl RemoteHost for Patient<'_> {
     }
 
     fn find_changes(&self, head: &str, base: &str) -> Result<Vec<ChangeRequest>> {
-        self.ask(Again::Always, || self.host.find_changes(head, base))
+        self.ask(|| self.host.find_changes(head, base))
     }
 
     fn change_checks(&self, cr: &ChangeRequest) -> Result<ChangeChecks> {
-        self.ask(Again::Always, || self.host.change_checks(cr))
+        self.ask(|| self.host.change_checks(cr))
     }
 
     fn check_log(&self, cr: &ChangeRequest, check: &Check) -> Result<ArtifactId> {
-        self.ask(Again::Always, || self.host.check_log(cr, check))
+        self.ask(|| self.host.check_log(cr, check))
     }
 
     /// Asked again only where the host has not merged the change already: one it failed
@@ -226,7 +212,7 @@ impl RemoteHost for Patient<'_> {
     /// the same request, while merging it again is refused.
     fn merge(&self, cr: &ChangeRequest, policy: MergePolicy) -> Result<MergeOutcome> {
         let first = std::cell::Cell::new(true);
-        self.ask(Again::Always, || {
+        self.ask(|| {
             if !first.replace(false) {
                 if let Some(merged) = self.host.merged_at(cr)? {
                     return Ok(MergeOutcome::Merged(merged));
@@ -237,45 +223,51 @@ impl RemoteHost for Patient<'_> {
     }
 
     fn merged_at(&self, cr: &ChangeRequest) -> Result<Option<Sha>> {
-        self.ask(Again::Always, || self.host.merged_at(cr))
+        self.ask(|| self.host.merged_at(cr))
     }
 
     fn merged_head(&self, cr: &ChangeRequest) -> Result<Option<MergedChange>> {
-        self.ask(Again::Always, || self.host.merged_head(cr))
+        self.ask(|| self.host.merged_head(cr))
     }
 
     fn merge_time(&self, cr: &ChangeRequest) -> Result<Option<String>> {
-        self.ask(Again::Always, || self.host.merge_time(cr))
+        self.ask(|| self.host.merge_time(cr))
     }
 
     fn mergeability(&self, cr: &ChangeRequest) -> Result<Mergeability> {
-        self.ask(Again::Always, || self.host.mergeability(cr))
+        self.ask(|| self.host.mergeability(cr))
     }
 
+    /// Asked again only where the host still holds the change as a draft: one it failed
+    /// to answer may have lifted it anyway.
     fn ready_for_review(&self, cr: &ChangeRequest) -> Result<()> {
-        self.ask(Again::OnlyRateLimited, || self.host.ready_for_review(cr))
+        let first = std::cell::Cell::new(true);
+        self.ask(|| {
+            if !first.replace(false) && !self.host.is_draft(cr)? {
+                return Ok(());
+            }
+            self.host.ready_for_review(cr)
+        })
     }
 
     fn is_draft(&self, cr: &ChangeRequest) -> Result<bool> {
-        self.ask(Again::Always, || self.host.is_draft(cr))
+        self.ask(|| self.host.is_draft(cr))
     }
 
     fn required_checks_on(&self, base: &str) -> Result<RequiredChecks> {
-        self.ask(Again::Always, || self.host.required_checks_on(base))
+        self.ask(|| self.host.required_checks_on(base))
     }
 
     fn requires_up_to_date(&self, base: &str) -> Result<bool> {
-        self.ask(Again::Always, || self.host.requires_up_to_date(base))
+        self.ask(|| self.host.requires_up_to_date(base))
     }
 
     fn allows_auto_merge(&self) -> Result<bool> {
-        self.ask(Again::Always, || self.host.allows_auto_merge())
+        self.ask(|| self.host.allows_auto_merge())
     }
 
     fn describe_change(&self, cr: &ChangeRequest, title: Option<&str>, body: &str) -> Result<()> {
-        self.ask(Again::OnlyRateLimited, || {
-            self.host.describe_change(cr, title, body)
-        })
+        self.host.describe_change(cr, title, body)
     }
 
     fn visibility(&self) -> Result<Visibility> {
@@ -285,7 +277,7 @@ impl RemoteHost for Patient<'_> {
     }
 
     fn change_description(&self, cr: &ChangeRequest) -> Result<Description> {
-        self.ask(Again::Always, || self.host.change_description(cr))
+        self.ask(|| self.host.change_description(cr))
     }
 
     fn review_comments(
@@ -293,7 +285,7 @@ impl RemoteHost for Patient<'_> {
         change: &crate::host::ChangeId,
         since: Option<&crate::review::ReadMarker>,
     ) -> Result<crate::review::ReviewRead> {
-        self.ask(Again::Always, || self.host.review_comments(change, since))
+        self.ask(|| self.host.review_comments(change, since))
     }
 
     fn reply_to_comment(
@@ -303,9 +295,7 @@ impl RemoteHost for Patient<'_> {
         body: &str,
         key: &str,
     ) -> Result<crate::review::PostedReply> {
-        self.ask(Again::OnlyRateLimited, || {
-            self.host.reply_to_comment(change, comment, body, key)
-        })
+        self.host.reply_to_comment(change, comment, body, key)
     }
 
     fn change_standings(
@@ -313,7 +303,7 @@ impl RemoteHost for Patient<'_> {
         root: &str,
         changes: &[crate::host::ChangeId],
     ) -> Result<crate::standings::ChangeStandings> {
-        self.ask(Again::Always, || self.host.change_standings(root, changes))
+        self.ask(|| self.host.change_standings(root, changes))
     }
 
     fn review_standings(
@@ -321,7 +311,7 @@ impl RemoteHost for Patient<'_> {
         root: &str,
         changes: &[(crate::host::ChangeId, Option<crate::review::ReadMarker>)],
     ) -> Result<crate::standings::ReviewStandings> {
-        self.ask(Again::Always, || self.host.review_standings(root, changes))
+        self.ask(|| self.host.review_standings(root, changes))
     }
 
     fn retarget_change(
@@ -330,23 +320,21 @@ impl RemoteHost for Patient<'_> {
         base: &str,
         body: Option<&str>,
     ) -> Result<crate::review::ReadCost> {
-        self.ask(Again::OnlyRateLimited, || {
-            self.host.retarget_change(change, base, body)
-        })
+        self.host.retarget_change(change, base, body)
     }
 
     fn reopen_change(&self, change: &crate::host::ChangeId) -> Result<crate::review::ReadCost> {
-        self.ask(Again::OnlyRateLimited, || self.host.reopen_change(change))
+        self.host.reopen_change(change)
     }
 
     fn head_activity(&self, cr: &ChangeRequest) -> Result<HeadActivity> {
-        self.ask(Again::Always, || self.host.head_activity(cr))
+        self.ask(|| self.host.head_activity(cr))
     }
 
     fn follow_checks(
         &self,
         changes: &[(crate::host::ChangeId, Sha)],
     ) -> Result<crate::standings::FollowedChecks> {
-        self.ask(Again::Always, || self.host.follow_checks(changes))
+        self.ask(|| self.host.follow_checks(changes))
     }
 }

@@ -2583,6 +2583,10 @@ fn landing_once_answered(context: &Context<'_>) -> String {
             command: None,
             because,
         }) => format!("`{status}` names no command that lands it now: {because}"),
+        // llmlint: ignore[changed_behavior_has_e2e] the publication has just resolved this
+        // identity and branch from the same registry, so no state the CLI can arrange makes
+        // the read fail here; the branch is the fail-safe that keeps a refusal from naming a
+        // verb nobody decided, and it names the command that decides it.
         Err(failure) => format!(
             "run `{status}` once the host answers for the command that lands it, which could \
              not be decided here: {failure}"

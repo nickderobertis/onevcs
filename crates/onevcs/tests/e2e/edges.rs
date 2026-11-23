@@ -2948,6 +2948,9 @@ fn a_host_that_answers_in_the_wrong_shape_is_rejected_at_the_boundary() {
         ("no-head", "returned a change request with no head", 1),
         ("no-number", "listed a change request with no number", 1),
         ("rollup-not-a-list", "returned a non-list of check runs", 1),
+        // A page that held entries back, of each of the two lists a reading reads.
+        ("checks-truncated", "check runs on", 1),
+        ("statuses-truncated", "commit statuses on", 1),
         ("no-state", "returned no state for", 2),
     ] {
         let world = World::new();

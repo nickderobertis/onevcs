@@ -25,7 +25,10 @@ fi
 # answer: a stand-in that replies is indistinguishable from one that was allowed
 # to be asked, so which endpoints a path touched is readable nowhere else. An
 # argument's own newlines are folded into spaces so one call stays one line.
-{ printf '%s ' "$@" | tr '\n' ' '; printf '\n'; } >>"$STATE/gh-calls.log"
+# The call a `lost:` answer performs on the host's side is the same call, logged once.
+if [ -z "${ONEVCS_FAKE_GH_ANSWERING:-}" ]; then
+  { printf '%s ' "$@" | tr '\n' ' '; printf '\n'; } >>"$STATE/gh-calls.log"
+fi
 
 # Whether this call asked to be shown content carrying terminal escape sequences,
 # and whether this world's `gh` predates the flag. One that does rejects it here,
@@ -43,7 +46,8 @@ fi
 # When each call was made, on this host's clock: the same calls `gh-calls.log` lists,
 # each after its moment as seconds since the epoch — how a journey shows that nothing
 # was asked again before the moment a refusal named.
-{ printf '%s ' "$(date +%s.%N)"; printf '%s ' "$@" | tr '\n' ' '; printf '\n'; } >>"$STATE/gh-times.log"
+[ -n "${ONEVCS_FAKE_GH_ANSWERING:-}" ] \
+  || { printf '%s ' "$(date +%s.%N)"; printf '%s ' "$@" | tr '\n' ' '; printf '\n'; } >>"$STATE/gh-times.log"
 
 # The REST reads of a change request and of the checks on a commit, which are answered
 # below from the same records `gh pr` is: the listing (`pulls?head=`), one change
@@ -74,10 +78,14 @@ fi
 # GitHub refuses every request until its allowance resets — `rate-limited-for:<n>`, the
 # same with the reset `n` seconds after the first refusal, or `server-error:<n>` or
 # `unreachable:<n>`: a `502`, or no HTTP response at all, the next `<n>` times (`always`
-# for every time). Each answers the way `gh` reports it: asked `--include`, with the
+# for every time) — `lost:<n>` performs the call and then answers it with a `502`,
+# `retry-after:<n>` is a rate limit naming both a reset and a later `Retry-After`, and
+# `secondary-limited:<n>` the secondary limiter's refusal, which names no reset.
+# Each answers the way `gh` reports it: asked `--include`, with the
 # status line and GitHub's rate-limit headers ahead of the body; a `gh pr` call, the way
 # a GraphQL request fails.
-if [ -f "$STATE/unanswered" ] && [ "${2:-}" != "rate_limit" ]; then
+if [ -f "$STATE/unanswered" ] && [ "${2:-}" != "rate_limit" ] \
+  && [ -z "${ONEVCS_FAKE_GH_ANSWERING:-}" ]; then
   called="$(printf '%s ' "$@" | tr '\n' ' ')"
   include=false
   for argument in "$@"; do [ "$argument" = "--include" ] && include=true; done
@@ -111,7 +119,7 @@ if [ -f "$STATE/unanswered" ] && [ "${2:-}" != "rate_limit" ]; then
           printf 'GraphQL: API rate limit already exceeded for user ID 1.\n' >&2
         fi
         exit 1 ;;
-      server-error:*|unreachable:*)
+      retry-after:*|secondary-limited:*|server-error:*|unreachable:*|lost:*)
         left="${how#*:}"
         counter="$STATE/unanswered.$line.count"
         if [ "$left" != "always" ]; then
@@ -120,6 +128,32 @@ if [ -f "$STATE/unanswered" ] && [ "${2:-}" != "rate_limit" ]; then
           printf '%s\n' "$((spent + 1))" >"$counter"
         fi
         case "$how" in
+          retry-after:*)
+            # A rate limit whose headers name a reset a second away and a `Retry-After`
+            # of four — the later of which is when GitHub takes the request again.
+            message='API rate limit exceeded for user ID 1.'
+            if [ "$include" = true ]; then
+              printf 'HTTP/2.0 403 Forbidden\nContent-Type: application/json; charset=utf-8\nRetry-After: 4\nX-Ratelimit-Limit: 5000\nX-Ratelimit-Remaining: 0\nX-Ratelimit-Reset: %s\nX-Ratelimit-Resource: core\n\n' "$(( $(date +%s) + 1 ))"
+            fi
+            printf '{"message":"%s","status":"403"}\n' "$message"
+            printf 'gh: %s (HTTP 403)\n' "$message" >&2 ;;
+          secondary-limited:*)
+            # The secondary limiter: a refusal for the rate limit that names no reset,
+            # while the allowance `rate_limit` reports is not spent.
+            message='You have exceeded a secondary rate limit. Please wait a few minutes before you try again.'
+            if [ "${1:-}" = "api" ]; then
+              [ "$include" = false ] || printf 'HTTP/2.0 403 Forbidden\nContent-Type: application/json; charset=utf-8\n\n'
+              printf '{"message":"%s","status":"403"}\n' "$message"
+              printf 'gh: %s (HTTP 403)\n' "$message" >&2
+            else
+              printf 'GraphQL: %s\n' "$message" >&2
+            fi ;;
+          lost:*)
+            # The host did what it was asked, and its answer never arrived: what a `502`
+            # in front of a request GitHub had already performed looks like.
+            ONEVCS_FAKE_GH_ANSWERING=1 "$0" "$@" >/dev/null 2>&1 || true
+            [ "${1:-}" != "api" ] || [ "$include" = false ] || printf 'HTTP/2.0 502 Bad Gateway\nContent-Type: text/html\n\n'
+            printf 'non-200 OK status code: 502 Bad Gateway body: ""\n' >&2 ;;
           unreachable:*)
             printf 'error connecting to api.github.com\ncheck your internet connection or https://githubstatus.com\n' >&2 ;;
           *)
@@ -146,7 +180,7 @@ if [ "${1:-}" = "api" ] && [ -z "$rest_call" ]; then
     graphql|repos/*/*/pulls/*|repos/*/*/issues/*/comments) delegated=1 ;;
   esac
 fi
-if [ "$delegated" = "0" ]; then
+if [ "$delegated" = "0" ] && [ -z "${ONEVCS_FAKE_GH_ANSWERING:-}" ]; then
   ledger_repo=""; ledger_number=""
   previous=""
   for argument in "$@"; do
@@ -185,7 +219,8 @@ case "$called_repo" in
   */*)
     if [ -d "$STATE/repos/$called_repo" ]; then
       STATE="$STATE/repos/$called_repo"
-      { printf '%s ' "$@" | tr '\n' ' '; printf '\n'; } >>"$STATE/gh-calls.log"
+      [ -n "${ONEVCS_FAKE_GH_ANSWERING:-}" ] \
+        || { printf '%s ' "$@" | tr '\n' ' '; printf '\n'; } >>"$STATE/gh-calls.log"
     elif [ -d "$STATE/repos" ]; then
       printf 'invalid --repo: repository %s is not hosted by this world\n' "$called_repo" >&2
       exit 1
@@ -1294,6 +1329,8 @@ case "$subcommand" in
         fi
         readable_rollup || forbidden
         if [ "$malformed" = "rollup-not-a-list" ]; then answered '{"total_count":1,"check_runs":"soon"}'; fi
+        # A page that holds entries back says how many there are.
+        if [ "$malformed" = "checks-truncated" ]; then answered '{"total_count":101,"check_runs":[]}'; fi
         rows="$(rows_for "$sha")"
         only="$(query_value check_name)"
         # A lookup of one check's job, which is where a host that will not say where a
@@ -1340,6 +1377,9 @@ case "$subcommand" in
         # posted, its `state` pending until it has a verdict.
         sha="${rest_call%/status}"; sha="${sha##*/}"
         readable_rollup || forbidden
+        if [ "$malformed" = "statuses-truncated" ]; then
+          answered "{\"state\":\"pending\",\"sha\":\"$sha\",\"total_count\":101,\"statuses\":[]}"
+        fi
         rows="$(rows_for "$sha")"
         statuses=""; separator=""; row=0; total=0
         while IFS='|' read -r name status conclusion required kind; do

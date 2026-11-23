@@ -1332,6 +1332,23 @@ impl World {
             .expect("a host that does not answer");
     }
 
+    /// Make the substituted host answer everything again: every rule
+    /// [`host_does_not_answer`](World::host_does_not_answer) wrote, and what each one
+    /// counted, is gone.
+    pub fn host_answers_again(&self) {
+        let state = self.path("gh-state");
+        for entry in std::fs::read_dir(&state).expect("a host state directory") {
+            let path = entry.expect("an entry").path();
+            let named = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name == "unanswered" || name.starts_with("unanswered."));
+            if named {
+                std::fs::remove_file(&path).expect("the host forgets a rule");
+            }
+        }
+    }
+
     /// Every event a session's stream carries, read the way a consumer reads it.
     pub fn events(&self, token: &str) -> Vec<serde_json::Value> {
         let output = self
