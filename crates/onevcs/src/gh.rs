@@ -352,7 +352,7 @@ fn server_failure(written: &str) -> Option<u16> {
 /// GitHub's `rate_limit` endpoint says, which answers whatever is left of the
 /// allowance itself. `None` where it cannot be read, where the allowance is not spent,
 /// or where it names a moment already passed.
-fn limit_reset(resource: &str) -> Option<i64> {
+fn limit_reset(resource: &str) -> Option<time::OffsetDateTime> {
     let answer = attempt(&["api", "rate_limit"]).ok()?;
     if answer.code != Some(0) {
         return None;
@@ -364,8 +364,9 @@ fn limit_reset(resource: &str) -> Option<i64> {
     if allowance.get("remaining")?.as_i64()? != 0 {
         return None;
     }
-    let reset = allowance.get("reset")?.as_i64()?;
-    (reset > time::OffsetDateTime::now_utc().unix_timestamp()).then_some(reset)
+    let reset =
+        time::OffsetDateTime::from_unix_timestamp(allowance.get("reset")?.as_i64()?).ok()?;
+    (reset > time::OffsetDateTime::now_utc()).then_some(reset)
 }
 
 /// A request the host did not answer — rate limited, failing on its own side, or never
@@ -394,7 +395,7 @@ pub struct RateLimit {
     /// The moment, in seconds since the Unix epoch, the host named for asking again —
     /// its rate limit's reset, or `Retry-After` from when it answered — where it named
     /// one. Nothing is to be sent before it.
-    pub resume: Option<i64>,
+    pub resume: Option<time::OffsetDateTime>,
 }
 
 // llmlint: ignore-block[invalid_states_unrepresentable] the classification crosses the
@@ -415,7 +416,7 @@ impl Unanswered {
                 u8::from(self.rate_limit.is_some()),
                 self.rate_limit
                     .and_then(|limit| limit.resume)
-                    .map_or_else(|| "-".to_owned(), |at| at.to_string()),
+                    .map_or_else(|| "-".to_owned(), |at| at.unix_timestamp().to_string()),
                 self.detail
             ),
         }
@@ -437,7 +438,7 @@ impl Unanswered {
         };
         let resume = match resume.strip_prefix(RESUME)? {
             "-" => None,
-            at => Some(at.parse().ok()?),
+            at => Some(time::OffsetDateTime::from_unix_timestamp(at.parse().ok()?).ok()?),
         };
         if said.is_empty() || (!limited && resume.is_some()) {
             return None;
@@ -476,9 +477,7 @@ impl Unanswered {
                 "its rate limit"
             };
             let mut said = format!("{call} is refused for {which}");
-            if let Some(at) =
-                resume.and_then(|at| time::OffsetDateTime::from_unix_timestamp(at).ok())
-            {
+            if let Some(at) = resume {
                 said.push_str(&format!(", resets at {}", crate::ids::stamp(at)));
             }
             return Some(Unanswered {
@@ -554,15 +553,11 @@ impl Unanswered {
                 if let Some(retry) = retry {
                     said.push_str(&format!(", retry after {retry}s"));
                 }
-                let reset = response
-                    .moment("x-ratelimit-reset")
-                    .map(time::OffsetDateTime::unix_timestamp);
+                let reset = response.moment("x-ratelimit-reset");
                 // A `Retry-After` too large to name a moment names none.
                 let after = retry.and_then(|retry| {
                     i64::try_from(retry).ok().and_then(|retry| {
-                        time::OffsetDateTime::now_utc()
-                            .unix_timestamp()
-                            .checked_add(retry)
+                        time::OffsetDateTime::now_utc().checked_add(time::Duration::seconds(retry))
                     })
                 });
                 return Some(Unanswered {

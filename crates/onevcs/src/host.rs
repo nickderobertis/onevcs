@@ -2288,6 +2288,11 @@ impl RemoteHost for GitHub {
         // actor is named.
         matchable(&check.name, cr)?;
         let log = self.log_of(cr, check).map_err(|error| {
+            // A request the host did not answer is said as one, so whoever waits on such
+            // a request recognises it; every other failure is attributed here.
+            if gh::Unanswered::of(&error).is_some() {
+                return error;
+            }
             invalid(format!(
                 "the host could not produce a log for check {:?} on {}: {error}",
                 check.name, cr.url

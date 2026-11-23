@@ -190,6 +190,40 @@ fn a_read_the_host_fails_once_or_never_receives_is_asked_again_and_answered() {
 }
 
 #[test]
+fn a_check_log_the_host_failed_to_send_is_asked_for_again() {
+    // The log of a settled check is read after the push too, and a host that failed
+    // the lookup of where the check ran is asked again rather than leaving the check
+    // recorded without its log.
+    let hosted = hosted();
+    hosted
+        .world
+        .host_does_not_answer("/check-runs?check_name=", "server-error:1");
+    let token = hosted.change("feature/logged", "feat: land with its log");
+    let assert = hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+    let said = stderr_of(&assert);
+    assert!(!said.contains("recorded without its log"), "{said}");
+    let checks = hosted.world.events_of(&token, "change-check");
+    let settled = checks
+        .iter()
+        .find(|check| check["payload"]["conclusion"] == "success")
+        .expect("the check settled");
+    assert!(
+        settled["artifacts"]
+            .as_array()
+            .is_some_and(|artifacts| !artifacts.is_empty()),
+        "with its log: {settled}"
+    );
+    assert_eq!(waits(&hosted, &token).len(), 1);
+    assert_eq!(calls_to(&hosted, "/check-runs?check_name=").len(), 2);
+}
+
+#[test]
 fn a_read_the_host_fails_every_time_is_asked_less_and_less_often_and_never_past_the_bound() {
     let hosted = hosted();
     hosted

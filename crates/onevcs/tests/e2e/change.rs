@@ -701,6 +701,9 @@ impl onevcs::RemoteHost for SharedGitHub {
     fn visibility(&self) -> onevcs::Result<onevcs::Visibility> {
         self.0.visibility()
     }
+    fn required_checks_on(&self, base: &str) -> onevcs::Result<onevcs::RequiredChecks> {
+        self.0.required_checks_on(base)
+    }
 }
 
 #[test]
@@ -831,6 +834,69 @@ fn a_change_request_with_no_body_reads_as_an_empty_description_whichever_read_an
             .is_some_and(|call| call.contains("/pulls/1 ")),
         "the change request was read on its own: {:?}",
         hosted.world.host_calls()
+    );
+}
+
+#[test]
+fn what_blocks_a_merge_is_read_once_an_operation_and_afresh_in_the_next() {
+    // A publication reads what blocks a merge into its base once — for its watch's
+    // declaration and for every reading of its checks alike — and a host kept for the
+    // whole process does not answer a later read from it after the requirement moves.
+    let hosted = Hosted::new(OPEN);
+    // Running at the first reading and green from the second, so it is read twice.
+    hosted.world.host_checks(&[crate::world::Check {
+        name: "gate",
+        status: "in_progress",
+        conclusion: None,
+        required: true,
+    }]);
+    hosted.world.host_checks_after(
+        1,
+        &[crate::world::Check {
+            name: "gate",
+            status: "completed",
+            conclusion: Some("success"),
+            required: true,
+        }],
+    );
+    hosted.world.host_requires_on("main", &["gate"]);
+    let token = hosted.change("feature/required", "feat: add the required thing");
+    crate::honesty::inhabit(&hosted.world);
+    let github =
+        std::sync::Arc::new(onevcs::GitHub::new("acme-corp/hosted").expect("a repository"));
+    let hosting = OneGitHub(std::sync::Arc::clone(&github));
+    let providers = onevcs::Providers {
+        vcs: onevcs::Providers::real().vcs,
+        hosting: &hosting,
+    };
+    onevcs::publish(
+        &providers,
+        &onevcs::SessionToken(token.clone()),
+        &onevcs::PublishRequest::default(),
+    )
+    .expect("the publication runs");
+    let calls = hosted.world.host_calls();
+    let readings = calls
+        .iter()
+        .filter(|call| call.contains("/check-runs?per_page"))
+        .count();
+    let rules = calls
+        .iter()
+        .filter(|call| call.contains("/rules/branches/main"))
+        .count();
+    assert!(
+        readings >= 2,
+        "the checks were read more than once: {calls:?}"
+    );
+    assert_eq!(rules, 1, "and what blocks the merge once: {calls:?}");
+
+    hosted.world.host_requires_on("main", &["gate", "lint"]);
+    use onevcs::RemoteHost;
+    let required = github.required_checks_on("main").expect("the host answers");
+    assert_eq!(
+        required.checks.into_iter().collect::<Vec<_>>(),
+        ["gate", "lint"],
+        "the next read is the host's, not the finished publication's"
     );
 }
 

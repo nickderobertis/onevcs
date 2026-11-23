@@ -99,10 +99,9 @@ impl<'a> Patient<'a> {
     /// limit named, and otherwise a backoff that doubles from one second and never
     /// shrinks.
     fn wait_for(&self, unanswered: &gh::Unanswered, attempt: u32) -> Duration {
-        if let Some(resume) = unanswered.rate_limit.and_then(|limit| limit.resume) {
-            let now = time::OffsetDateTime::now_utc();
-            let at = time::OffsetDateTime::from_unix_timestamp(resume).unwrap_or(now);
-            let left = Duration::try_from(at - now).unwrap_or(Duration::ZERO);
+        if let Some(at) = unanswered.rate_limit.and_then(|limit| limit.resume) {
+            let left =
+                Duration::try_from(at - time::OffsetDateTime::now_utc()).unwrap_or(Duration::ZERO);
             return left + PAST_THE_RESET;
         }
         let doubled = 1u64
