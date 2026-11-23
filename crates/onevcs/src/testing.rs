@@ -157,3 +157,10 @@ fn write_document(path: &Path, document: &impl serde::Serialize) -> Result<()> {
         .and_then(|()| std::fs::write(path, bytes))
         .map_err(|error| error::invalid(format!("fixture document {}: {error}", path.display())))
 }
+
+/// Who holds `repo`, proved record by record with every recovery cache cleared before
+/// each and no proof shared between records — the answer a holder read that shares its
+/// proofs across the pass, as [`crate::session_holders`] does, must equal.
+pub fn holders_proved_alone(repo: &str) -> Result<Vec<crate::SessionHolder>> {
+    workspace::holders_proved_alone(repo)
+}

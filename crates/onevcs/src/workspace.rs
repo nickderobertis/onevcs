@@ -764,12 +764,46 @@ pub fn holders(repo: &str) -> Result<Vec<SessionHolder>> {
     // records are what say whether a closed session's slot was taken, and asking that
     // per record re-read every record on the host once per record on the host.
     let records = all()?;
+    let holders = proof_pass(
+        &records,
+        |record| record.identity == resolution.key,
+        |record, spent| (!spent).then(|| SessionHolder::from(record.clone())),
+    )?;
+    Ok(holders)
+}
+
+/// [`holders`] proved record by record, sharing no recovery answer between records: the proof
+/// asked outside any recovery scope or memo, as `holders` asked it before its pass
+/// shared them, with every in-process recovery answer cleared before each record and
+/// the proofs on disk removed first. What a shared pass must answer exactly; the
+/// test-support bridge's oracle, never a production read.
+///
+/// Outside a scope no proof on disk is read or written (`recovery_cache::query`), so
+/// removing them once is clearing them before every record.
+#[cfg(feature = "testing")]
+pub(crate) fn holders_proved_alone(repo: &str) -> Result<Vec<SessionHolder>> {
+    let registry = store::load()?;
+    let resolution = store::resolve(&registry, repo)?;
+    let _reads = crate::checkout_reads::identity(&resolution.key)?;
+    let records = all()?;
     let open = OpenRoots::of(&records);
     let work = RecordWork::read(&records)?;
+    let disk = home::root()?.join("cache/recoverable");
+    match std::fs::remove_dir_all(&disk) {
+        Ok(()) => {}
+        Err(absent) if absent.kind() == std::io::ErrorKind::NotFound => {}
+        Err(refused) => return Err(error::at("clear the recovery cache in", &disk)(refused)),
+    }
+    // The identity's census is shared across records as `holders` always shared it:
+    // it is the pass's listing of branches and copies, not a recovery cache.
     let proofs = RecordProofs::of(&work);
     let mut holders = Vec::new();
-    for record in &records {
-        if record.identity == resolution.key && !spent(record, &open, &proofs)? {
+    for record in records
+        .iter()
+        .filter(|record| record.identity == resolution.key)
+    {
+        crate::recovery_cache::clear();
+        if !spent(record, &open, &proofs)? {
             holders.push(SessionHolder::from(record.clone()));
         }
     }
@@ -793,25 +827,45 @@ pub fn holders(repo: &str) -> Result<Vec<SessionHolder>> {
 /// whole scan — and the sweep goes on to read the same records for the finished
 /// branches, so it lists the directory once for both.
 pub(crate) fn spent_among(listed: &[Record]) -> Result<Vec<Record>> {
+    proof_pass(
+        listed,
+        |_| true,
+        |record, spent| spent.then(|| record.clone()),
+    )
+}
+
+/// One proof pass over a listing: [`spent`] asked of every record `asked` selects, in
+/// listing order, and `keep` handed each record with its answer.
+///
+/// The one place a pass is run, so [`holders`] and [`spent_among`] cannot come to
+/// prove a record two ways — the holder read once ran the same proof outside these
+/// scopes and re-asked git every question per record, eleven minutes over a
+/// repository's retained sessions.
+///
+/// The proof is recovery's, so it reuses recovery's immutable answers: a repeat pass
+/// over unchanged branches asks git no ancestry or history question again. Only
+/// answers keyed by full object ids are reused (`recovery_cache.rs`); the records,
+/// the streams, the leases and every ref are read afresh by the pass. One memo for the
+/// whole pass, since nothing in it writes: every record of an identity reads the same
+/// base and the same places.
+fn proof_pass<T>(
+    listed: &[Record],
+    asked: impl Fn(&Record) -> bool,
+    keep: impl Fn(&Record, bool) -> Option<T>,
+) -> Result<Vec<T>> {
     let open = OpenRoots::of(listed);
     let work = RecordWork::read(listed)?;
     let proofs = RecordProofs::of(&work);
-    let mut records = Vec::new();
-    // The proof is recovery's, so it reuses recovery's immutable answers: a repeat
-    // sweep over unchanged branches asks git no ancestry or history question again.
-    // One memo for the whole pass, since nothing in it writes: every record of an
-    // identity reads the same base and the same places.
+    let mut kept = Vec::new();
     crate::recovery_cache::scope(|| {
         git::memoized(|| -> Result<()> {
-            for record in listed {
-                if spent(record, &open, &proofs)? {
-                    records.push(record.clone());
-                }
+            for record in listed.iter().filter(|record| asked(record)) {
+                kept.extend(keep(record, spent(record, &open, &proofs)?));
             }
             Ok(())
         })
     })?;
-    Ok(records)
+    Ok(kept)
 }
 
 /// Whether a record has nobody left to answer for it **and nothing left behind it**,

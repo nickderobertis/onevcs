@@ -1,4 +1,5 @@
-//! Times `Vcs::recoverable_matching` in process, the way a library consumer calls it.
+//! Times `Vcs::recoverable_matching` — or `onevcs::session_holders` — in process, the
+//! way a library consumer calls it.
 //!
 //! Not a command of this crate: the recovery workload journeys build it in release
 //! and drive it over their fixtures, because the latency a consumer such as a Stop
@@ -6,9 +7,11 @@
 //! test binary built for coverage cannot measure that. Its whole input is the state
 //! root `ONEVCS_HOME` names and three arguments:
 //!
-//! `recoverable_latency [--launcher NAME] [--selection host] --calls N --mode warm|cold|uncached|once`
+//! `recoverable_latency [--launcher NAME] [--selection host] [--holders REPO] --calls N --mode warm|cold|uncached|once`
 //!
 //! `--selection host` asks the unfiltered Decision read in place of a launcher's rows.
+//! `--holders REPO` asks who holds that repository, the read a launcher makes before
+//! work can start, in place of either.
 //! `once` makes `N` calls with no priming and nothing cleared, for a caller that sets
 //! the state each call starts from.
 //!
@@ -157,10 +160,12 @@ enum Mode {
     Once,
 }
 
-/// Which rows the timed calls ask for: one launcher's, or the whole host's.
+/// Which rows the timed calls ask for: one launcher's, the whole host's, or one
+/// repository's holders.
 enum Asked {
     Launcher(Launcher),
     Host,
+    Holders(String),
 }
 
 struct Arguments {
@@ -196,6 +201,7 @@ enum Failure {
 fn arguments() -> Result<Arguments, String> {
     let mut launcher = None;
     let mut host = false;
+    let mut holders = None;
     let mut calls = None;
     let mut mode = None;
     let mut given = std::env::args().skip(1);
@@ -206,6 +212,7 @@ fn arguments() -> Result<Arguments, String> {
         match flag.as_str() {
             "--launcher" => launcher = Some(Launcher::parse(value)?),
             "--selection" if value == "host" => host = true,
+            "--holders" => holders = Some(value),
             "--calls" => {
                 calls = Some(
                     value
@@ -229,15 +236,16 @@ fn arguments() -> Result<Arguments, String> {
             _ => return Err(format!("unexpected argument {flag} {value}")),
         }
     }
-    let asked = match (launcher, host) {
-        (Some(launcher), false) => Asked::Launcher(launcher),
-        (None, true) => Asked::Host,
-        (Some(_), true) => {
-            return Err("--selection host and --launcher are alternatives".to_owned())
+    let asked = match (launcher, host, holders) {
+        (Some(launcher), false, None) => Asked::Launcher(launcher),
+        (None, true, None) => Asked::Host,
+        (None, false, Some(repo)) => Asked::Holders(repo),
+        (None, false, None) => {
+            return Err(
+                "--launcher is required unless --selection host or --holders is given".to_owned(),
+            )
         }
-        (None, false) => {
-            return Err("--launcher is required unless --selection host is given".to_owned())
-        }
+        _ => return Err("--launcher, --selection host and --holders are alternatives".to_owned()),
     };
     let mode = mode.ok_or("--mode warm|cold|uncached|once is required")?;
     Ok(Arguments {
@@ -245,6 +253,14 @@ fn arguments() -> Result<Arguments, String> {
         calls: calls.ok_or("--calls is required")?,
         mode,
     })
+}
+
+/// A read's rows as the report prints them.
+fn rows<T: serde::Serialize>(read: &[T]) -> Result<Vec<serde_json::Value>, Failure> {
+    read.iter()
+        .map(serde_json::to_value)
+        .collect::<Result<_, _>>()
+        .map_err(|failure| Failure::Read(failure.to_string()))
 }
 
 fn run() -> Result<serde_json::Value, Failure> {
@@ -285,13 +301,18 @@ fn run() -> Result<serde_json::Value, Failure> {
             Asked::Launcher(launcher) => {
                 BTreeMap::from([("launcher".to_owned(), launcher.0.clone())])
             }
-            Asked::Host => BTreeMap::new(),
+            Asked::Host | Asked::Holders(_) => BTreeMap::new(),
         },
         ..Selection::default()
     };
-    let read = || {
-        Git.recoverable_matching(Scope::All, &selection)
+    let read = || match &arguments.asked {
+        Asked::Holders(repo) => onevcs::session_holders(repo)
+            .map_err(|failure| Failure::Read(format!("session_holders failed: {failure}")))
+            .and_then(|holders| rows(&holders)),
+        Asked::Launcher(_) | Asked::Host => Git
+            .recoverable_matching(Scope::All, &selection)
             .map_err(|failure| Failure::Read(format!("recoverable_matching failed: {failure}")))
+            .and_then(|rows_read| rows(&rows_read)),
     };
     match arguments.mode {
         Mode::Warm => {

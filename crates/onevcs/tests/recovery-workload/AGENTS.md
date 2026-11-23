@@ -78,3 +78,9 @@ rebuilding either would measure another cold attempt instead of a retry.
 `AgedHost::restore` re-establishes, because each read refreshes the records and a sample
 taken after one would measure nothing moved. Its samples stay out of the
 `--scale 1|10` workloads the other budgets read.
+
+`holders.rs`'s oracle, `onevcs::testing::holders_proved_alone`, must stay the proof made
+record by record with no recovery answer shared: held against another shared read, a
+stale reuse would pass. Its history count is zero for a scoped read because that read
+answers in process, so it guards one regression — a holder pass run outside the
+recovery scope, which started 6126 git processes per read here.

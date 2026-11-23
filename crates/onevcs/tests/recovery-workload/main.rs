@@ -19,6 +19,7 @@ mod decisions_journeys;
 #[path = "../e2e/decisions_support.rs"]
 mod decisions_support;
 mod draft_hold;
+mod holders;
 mod host;
 mod retire_hour;
 #[cfg(target_os = "linux")]
@@ -761,12 +762,25 @@ fn full_workload_recovery() {
     let host = host::journey(host_root.path());
     preparation_ms += milliseconds(host_preparation).min(host.build_ms);
     host_root.close().expect("required host fixture cleanup");
+    let holder_root = tempfile::Builder::new()
+        .prefix("recovery-holders-")
+        .tempdir_in(
+            std::env::var_os("ONEPIPELINE_NODE_SCRATCH_DIR")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(std::env::temp_dir),
+        )
+        .expect("empty disposable host");
+    let holders = holders::journey(holder_root.path());
+    holder_root
+        .close()
+        .expect("required holder fixture cleanup");
     let mut record = Record {
-        version: 3,
+        version: 4,
         build: provenance.clone(),
         scenario: Scenario::LauncherDecision,
         workloads: workloads.try_into().expect("both workloads"),
         host,
+        holders,
         preparation_ms,
         total_ms: milliseconds(start),
         load1: initial_load,
@@ -863,6 +877,19 @@ fn the_latency_program_refuses_what_it_cannot_use() {
             "are alternatives",
         ),
         (
+            vec![
+                "--launcher",
+                "x",
+                "--holders",
+                "r",
+                "--calls",
+                "1",
+                "--mode",
+                "once",
+            ],
+            "are alternatives",
+        ),
+        (
             vec!["--launcher", "a\nb", "--calls", "1", "--mode", "warm"],
             "is not a label value",
         ),
@@ -902,6 +929,13 @@ fn the_latency_program_refuses_what_it_cannot_use() {
     assert_eq!(code, Some(1), "{stderr}");
     assert!(stderr.contains("recoverable_matching failed"), "{stderr}");
     assert!(silent, "a failed read prints no report");
+    let (code, stderr, silent) = run(
+        &["--holders", "r", "--calls", "1", "--mode", "once"],
+        Some(&home),
+    );
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(stderr.contains("session_holders failed"), "{stderr}");
+    assert!(silent, "a failed holder read prints no report");
 
     // A cold read answers from nothing a read left behind, its decision records included;
     // a warm one keeps both. The clearing comes before the read this state root fails.

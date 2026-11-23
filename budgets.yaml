@@ -41,7 +41,7 @@ budgets:
     unit: seconds
     direction: max
     threshold: 180
-    description: Estimated full journey budget from empty fixture roots through both preparations, correctness validation, timed and counting calls, priming, cache clears and cleanup.
+    description: Estimated full journey budget from empty fixture roots through both preparations, correctness validation, timed and counting calls, the holder scenario, priming, cache clears and cleanup. Its detail reports the empty-root preparation time and load1 across the journey, and, as the repository holder read's breakdown over one identity's 118 retained session records, the cold session_holders call, the median and slowest of ten warm in-process calls after one priming call, and the git executions of one further warm call through the counting shim.
   - id: recoverable-decision-latency-labelled-warm
     measure: reported
     command: [node, scripts/recoverable-latency-budget.mjs, --scale, '1', --warm]

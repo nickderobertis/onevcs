@@ -97,6 +97,28 @@ pub(super) struct HostRecord {
     pub rows_sha256: String,
 }
 
+/// The repository holder read over [`onevcs_testing::recovery::build_holders`]'s
+/// retained history, which reports as a breakdown of the journey's wall time.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct HolderRecord {
+    /// The session records the identity retains.
+    pub records: usize,
+    /// How long `build_holders` took.
+    pub build_ms: u64,
+    /// One in-process `session_holders` call with every proof cleared first.
+    pub cold: Call,
+    /// The in-process call after the cold one that the warm calls are primed by.
+    pub priming: Call,
+    /// Ten in-process calls after the priming call, over unchanged records.
+    pub warm: [Call; 10],
+    /// Git processes one further warm call started, through a counting shim.
+    pub git_executions: usize,
+    /// The whole scenario inside the journey, from building its fixture to its last
+    /// counted call: what it adds to the journey's wall time.
+    pub scenario_ms: u64,
+}
+
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Record {
@@ -106,6 +128,8 @@ pub(super) struct Record {
     pub workloads: [Workload; 2],
     /// The host-shaped workload, which reports through `--scale host` alone.
     pub host: HostRecord,
+    /// The repository holder read, reported in the journey time's detail.
+    pub holders: HolderRecord,
     pub preparation_ms: u64,
     pub total_ms: u64,
     pub load1: f64,
@@ -123,6 +147,7 @@ pub(super) fn schema() -> serde_json::Value {
         "1": onevcs_testing::recovery::Scale::One.counts(),
         "10": onevcs_testing::recovery::Scale::Ten.counts()
     });
+    schema["x-holder-records"] = serde_json::json!(onevcs_testing::recovery::HOLDER_RECORDS);
     schema
 }
 
