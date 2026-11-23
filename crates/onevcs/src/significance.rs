@@ -94,6 +94,7 @@ pub fn significance(kind: EventKind, result: EmissionResult) -> Significance {
         | EventKind::ChangeReopened
         | EventKind::BaseMerge
         | EventKind::MergeArmed
-        | EventKind::PublicationResumed => Significance::Progress,
+        | EventKind::PublicationResumed
+        | EventKind::HostWait => Significance::Progress,
     }
 }

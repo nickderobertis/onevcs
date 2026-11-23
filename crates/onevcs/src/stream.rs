@@ -108,6 +108,24 @@ impl Stream {
         }
     }
 
+    /// A second writer of this same stream, with every label this one stamps and the
+    /// operation it mirrors into — for a part of a publication that records an event
+    /// while the stream itself is borrowed by its caller. Both number from the file
+    /// under its lock, so their events are one series.
+    pub(crate) fn sibling(&self) -> Stream {
+        Stream {
+            path: self.path.clone(),
+            id: self.id.clone(),
+            labels: self.labels.clone(),
+            emitter: emitter(&self.id, &self.path, &self.labels),
+            attempt: None,
+            operation: self
+                .operation
+                .clone()
+                .map(|operation| operation.with_labels(self.labels.clone())),
+        }
+    }
+
     pub(crate) fn in_operation(&self) -> bool {
         self.operation.is_some()
     }

@@ -1568,10 +1568,37 @@ fn landing_among(
 /// whose arguments, directory and environment match one already made inside this
 /// call is answered from that one, and anything that is not a read empties it.
 pub fn run(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Result<Report> {
-    git::memoized(|| reported(registry, reference, hosting))
+    git::memoized(|| reported(registry, reference, None, hosting))
 }
 
-fn reported(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Result<Report> {
+/// The next step `onevcs status` (`work_status`) names for `branch` of `identity`, decided from what
+/// this host holds and asking the code host nothing — what a publication that could
+/// not read its host after its push tells its operator to run, through the very
+/// decision `work_status` makes, so the two cannot name different verbs.
+pub(crate) fn next_without_the_host(
+    registry: &Registry,
+    identity: &str,
+    branch: &str,
+) -> Result<NextReport> {
+    /// A host that is never asked: the reason it gives is the section's answer.
+    struct Unasked;
+    impl Hosting for Unasked {
+        fn for_repo(&self, _slug: &str) -> Result<Box<dyn crate::host::RemoteHost>> {
+            Err(crate::error::invalid(
+                "the host was not asked, because it had just not answered the publication"
+                    .to_owned(),
+            ))
+        }
+    }
+    git::memoized(|| reported(registry, branch, Some(identity), &Unasked)).map(|report| report.next)
+}
+
+fn reported(
+    registry: &Registry,
+    reference: &str,
+    within: Option<&str>,
+    hosting: &dyn Hosting,
+) -> Result<Report> {
     let mut notes = Vec::new();
     let streams = recorded_streams(&mut notes)?;
     let Resolved {
@@ -1582,7 +1609,7 @@ fn reported(registry: &Registry, reference: &str, hosting: &dyn Hosting) -> Resu
         registry,
         reference,
         &streams,
-        None,
+        within,
         Some(hosting),
         &mut notes,
     )?;
@@ -2140,21 +2167,14 @@ fn next_step(seen: &Advance<'_>) -> NextReport {
                     ),
                 };
             }
-            let repo = resolution.publication.to_string_lossy();
             let interrupted = provenance == Some(BranchProvenance::IncompleteUnattested);
             let verb = if interrupted {
-                "recover"
+                crate::branch::Verb::Recover
             } else {
-                "publish-branch"
+                crate::branch::Verb::PublishBranch
             };
             NextReport {
-                command: Some(guidance::command([
-                    "onevcs",
-                    verb,
-                    &work.branch,
-                    "--repo",
-                    &repo,
-                ])),
+                command: Some(verb.command(&work.branch, &resolution.publication)),
                 because: if interrupted {
                     format!(
                         "branch {branch:?} is preserved and unpublished, and carries an unattested \

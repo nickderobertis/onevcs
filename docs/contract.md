@@ -1221,7 +1221,7 @@ review       change-opened change-drafted draft-lifted change-described
              change-check change-merged draft-lifted-early draft-kept-for-review
              checks-settled gate-run:required-checks review-comments-read
              review-reply-posted change-standings-read change-retargeted
-             change-reopened merge-armed publication-resumed
+             change-reopened merge-armed publication-resumed host-wait
 release      release-probed release-acknowledged release-observed
 ```
 
@@ -4836,6 +4836,64 @@ it publishes the same branch through to the merge without touching the record.
 
 Event kinds added: none.
 
+### A publication whose push landed waits out a host that did not answer, inside its watch's bound
+
+**Approved by the manager's ruling for onevcs#229.** A publication whose push reached
+the origin used to end `pushed-unverified` the first time a host read after the push
+went unanswered — GitHub's GraphQL allowance spent, or one `5xx` — so finished, verified
+work settled failed and its recovery named a verb the branch then refused. Now:
+
+**What is waited on.** Every request a publication makes of its host after its push —
+the authenticated user, the change-request lookup, the change request by number, its
+check runs and commit statuses, the draft lift and the merge it arms — that the host did
+not answer: refused for a rate limit (a `429`, or a `403` GitHub marks as one), failing on
+the host's side (`5xx`), or never reached (no HTTP response). Any other answer, a refusal
+included, is the answer it always was. A request the host refused for a rate limit did
+nothing there and is sent again whatever it would have changed; one that failed or was
+never reached is sent again only where it reads.
+
+**How long.** A rate limit is waited out until the reset the host named — its
+`x-ratelimit-reset`, or `Retry-After` from when it answered, and for a GraphQL refusal
+that names neither, the `graphql` reset GitHub's `rate_limit` endpoint reports — and
+nothing is sent to the host before then. A failing or unreached request, or a rate limit
+with no reset to read, is asked again after 1, 2, 4, 8, 16, 32 and then every 60
+seconds. All of it is inside the bound the publication's watch already runs under
+(`checks.wait_seconds`, `ONEVCS_CHECKS_TIMEOUT_SECONDS`), counted from the push: no new
+bound and no new flag. A publication ends `pushed-unverified` only where the next
+attempt would fall past that bound, and a caller's cancellation ends a wait as it ends
+every other one.
+
+**What it records.** Each wait is one `host-wait` event on the publication's stream, in
+the `review` phase at `progress` significance, before the wait begins:
+
+```json
+{"call": "GitHub's REST API (GET /repos/{owner}/{repo}/pulls)", "reason": "GitHub's REST API (GET /repos/{owner}/{repo}/pulls) is refused for its rate limit: HTTP 403, limit 5000 (core), 0 remaining, resets at 2026-11-23T12:00:00.000Z", "rate_limited": true, "attempt": 1, "until": "2026-11-23T12:00:01.000Z", "bound": "2026-11-23T12:59:58.000Z"}
+```
+
+`call` names the request without the repository, `reason` is what the host's status and
+headers said, `rate_limited` whether it was a rate limit, `attempt` counts the waits of
+that one request from 1, `until` is when it is asked again and `bound` when waiting stops.
+
+**What it reads over.** The change-request lookup (`GET /repos/{owner}/{repo}/pulls`
+with `head=<owner>:<branch>`, `base` and `state=open`), the change request by number
+(`GET .../pulls/{number}`), the check runs and commit statuses on its head (`GET
+.../commits/{sha}/check-runs`, `GET .../commits/{sha}/status`, with what blocks the merge
+read from the base's rulesets and classic protection), and the user lookup (`GET /user`)
+are REST requests, which spend the REST allowance rather than the GraphQL one. Arming
+auto-merge stays a GraphQL call, which only GraphQL offers.
+
+**The landing command it names.** A `pushed-unverified` reason renders the command that
+lands the branch from the branch's own provenance, through the one decision
+`onevcs status` (the library's `work_status`) makes for its `next` step: `onevcs publish <token>` where a session
+still holds it, `onevcs recover` for an unattested incomplete marker, and
+`onevcs publish-branch` only for a branch that verb accepts. Where `onevcs status` would
+name no command, the reason says so and why.
+
+The new kind is a variant added to an exhaustive enum of the library surface, which is a
+breaking change of that surface, made deliberately by that ruling.
+
+Event kinds added: `host-wait`.
+
 ### Every gate run a publication makes is recorded, and every landing says when
 
 Part of upstream per-change telemetry (ai-orchestrator#1508). A change's cycle time is
@@ -6633,7 +6691,7 @@ The producer classification table is exhaustive over current kinds:
 | base-merge | progress | Current decision records are merged, skipped or deferred; typed failures use the universal override below |
 | release-probed | progress | blocker for not-answered; released and no-release remain progress |
 | branch-retired | progress | blocker for incomplete retirement; successful retirement remains progress |
-| session-opened, session-closed, commit-preserved, branch-preserved, push, draft-lifted, draft-lifted-early, merge-armed, publication-resumed, merge-queued, merge-completed, recovery-attested, release-acknowledged, release-observed, branch-superseded, review-reply-posted, change-retargeted, change-reopened, fetch, lock-wait, lock-acquired, change-described, review-comments-read, change-standings-read | progress | Ordinary success or running |
+| session-opened, session-closed, commit-preserved, branch-preserved, push, draft-lifted, draft-lifted-early, merge-armed, publication-resumed, host-wait, merge-queued, merge-completed, recovery-attested, release-acknowledged, release-observed, branch-superseded, review-reply-posted, change-retargeted, change-reopened, fetch, lock-wait, lock-acquired, change-described, review-comments-read, change-standings-read | progress | Ordinary success or running |
 
 Required check significance uses the watch's existing cached declaration, falling
 back to the host's per-check marking only when that declaration is unavailable.

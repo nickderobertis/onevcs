@@ -229,6 +229,13 @@ pub enum EventKind {
     /// branch and head on a stream, and a resumed one has none, so this is what
     /// resolves its change request's URL and its landing commit back to the work.
     PublicationResumed,
+    /// A publication whose push reached the origin is waiting on its host rather than
+    /// abandoning the merge path: a request it made after the push went unanswered —
+    /// refused for a rate limit, failing on the host's side, or never reached — and it
+    /// asks again once the wait ends, inside the bound its watch runs under. Carries the
+    /// `call` waited on, the host's `reason`, `until` (when it asks again), `attempt`,
+    /// and `bound` (the moment past which it stops waiting and ends unverified).
+    HostWait,
     /// The repository's `post-checkout` hook, run by git at the checkout of a session's
     /// worktree, exited 0; carries a [`WorktreeProvision`].
     WorktreeProvisioned,
@@ -359,6 +366,7 @@ impl EventKind {
             EventKind::BaseMerge => "base-merge",
             EventKind::MergeArmed => "merge-armed",
             EventKind::PublicationResumed => "publication-resumed",
+            EventKind::HostWait => "host-wait",
         }
     }
 
@@ -452,6 +460,9 @@ impl PhaseOf for Phase {
             // Taking an open change request up again at its hosted checks: the change
             // being ruled on, at the point its first publication's watch would start.
             | EventKind::PublicationResumed
+            // Waiting out a host that did not answer the merge path's reads: the
+            // change being ruled on, paused rather than abandoned.
+            | EventKind::HostWait
             // Reading what reviewers said and answering it is the change being ruled on.
             | EventKind::ReviewCommentsRead
             | EventKind::ReviewReplyPosted

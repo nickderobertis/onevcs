@@ -86,6 +86,7 @@ mod native_objects;
 mod native_reads;
 mod native_refs;
 mod ops;
+mod patience;
 mod policy;
 mod pool;
 mod preserve;
