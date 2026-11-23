@@ -2184,6 +2184,39 @@ fn a_publication_whose_checks_all_name_another_commit_waits_and_says_so() {
 }
 
 #[test]
+fn a_check_run_that_names_no_commit_is_consulted_and_given_none() {
+    // A check run whose record does not say which commit it ran against is a check
+    // that does not say — consulted exactly as one was before the field existed, and
+    // recorded with no commit rather than with the one this build asked about.
+    let hosted = Hosted::new(AUTOMATED);
+    hosted.world.host_checks(&[Check {
+        name: "gate",
+        status: "completed",
+        conclusion: Some("success"),
+        required: true,
+    }]);
+    hosted.world.answer_malformed("checks-headless");
+    let token = hosted.change("feature/headless", "feat: add the headless thing");
+
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("merged at"));
+    let checks = hosted.world.events_of(&token, "change-check");
+    assert!(!checks.is_empty(), "the check was reported");
+    assert!(
+        checks
+            .iter()
+            .all(|check| check["payload"].get("head").is_none()),
+        "and with no commit: {checks:?}"
+    );
+    assert_eq!(hosted.origin_log().len(), 2);
+}
+
+#[test]
 fn a_commit_the_host_says_a_check_is_attached_to_is_not_taken_on_trust() {
     // The commit a check carries is host-supplied text arriving at a trust boundary,
     // and what this crate does with it is compare it against the commit a

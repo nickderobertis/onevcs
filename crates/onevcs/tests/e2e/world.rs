@@ -863,7 +863,8 @@ impl World {
     /// Two more are about the commit a check says it is attached to, one per source:
     /// `head-not-a-commit` answers a check run's own `head_sha` with something that
     /// is not a commit hash, and `actions-only-run-head-not-a-commit` does the same to
-    /// a workflow run's. Both are host-supplied text a publication
+    /// a workflow run's, and `checks-headless` answers check runs whose records name
+    /// no commit at all. Both are host-supplied text a publication
     /// goes on to compare against the commit it pushed, so neither may be taken on
     /// trust.
     ///

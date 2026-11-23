@@ -1285,25 +1285,27 @@ impl GitHub {
             self.repo
         ))?;
         let runs = whole(&runs, "check_runs", "check runs", sha)?;
-        let statuses = self.rest(&format!(
+        let combined = self.rest(&format!(
             "repos/{}/commits/{sha}/status?per_page={PAGE}",
             self.repo
         ))?;
-        let statuses = whole(&statuses, "statuses", "commit statuses", sha)?;
+        let statuses = whole(&combined, "statuses", "commit statuses", sha)?;
         if runs.is_empty() && statuses.is_empty() {
             return Ok(Vec::new());
         }
+        // The commit the combined status names itself as being about, which is the one
+        // its statuses were posted to; none where it names none.
+        let posted_to = reported_sha(&combined, "sha")?;
         // What blocks: both protection sources, a source this credential may not read
         // naming nothing it can be shown — the answer `required_checks_on` gives, where
         // that refusal is recorded beside it.
         let required = self.required_by(&cr.base)?.checks;
-        let head = Some(&head);
         runs.iter()
-            .map(|entry| check_run(entry, cr, &required, head))
+            .map(|entry| check_run(entry, cr, &required))
             .chain(
                 statuses
                     .iter()
-                    .map(|entry| status_context(entry, cr, &required, head)),
+                    .map(|entry| status_context(entry, cr, &required, posted_to.as_ref())),
             )
             .collect()
     }
@@ -2738,7 +2740,6 @@ fn check_run(
     entry: &serde_json::Value,
     cr: &ChangeRequest,
     required: &BTreeSet<String>,
-    head: Option<&Sha>,
 ) -> Result<Check> {
     let field = |name: &str| -> Result<&str> {
         entry
@@ -2753,10 +2754,10 @@ fn check_run(
             })
     };
     let name = field("name")?.to_owned();
-    // The commit the run's own record names, where it names one: what the host says
-    // the run is about is the host's answer, and a build that stamped its question onto
-    // it could not tell a host that disagreed.
-    let about = reported_sha(entry, "head_sha")?.or_else(|| head.cloned());
+    // The commit the run's own record names, or none where it names none: what the host
+    // says the run is about is the host's answer, and a build that stamped its question
+    // onto it could not tell a host that disagreed — nor one that would not say.
+    let about = reported_sha(entry, "head_sha")?;
     Ok(Check {
         required: required.contains(&name),
         name,

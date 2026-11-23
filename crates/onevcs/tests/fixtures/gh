@@ -1363,8 +1363,10 @@ case "$subcommand" in
         # A host whose check runs say they ran against something that is not a commit
         # hash: the commit a check is attached to is read off this field, so this is
         # where that answer arrives malformed on the REST path.
-        run_head="$sha"
-        if [ "$malformed" = "head-not-a-commit" ]; then run_head="the tip of the branch"; fi
+        run_head="\"$sha\""
+        if [ "$malformed" = "head-not-a-commit" ]; then run_head='"the tip of the branch"'; fi
+        # A check run whose record does not say which commit it ran against.
+        if [ "$malformed" = "checks-headless" ]; then run_head=null; fi
         runs=""; separator=""; row=0; total=0
         while IFS='|' read -r name status conclusion required kind; do
           [ -n "$name" ] || continue
@@ -1382,7 +1384,7 @@ case "$subcommand" in
               jobless-link) details=",\"details_url\":\"https://github.com/$slug/actions/runs/1\"" ;;
             esac
           fi
-          runs="$runs$separator{\"id\":$row,\"name\":\"$name\",\"head_sha\":\"$run_head\",\"status\":\"$status\",\"conclusion\":$entry$details,\"html_url\":\"https://github.com/$slug/runs/$row\",\"started_at\":\"$STARTED\",\"completed_at\":$completed}"
+          runs="$runs$separator{\"id\":$row,\"name\":\"$name\",\"head_sha\":$run_head,\"status\":\"$status\",\"conclusion\":$entry$details,\"html_url\":\"https://github.com/$slug/runs/$row\",\"started_at\":\"$STARTED\",\"completed_at\":$completed}"
           separator=","
           total=$((total + 1))
         done <"$rows" 2>/dev/null || true
