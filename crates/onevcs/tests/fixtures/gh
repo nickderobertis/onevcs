@@ -80,7 +80,8 @@ fi
 # `unreachable:<n>`: a `502`, or no HTTP response at all, the next `<n>` times (`always`
 # for every time) — `lost:<n>` performs the call and then answers it with a `502`,
 # `retry-after:<n>` is a rate limit naming both a reset and a later `Retry-After`, and
-# `secondary-limited:<n>` the secondary limiter's refusal, which names no reset.
+# `secondary-limited:<n>` the secondary limiter's refusal, which names no reset, and
+# `unreported-limit:<n>` a GraphQL rate-limit refusal `rate_limit` does not bear out.
 # Each answers the way `gh` reports it: asked `--include`, with the
 # status line and GitHub's rate-limit headers ahead of the body; a `gh pr` call, the way
 # a GraphQL request fails.
@@ -119,7 +120,7 @@ if [ -f "$STATE/unanswered" ] && [ "${2:-}" != "rate_limit" ] \
           printf 'GraphQL: API rate limit already exceeded for user ID 1.\n' >&2
         fi
         exit 1 ;;
-      retry-after:*|secondary-limited:*|server-error:*|unreachable:*|lost:*)
+      retry-after:*|secondary-limited:*|unreported-limit:*|server-error:*|unreachable:*|lost:*)
         left="${how#*:}"
         counter="$STATE/unanswered.$line.count"
         if [ "$left" != "always" ]; then
@@ -148,6 +149,10 @@ if [ -f "$STATE/unanswered" ] && [ "${2:-}" != "rate_limit" ] \
             else
               printf 'GraphQL: %s\n' "$message" >&2
             fi ;;
+          unreported-limit:*)
+            # A GraphQL refusal for the rate limit that the allowance GitHub reports does
+            # not bear out: nothing says when it lifts.
+            printf 'GraphQL: API rate limit already exceeded for user ID 1.\n' >&2 ;;
           lost:*)
             # The host did what it was asked, and its answer never arrived: what a `502`
             # in front of a request GitHub had already performed looks like.
@@ -491,6 +496,11 @@ case "$command" in
       exit 0
     fi
     if [ "$path" = "rate_limit" ]; then
+      # A host that will not say what is left of the allowance.
+      if [ -f "$STATE/rate-limit-unreadable" ]; then
+        printf 'gh: HTTP 502: Bad Gateway (https://api.github.com/rate_limit)\n' >&2
+        exit 1
+      fi
       # What is left of each allowance and when it resets, which GitHub answers without
       # charging it: every allowance a rule in `unanswered` holds spent is spent until
       # that rule's moment, and every other is whole.

@@ -376,6 +376,10 @@ fn mergeability_reads(calls: &[String]) -> Vec<usize> {
         .collect()
 }
 
+// llmlint: ignore[expensive_tests_stay_behind_their_own_edge] its bound was raised so the
+// slower REST readings of the substituted host fit under it, not made a new cost: it is
+// the publication's merge path, the inputs the e2e tier is keyed on, and it ends at the
+// conflict well inside the bound.
 #[test]
 fn an_armed_merge_the_base_moved_under_ends_as_a_sync_conflict_at_the_first_reading() {
     // onevcs#278: every required check green, the host's auto-merge armed, and then the

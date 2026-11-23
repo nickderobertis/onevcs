@@ -359,7 +359,7 @@ fn measure(root: PathBuf, shape: Shape) -> Scenario {
     // A reading reads the change request's head, then the check runs and the commit
     // statuses on it; what blocks the merge is the rulesets and classic protection.
     let rollup = |call: &str| call.contains("/check-runs?per_page");
-    let required = |call: &str| {
+    let beside_the_rollup = |call: &str| {
         (call.contains("/pulls/") && !call.contains("/pulls?"))
             || call.contains("/status?per_page")
             || call.contains("/rules/branches/")
@@ -409,7 +409,7 @@ fn measure(root: PathBuf, shape: Shape) -> Scenario {
         polls: polls.len() as u64,
         check_read_requests: calls
             .iter()
-            .filter(|call| rollup(call) || required(call))
+            .filter(|call| rollup(call) || beside_the_rollup(call))
             .count() as u64,
         watch_requests: calls.len() as u64,
         activity_reads: polls.iter().filter(|(_, asked)| *asked).count() as u64,

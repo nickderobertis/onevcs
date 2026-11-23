@@ -201,7 +201,7 @@ fn a_read_the_host_fails_every_time_is_asked_less_and_less_often_and_never_past_
     let assert = hosted
         .world
         .onevcs()
-        .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "6")
+        .env("ONEVCS_CHECKS_TIMEOUT_SECONDS", "10")
         .args(["publish", &token])
         .assert()
         .code(1)
@@ -214,21 +214,46 @@ fn a_read_the_host_fails_every_time_is_asked_less_and_less_often_and_never_past_
         "the reason says it waited as long as the bound allowed:\n{said}"
     );
 
-    // 1s, 2s, then 4s would end past the 6s bound counted from the push: three attempts.
+    // 1s, 2s and 4s, and then 8s would end past the 10s bound counted from the push:
+    // four attempts, each gap double the last.
     let asked = calls_to(&hosted, "/pulls?head=");
-    assert_eq!(asked.len(), 3, "a finite number of attempts: {asked:?}");
+    assert_eq!(asked.len(), 4, "a finite number of attempts: {asked:?}");
     let gaps: Vec<f64> = asked.windows(2).map(|pair| pair[1] - pair[0]).collect();
     assert!(
         gaps.windows(2).all(|pair| pair[1] >= pair[0]),
         "gaps that never shrink: {gaps:?}"
     );
     assert!(
-        asked[asked.len() - 1] - asked[0] < 6.0,
+        gaps.iter()
+            .zip([1.0, 2.0, 4.0])
+            .all(|(gap, wanted)| *gap >= wanted),
+        "doubling from a second: {gaps:?}"
+    );
+    assert!(
+        asked[asked.len() - 1] - asked[0] < 10.0,
         "no attempt after the bound: {asked:?}"
     );
-    assert!(took < std::time::Duration::from_secs(20), "{took:?}");
+    assert!(took < std::time::Duration::from_secs(30), "{took:?}");
     let waited = waits(&hosted, &token);
-    assert_eq!(waited.len(), 2, "each wait recorded: {waited:?}");
+    assert_eq!(waited.len(), 3, "each wait recorded: {waited:?}");
+    // Every wait names the one bound past which nothing is asked: ten seconds from the
+    // push, which came before the first attempt and after the publication began.
+    let bound = waited[0]["bound"].as_str().expect("a bound").to_owned();
+    assert!(
+        waited.iter().all(|wait| wait["bound"] == bound),
+        "{waited:?}"
+    );
+    let bound = epoch(&bound);
+    assert!(
+        bound > asked[asked.len() - 1] && bound - asked[0] <= 10.5,
+        "the bound is the watch's, from the push: {bound} against {asked:?}"
+    );
+    assert!(
+        waited
+            .iter()
+            .all(|wait| epoch(wait["until"].as_str().expect("until")) < bound),
+        "and no wait runs past it: {waited:?}"
+    );
     assert_eq!(hosted.world.events_of(&token, "push").len(), 1);
     assert_eq!(hosted.origin_log().len(), 1, "and nothing landed");
 }
@@ -349,6 +374,102 @@ fn a_refusal_naming_when_to_ask_again_is_waited_on_until_then_and_one_naming_not
             .any(|call| call.contains("rate_limit")),
         "and no allowance was asked about for it"
     );
+
+    // A GraphQL refusal names no reset of its own, so GitHub's report of the allowance
+    // is asked — and where that report does not bear the refusal out, or cannot be
+    // read, it names no reset either, and the call backs off as above.
+    for unreadable in [false, true] {
+        let hosted = self::hosted();
+        if unreadable {
+            std::fs::write(hosted.world.path("gh-state/rate-limit-unreadable"), "")
+                .expect("a host that will not report its allowance");
+        }
+        hosted
+            .world
+            .host_does_not_answer("--squash --auto", "unreported-limit:1");
+        let token = hosted.change("feature/unreported", "feat: land past an unreported limit");
+        hosted
+            .world
+            .onevcs()
+            .args(["publish", &token])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("merged at"));
+        assert!(
+            hosted
+                .world
+                .host_calls()
+                .iter()
+                .any(|call| call.starts_with("api rate_limit")),
+            "unreadable {unreadable}: the allowance was asked about"
+        );
+        let waited = waits(&hosted, &token);
+        assert_eq!(waited.len(), 1, "unreadable {unreadable}: {waited:?}");
+        assert!(
+            !waited[0]["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("resets at"),
+            "unreadable {unreadable}: no reset was named: {waited:?}"
+        );
+        let asked = calls_to(&hosted, "--squash --auto");
+        assert!(
+            asked[1] - asked[0] < 3.0,
+            "unreadable {unreadable}: the backoff: {asked:?}"
+        );
+    }
+}
+
+#[test]
+fn the_host_wait_event_is_the_payload_the_contract_documents() {
+    // Each field the contract spells, with the type it spells it in, and no other.
+    let contract = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/contract.md"),
+    )
+    .expect("the contract");
+    let blocks: Vec<serde_json::Value> = contract
+        .split("```json\n")
+        .skip(1)
+        .filter_map(|rest| rest.split("\n```").next())
+        .filter(|block| block.contains("\"rate_limited\""))
+        .map(|block| serde_json::from_str(block).expect("the documented payload is JSON"))
+        .collect();
+    assert_eq!(blocks.len(), 1, "the contract spells one host-wait payload");
+    let shape = |payload: &serde_json::Value| -> Vec<(String, &'static str)> {
+        payload
+            .as_object()
+            .expect("an object")
+            .iter()
+            .map(|(key, value)| {
+                let kind = match value {
+                    serde_json::Value::String(_) => "string",
+                    serde_json::Value::Bool(_) => "bool",
+                    serde_json::Value::Number(_) => "number",
+                    _ => "other",
+                };
+                (key.clone(), kind)
+            })
+            .collect()
+    };
+
+    let hosted = hosted();
+    hosted
+        .world
+        .host_does_not_answer("/pulls?head=", "rate-limited-for:1");
+    let token = hosted.change("feature/documented", "feat: land as documented");
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token])
+        .assert()
+        .success();
+    let waited = waits(&hosted, &token);
+    assert_eq!(waited.len(), 1, "{waited:?}");
+    assert_eq!(shape(&waited[0]), shape(&blocks[0]), "{}", waited[0]);
+    for moment in ["until", "bound"] {
+        epoch(waited[0][moment].as_str().expect("a moment"));
+        epoch(blocks[0][moment].as_str().expect("a documented moment"));
+    }
 }
 
 #[test]

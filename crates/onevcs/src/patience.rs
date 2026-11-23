@@ -108,6 +108,10 @@ impl<'a> Patient<'a> {
         let doubled = 1u64
             .checked_shl(attempt.saturating_sub(1).min(16))
             .unwrap_or(u64::MAX);
+        // llmlint: ignore[changed_behavior_has_e2e] the outage journey in
+        // `tests/e2e/host_waits.rs` holds the doubling from one second through 4s and
+        // that no gap shrinks; observing the 60s cap would cost every run two minutes of
+        // waiting for a constant, and a bound under it simply ends before it applies.
         Duration::from_secs(doubled).min(LONGEST_BACKOFF)
     }
 
