@@ -21,7 +21,9 @@ function fixture() {
   const call = {wall_ms:12.5,load1:1,rows:5,verdict_sha256:sha("uncached verdict")};
   const calls = () => Array.from({length:10},()=>({...call}));
   const hostRecord = {warm:calls(),cold:call,rederived:26,checks:{by_gain:[{gained:600,seconds:0.01}]},git_executions:40,slowest_ms:13,build_ms:5,load1:1,rows_sha256:sha("host rows")};
-  const record = {version:3,build,host:hostRecord,scenario:"launcher-decision",preparation_ms:10,total_ms:20,load1:1,
+  const holderRecord = {records:schema["x-holder-records"],cold:{...call,rows:1,verdict_sha256:sha("holders")},
+    warm:Array.from({length:10},(_,i)=>({...call,wall_ms:20+i,rows:1,verdict_sha256:sha("holders")})),git_executions:3};
+  const record = {version:4,build,host:hostRecord,holders:holderRecord,scenario:"launcher-decision",preparation_ms:10,total_ms:20,load1:1,
     workloads:[1,10].map(scale=>({scale,shape:schema["x-workloads"][String(scale)],class_counts,cold:sample,warm:sample,cold_git:100,warm_git:10,counted_verdict_sha256:sample.verdict_sha256,
       uncached_verdict_sha256:call.verdict_sha256,in_process_warm:calls(),...(scale === 1 ? {in_process_cold:calls()} : {})}))};
   const invocation = {state:"complete",...build};
@@ -71,6 +73,11 @@ const refusals = {
   "different counted answer":f=>{f.record.workloads[0].counted_verdict_sha256=sha("different verdict");f.save();},
   "missing preparation":f=>{f.record.preparation_ms=0;f.save();},
   "incomplete total":f=>{f.record.total_ms=1;f.save();},
+  "missing holder read":f=>{delete f.record.holders;f.save();},
+  "too few warm holder calls":f=>{f.record.holders.warm.pop();f.save();},
+  "a warm holder call answering other holders":f=>{f.record.holders.warm[2].verdict_sha256=sha("other holders");f.save();},
+  "an untimed holder call":f=>{f.record.holders.cold.wall_ms=0;f.save();},
+  "foreign holder workload":f=>{f.record.holders.records=97;f.save();},
 };
 for (const [name,mutate] of Object.entries(refusals)) test(`reader refuses ${name}`,()=>{
   const f = fixture();
@@ -107,6 +114,14 @@ test("CLI reader reports through the SDK without subprocess tools and names reco
     const hostResult = JSON.parse(readFileSync(join(f.root, "result.json"), "utf8"));
     assert.equal(hostResult.value, 40);
     assert.match(hostResult.detail, /host warm unfiltered Decision .* Git executable count/);
+    // The journey time carries the holder read's breakdown, read from the record.
+    const journey = spawnSync(process.execPath, [join(f.root, "scripts", "recoverable-git-count-budget.mjs"), "--journey-time"], {
+      encoding: "utf8", env: { PATH: "", ONEBUDGETSPEC_RESULT: join(f.root, "result.json") }
+    });
+    assert.equal(journey.status, 0, journey.stderr);
+    const journeyResult = JSON.parse(readFileSync(join(f.root, "result.json"), "utf8"));
+    assert.equal(journeyResult.value, 0.02);
+    assert.match(journeyResult.detail, new RegExp(`holder read over ${schema["x-holder-records"]} records: cold 12\\.5ms, warm median 24\\.5ms, slowest warm 29\\.0ms, further warm call 3 Git`));
     const unknown = spawnSync(process.execPath, [join(f.root, "scripts", "recoverable-git-count-budget.mjs"), "--scale", "host", "--cold"], {
       encoding: "utf8", env: { PATH: "", ONEBUDGETSPEC_RESULT: join(f.root, "result.json") }
     });

@@ -78,3 +78,12 @@ rebuilding either would measure another cold attempt instead of a retry.
 `AgedHost::restore` re-establishes, because each read refreshes the records and a sample
 taken after one would measure nothing moved. Its samples stay out of the
 `--scale 1|10` workloads the other budgets read.
+
+`holders.rs` is the repository holder read over `onevcs_testing::recovery::build_holders`'s
+118 retained records of one identity. Its journeys hold `session_holders` — one shared
+proof pass, `workspace::proof_pass`, the sweep's too — to `onevcs::testing::holders_proved_alone`,
+the same proof made record by record with every recovery cache cleared before each, and
+count through the shim (which logs each invocation's arguments) that a repeat read asks
+git no ancestry or history question. `full_workload_recovery` times it through the timing
+program's `--holders` read and records it under `holders`, which
+`recoverable-git-count-budget.mjs --journey-time` reports as its detail's breakdown.

@@ -1,4 +1,5 @@
-//! A forwarding Git shim counts executable invocations separately from timings.
+//! A forwarding Git shim counts executable invocations separately from timings, one
+//! line per invocation naming its arguments.
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -26,7 +27,7 @@ impl Counting {
         std::fs::write(
             &shim,
             format!(
-                "#!/bin/sh\nprintf 'git\\n' >> {}\nexec {} \"$@\"\n",
+                "#!/bin/sh\n{{ printf 'git'; printf ' %s' \"$@\"; printf '\\n'; }} >> {}\nexec {} \"$@\"\n",
                 quote(&log),
                 quote(&real)
             ),
@@ -47,6 +48,14 @@ impl Counting {
             .lines()
             .map(str::to_owned)
             .collect()
+    }
+    /// Every invocation since the last clear, none where nothing ran.
+    pub(super) fn recorded(&self) -> Vec<String> {
+        match std::fs::read_to_string(&self.log) {
+            Ok(log) => log.lines().map(str::to_owned).collect(),
+            Err(absent) if absent.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(failure) => panic!("the invocation log is unreadable: {failure}"),
+        }
     }
     pub(super) fn with_program(&self, program: impl AsRef<std::ffi::OsStr>) -> assert_cmd::Command {
         let mut command = std::process::Command::new(program);

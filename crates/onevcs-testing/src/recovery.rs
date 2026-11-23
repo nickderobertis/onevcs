@@ -1918,3 +1918,312 @@ fn branch_files(repo: &Path, tip: &str) -> Result<Vec<(String, String)>> {
         })
         .collect()
 }
+
+/// How many session records [`build_holders`]' identity retains: one open, the rest
+/// closed and stale.
+pub const HOLDER_RECORDS: usize = 118;
+
+/// One identity's retained session history, the shape a repository holder read meets on
+/// a host that has run that repository many times.
+///
+/// Every closed record's owner is gone and its run root has no worktree, so the holder
+/// proof reaches its branch question — git — for each of them, and each answers that
+/// nothing is left behind: half the branches were squash-landed under a recorded landing,
+/// half are carried by the base's own history. The open record is held by the process
+/// that built the fixture, for as long as that process lives.
+#[derive(Debug)]
+pub struct HolderFixture {
+    /// Empty-root preparation directory owned by the caller.
+    pub root: PathBuf,
+    /// State root to pass as ONEVCS_HOME.
+    pub home: PathBuf,
+    /// The repository a holder read names: the identity's key.
+    pub repository: String,
+    /// The one open session.
+    pub open: Token,
+    /// The closed sessions, in token order.
+    pub closed: Vec<HolderSession>,
+}
+
+/// One closed, stale session of [`HolderFixture`].
+#[derive(Debug, Clone)]
+pub struct HolderSession {
+    /// Its token.
+    pub token: Token,
+    /// The branch its record names.
+    pub branch: Ref,
+    /// Its run clone, which holds the branch.
+    pub clone: PathBuf,
+    /// Whether the base carries the branch's commit itself rather than a squash of it.
+    pub carried: bool,
+}
+
+impl HolderFixture {
+    /// Commit new work, unpublished anywhere, onto closed session `index`'s branch in its
+    /// run clone, and answer the new tip. A record whose branch carries it is a holder.
+    pub fn add_unpublished(&self, index: usize) -> Result<ObjectId> {
+        let session = self
+            .closed
+            .get(index)
+            .ok_or_else(|| invalid(format!("no closed holder session {index}")))?;
+        let tip = git(
+            &session.clone,
+            &["rev-parse", &format!("refs/heads/{}", session.branch)],
+        )?;
+        let tip = tip.trim();
+        let mut import = Import::new(1);
+        let mark = import.commit(
+            &session.branch,
+            Some(tip),
+            &format!("feat: unpublished work on {}", session.branch),
+            &[(
+                format!("src/unpublished-{index}-{tip}.txt"),
+                format!("unpublished {tip}\n"),
+            )],
+        );
+        let marks = import.run(
+            &session.clone,
+            &self.root.join(format!("marks-unpublished-{index}-{tip}")),
+        )?;
+        ObjectId::parse(&marks[&mark])
+            .ok_or_else(|| invalid(format!("unpublished tip {:?}", marks[&mark])))
+    }
+}
+
+/// Build [`HolderFixture`] from an empty root with real git and onevcs's own production
+/// types: [`HOLDER_RECORDS`] session records of one identity, in its own state root.
+pub fn build_holders(root: &Path) -> Result<HolderFixture> {
+    if root.exists() && std::fs::read_dir(root).map_err(io)?.next().is_some() {
+        return Err(invalid(format!(
+            "fixture root {} must be empty",
+            root.display()
+        )));
+    }
+    std::fs::create_dir_all(root).map_err(io)?;
+    let root = std::fs::canonicalize(root).map_err(io)?;
+    let home = root.join("home");
+    std::fs::create_dir_all(&home).map_err(io)?;
+    std::fs::write(root.join(".gitconfig"), "[user]\nname=Fixture\nemail=fixture@example.invalid\n[commit]\ngpgsign=false\n[maintenance]\nauto=false\n").map_err(io)?;
+    std::fs::write(
+        home.join("rules.yml"),
+        "version: 1\nrules: []\ndefault: {publication: local-direct, approvals: none}\n",
+    )
+    .map_err(io)?;
+    let repo = root.join("checkouts/held");
+    let origin = root.join("origins/held.git");
+    std::fs::create_dir_all(&repo).map_err(io)?;
+    std::fs::create_dir_all(origin.parent().expect("origin parent")).map_err(io)?;
+    git(&repo, &["init", "-q", "-b", "main"])?;
+    git(
+        &repo,
+        &[
+            "init",
+            "-q",
+            "--bare",
+            "-b",
+            "main",
+            &origin.to_string_lossy(),
+        ],
+    )?;
+    git(
+        &repo,
+        &["remote", "add", "origin", &origin.to_string_lossy()],
+    )?;
+    let key = origin.to_string_lossy().into_owned();
+    let alias = "held".to_owned();
+
+    // The base's history first: a seed, then every carried branch's commit on it in
+    // turn. Each squash-landed branch is cut from the seed beside it.
+    let closed = HOLDER_RECORDS - 1;
+    let mut import = Import::new(1);
+    let seed_files: Vec<_> = (1..=20)
+        .map(|i| (format!("lib/m{i}.txt"), format!("module {i}\n")))
+        .collect();
+    let seed = import.commit("main", None, "chore: seed held", &seed_files);
+    let mut base = seed;
+    let mut branches = Vec::new();
+    for index in 0..closed {
+        let branch = format!("held/closed-{index:03}");
+        let path = format!("src/closed-{index:03}.txt");
+        let carried = index % 2 == 0;
+        let mark = if carried {
+            base = import.commit(
+                "main",
+                Some(&format!(":{base}")),
+                &format!("feat: {branch}"),
+                &[(path.clone(), format!("{index}\n"))],
+            );
+            base
+        } else {
+            import.commit(
+                &branch,
+                Some(&format!(":{seed}")),
+                &format!("feat: {branch}"),
+                &[(path.clone(), format!("{index}\n"))],
+            )
+        };
+        branches.push((index, branch, path, carried, mark));
+    }
+    let open_branch = "held/open".to_owned();
+    let open_mark = import.commit(
+        &open_branch,
+        Some(&format!(":{seed}")),
+        "feat: held/open",
+        &[("src/open.txt".to_owned(), "open\n".to_owned())],
+    );
+    let next = import.next;
+    let marks = import.run(&repo, &root.join("marks-held-work"))?;
+    // Then the squash landings, each naming the branch commit it landed.
+    let mut landing = Import::new(next);
+    let mut tip = marks[&base].clone();
+    let mut landing_marks = BTreeMap::new();
+    for (index, branch, path, carried, mark) in &branches {
+        if *carried {
+            continue;
+        }
+        let landed = landing.commit(
+            "main",
+            Some(&tip),
+            &format!(
+                "feat: {branch}\n\n{} {}",
+                testing::landing_trailer(),
+                marks[mark]
+            ),
+            &[(path.clone(), format!("{index}\n"))],
+        );
+        tip = format!(":{landed}");
+        landing_marks.insert(*index, landed);
+    }
+    let landed = landing.run(&repo, &root.join("marks-held-landed"))?;
+    git(&repo, &["push", "-q", "origin", "main"])?;
+    git(
+        &repo,
+        &[
+            "symbolic-ref",
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/main",
+        ],
+    )?;
+    let mut registry = Registry {
+        version: testing::registry_version(),
+        identities: BTreeMap::new(),
+        checkouts: BTreeMap::new(),
+        rules: Some(home.join("rules.yml")),
+    };
+    registry
+        .identities
+        .insert(key.clone(), Identity::new(key.clone(), "true"));
+    registry.checkouts.insert(
+        alias.clone(),
+        Checkout {
+            path: repo.clone(),
+            identity: key.clone(),
+        },
+    );
+    testing::write_registry(&home, &registry)?;
+
+    let session = |token: &Token, branch: &Ref, tip: &str, open: bool| -> Result<PathBuf> {
+        let run = root.join(format!("sessions/{token}"));
+        let clone = run.join("clone");
+        let worktree = run.join("worktree");
+        std::fs::create_dir_all(&run).map_err(io)?;
+        git(
+            &repo,
+            &[
+                "clone",
+                "-q",
+                "--shared",
+                "--no-checkout",
+                &repo.to_string_lossy(),
+                &clone.to_string_lossy(),
+            ],
+        )?;
+        git(
+            &clone,
+            &["update-ref", &format!("refs/heads/{branch}"), tip],
+        )?;
+        if open {
+            git(
+                &clone,
+                &["worktree", "add", "-q", &worktree.to_string_lossy(), branch],
+            )?;
+        }
+        testing::write_session(
+            &home,
+            &SessionSeed {
+                token: token.clone(),
+                identity: key.clone(),
+                alias: alias.clone(),
+                branch: branch.clone(),
+                checkout: repo.clone(),
+                clone: clone.clone(),
+                worktree,
+                state: if open {
+                    onevcs::Lifecycle::Open
+                } else {
+                    onevcs::Lifecycle::Closed
+                },
+                labels: BTreeMap::new(),
+            },
+        )?;
+        Ok(clone)
+    };
+    let mut sessions = Vec::new();
+    for (index, branch, _, carried, mark) in branches {
+        let token = token(format!("s-held-{index:03}"))?;
+        let branch = reference(branch)?;
+        let clone = session(&token, &branch, &marks[&mark], false)?;
+        let mut events = vec![(
+            EventKind::SessionOpened,
+            payload(json!({"branch":&*branch})),
+        )];
+        if let Some(landing) = landing_marks.get(&index) {
+            events.push((
+                EventKind::MergeCompleted,
+                payload(json!({"branch":&*branch,"sha":landed[landing]})),
+            ));
+        }
+        events.push((
+            EventKind::SessionClosed,
+            payload(json!({"branch":&*branch})),
+        ));
+        testing::write_events(&home, &token, &key, &events)?;
+        sessions.push(HolderSession {
+            token,
+            branch,
+            clone,
+            carried,
+        });
+    }
+    let open = token("s-held-open".to_owned())?;
+    session(
+        &open,
+        &reference(open_branch.clone())?,
+        &marks[&open_mark],
+        true,
+    )?;
+    testing::write_events(
+        &home,
+        &open,
+        &key,
+        &[(
+            EventKind::SessionOpened,
+            payload(json!({"branch":open_branch})),
+        )],
+    )?;
+    let records = std::fs::read_dir(home.join("sessions"))
+        .map_err(io)?
+        .count();
+    if records != HOLDER_RECORDS {
+        return Err(invalid(format!(
+            "holder fixture shape differs: {records} session records"
+        )));
+    }
+    Ok(HolderFixture {
+        root,
+        home,
+        repository: key,
+        open,
+        closed: sessions,
+    })
+}

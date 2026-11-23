@@ -32,7 +32,7 @@ export function readRecord(directory = recordDirectory, sourceRoot = repositoryR
   }
   const record = read("recoverable.json");
   if (!validate(record)) throw new Error(`incomplete telemetry: ${JSON.stringify(validate.errors)}`);
-  if (record.version !== 3 || record.scenario !== "launcher-decision") throw new Error("foreign telemetry format or scenario");
+  if (record.version !== 4 || record.scenario !== "launcher-decision") throw new Error("foreign telemetry format or scenario");
   if (record.build.run_id !== expected.run_id || record.build.binary !== expected.binary ||
       record.build.binary_sha256 !== expected.binary_sha256 || record.build.source_sha256 !== expected.source_sha256) throw new Error("stale or foreign invocation/build");
   if (!digest(record.build.source_sha256) || record.build.source_sha256 !== sourceFingerprint(sourceRoot)) {
@@ -58,6 +58,15 @@ export function readRecord(directory = recordDirectory, sourceRoot = repositoryR
   if (!digest(record.host.rows_sha256) || record.host.git_executions < 0 ||
       record.host.checks.by_gain.some(check => !(check.seconds >= 0) || !(check.gained >= 0))) {
     throw new Error("incomplete host-shaped detail");
+  }
+  // The repository holder read: one cold call and ten warm ones, every one answering
+  // the same holders, over the retained history the schema declares.
+  if (record.holders.records !== schema["x-holder-records"]) throw new Error("foreign holder workload");
+  for (const call of [record.holders.cold, ...record.holders.warm]) {
+    if (!(call.wall_ms > 0) || !Number.isFinite(call.load1) || call.load1 < 0 || call.rows <= 0 ||
+        call.verdict_sha256 !== record.holders.cold.verdict_sha256) {
+      throw new Error("incomplete or incorrect holder read");
+    }
   }
   for (const [index, workload] of record.workloads.entries()) {
     const expectedScale = index === 0 ? 1 : 10;
