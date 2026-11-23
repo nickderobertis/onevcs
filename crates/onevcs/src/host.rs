@@ -2501,7 +2501,7 @@ impl RemoteHost for GitHub {
 
     /// One `gh pr view`, reading exactly the field GitHub records a merge's time in —
     /// the record of a landing, read once the change has merged, beside the closures
-    /// [`merge_view`](GitHub::merge_view) reads over the same GraphQL API.
+    /// `merge_view` reads over the same GraphQL API.
     ///
     /// `mergedAt` is null — or GitHub's zero time — on a change request that has not
     /// merged, and both read as `None`.
