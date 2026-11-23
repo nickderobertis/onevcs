@@ -189,8 +189,22 @@ impl RemoteHost for Patient<'_> {
         self.ask(Again::Always, || self.host.authenticated_user())
     }
 
+    /// Opened again only where the host holds no change request for the branch: one the
+    /// host failed to answer may have opened it anyway, and a second would be a second
+    /// change request for one branch.
     fn open_change(&self, req: ChangeSpec) -> Result<ChangeRequest> {
-        self.ask(Again::OnlyRateLimited, || {
+        let first = std::cell::Cell::new(true);
+        self.ask(Again::Always, || {
+            if !first.replace(false) {
+                if let Some(opened) = self
+                    .host
+                    .find_changes(&req.head, &req.base)?
+                    .into_iter()
+                    .next()
+                {
+                    return Ok(opened);
+                }
+            }
             self.host.open_change(req.clone())
         })
     }
@@ -207,8 +221,19 @@ impl RemoteHost for Patient<'_> {
         self.ask(Again::Always, || self.host.check_log(cr, check))
     }
 
+    /// Asked again only where the host has not merged the change already: one it failed
+    /// to answer may have merged it, or armed the merge, anyway — and arming it again is
+    /// the same request, while merging it again is refused.
     fn merge(&self, cr: &ChangeRequest, policy: MergePolicy) -> Result<MergeOutcome> {
-        self.ask(Again::OnlyRateLimited, || self.host.merge(cr, policy))
+        let first = std::cell::Cell::new(true);
+        self.ask(Again::Always, || {
+            if !first.replace(false) {
+                if let Some(merged) = self.host.merged_at(cr)? {
+                    return Ok(MergeOutcome::Merged(merged));
+                }
+            }
+            self.host.merge(cr, policy)
+        })
     }
 
     fn merged_at(&self, cr: &ChangeRequest) -> Result<Option<Sha>> {

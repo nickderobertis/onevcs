@@ -244,8 +244,10 @@ The check is in the conversion, as it is for every other validated name here, so
 
 **A change request's checks say which of the host's sources they were read from.**
 The contract has `change_checks` answer `Vec<Check>`, and this crate read that list
-out of `gh pr view --json statusCheckRollup` and `gh pr checks`. **A fine-grained
-personal access token cannot read either, on any repository, with any permission**:
+out of `gh pr view --json statusCheckRollup` and `gh pr checks` — and reads it now out of
+GitHub's REST check runs and commit statuses on the change request's head, which need the
+same permission. **A fine-grained personal access token cannot read either, on any
+repository, with any permission**:
 GitHub offers no `Checks` permission for that credential class — it existed briefly,
 was withdrawn, and has not returned — so both commands answer `Resource not
 accessible by personal access token`, and the two methods a lifecycle decides a
@@ -322,10 +324,10 @@ other commit is not consulted at all. Both fields are omitted when absent, so a
 `Check` an older build serialized still reads.
 
 `GitHub` fills them from its own response rather than from the question it asked.
-The rollup is read as `gh pr view --json headRefOid,statusCheckRollup`, in one call,
-because what GitHub renders there *is* that head's rollup and which head it was is
-the whole of what makes the answer addressable; a check run's `detailsUrl` is the
-address. The Actions source asks the same field for the change request's head as it
+The checks are read as the change request's head first (`GET .../pulls/{number}`), then
+the check runs and commit statuses on that commit, because which head they are about is
+the whole of what makes the answer addressable; each check run names its own `head_sha`,
+which is the commit it carries, and its `details_url` is the address. The Actions source asks the same field for the change request's head as it
 stands *now* rather than as the caller found it, and takes each job's commit from
 its workflow run's own `head_sha` and its address from the job's `html_url` — so
 both sources answer about the head the host currently has rather than the one it had
@@ -3920,7 +3922,7 @@ pub struct Drafts { pub disabled: Option<bool>, pub warn_on_early_lift: Option<b
   `change-open` with approvals required ends `ChangeOpen`.
 - **No required check declared** — the host's complete, empty answer: `required_checks_on`
   complete and naming nothing, or a complete rollup reporting checks of which none is
-  required, which is what `gh pr checks --required`'s "no required checks reported" says —
+  required, which is what the base's rulesets and classic protection naming nothing say —
   is green at once: no grace wait and no warning. An incomplete, unknown or unreadable
   answer is never read as "none".
 - **Draft-skipping CI.** A workflow job gated on `draft == false` reports `skipped`. So
@@ -4848,9 +4850,11 @@ the authenticated user, the change-request lookup, the change request by number,
 check runs and commit statuses, the draft lift and the merge it arms — that the host did
 not answer: refused for a rate limit (a `429`, or a `403` GitHub marks as one), failing on
 the host's side (`5xx`), or never reached (no HTTP response). Any other answer, a refusal
-included, is the answer it always was. A request the host refused for a rate limit did
-nothing there and is sent again whatever it would have changed; one that failed or was
-never reached is sent again only where it reads.
+included, is the answer it always was. A read is sent again whatever stopped it. A write
+the host refused for a rate limit did nothing there and is sent again; one that failed or
+was never reached may have landed, so opening the change request is sent again only where
+the host then lists none for the branch, and the merge only where the host reports the
+change unmerged — every other write is not sent again.
 
 **How long.** A rate limit is waited out until the reset the host named — its
 `x-ratelimit-reset`, or `Retry-After` from when it answered, and for a GraphQL refusal
@@ -6532,12 +6536,12 @@ repository probe at most once between them. A destination recorded public is scr
 before, and one recorded private, or declared private by a rule, is let through unchecked
 as before.
 
-**A change request is read once per call.** GitHub's `find_changes` asks `gh pr list` for
-each change request's draft state, title and body beside the fields it always read — one
-query, at the same charge — and, inside one operation of this crate's (a publication, a
-resumed publication, `session_change`, `describe_change`, `ready_change`), the next
-`is_draft` or `change_description` of that change request on the same host answers from
-it, once, rather than with another `gh pr view`; `change_description` asks the draft state
+**A change request is read once per call.** GitHub's `find_changes` lists each change
+request's draft state, title and body beside the fields it always read — one REST request
+(`GET /repos/{owner}/{repo}/pulls`), at the same charge — and, inside one operation of this
+crate's (a publication, a resumed publication, `session_change`, `describe_change`,
+`ready_change`), the next `is_draft` or `change_description` of that change request on the
+same host answers from it, once, rather than with another read of the change request; `change_description` asks the draft state
 beside the description for the same reason. An answer is spent by the read it answers,
 `ready_for_review` and `describe_change` forget what was listed about the change request
 they wrote, and nothing listed is kept outside an operation or answered to another one: a

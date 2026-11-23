@@ -8,7 +8,8 @@
 //! occurs no more times than it did in the same journey's log recorded on the code
 //! before the change, under `tests/fixtures/gh-call-baselines/`. A read that only gains
 //! the `closingIssuesReferences` field, or its selection set in a GraphQL query, is the
-//! same invocation; nothing else is normalised.
+//! same invocation, and a commit hash in a call is written `{sha}`, because a journey's
+//! commits are its own; nothing else is normalised.
 //!
 //! A baseline is re-recorded only on purpose, on behaviour that has not moved — never to
 //! absorb a new call. `tests/fixtures/gh-call-baselines/README.md` says how each was made.
@@ -69,6 +70,28 @@ fn invocation(call: &str) -> String {
         .join(" ")
 }
 
+/// `call` with every commit hash in it written as `{sha}`: a REST path names the commit
+/// it asks about, and a journey's commits are its own.
+fn without_commits(call: &str) -> String {
+    let mut out = String::with_capacity(call.len());
+    let mut run = String::new();
+    for character in call.chars().chain(std::iter::once(' ')) {
+        if character.is_ascii_hexdigit() {
+            run.push(character);
+            continue;
+        }
+        if run.len() == 40 {
+            out.push_str("{sha}");
+        } else {
+            out.push_str(&run);
+        }
+        run.clear();
+        out.push(character);
+    }
+    out.pop();
+    out
+}
+
 /// How many times each invocation occurs in `calls`.
 fn tally<'a>(calls: impl IntoIterator<Item = &'a str>) -> BTreeMap<String, usize> {
     let mut counted = BTreeMap::new();
@@ -77,7 +100,9 @@ fn tally<'a>(calls: impl IntoIterator<Item = &'a str>) -> BTreeMap<String, usize
         if call.is_empty() {
             continue;
         }
-        *counted.entry(invocation(call)).or_insert(0) += 1;
+        *counted
+            .entry(without_commits(&invocation(call)))
+            .or_insert(0) += 1;
     }
     counted
 }
@@ -140,7 +165,9 @@ pub fn assert_one_call_beyond(world: &World, name: &str, call: &str) {
     let recorded = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("the baseline {} is committed: {e}", path.display()));
     let mut allowed = tally(recorded.lines());
-    *allowed.entry(invocation(call)).or_insert(0) += 1;
+    *allowed
+        .entry(without_commits(&invocation(call)))
+        .or_insert(0) += 1;
     let calls = world.host_calls();
     assert_eq!(
         tally(calls.iter().map(String::as_str)),

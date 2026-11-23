@@ -67,7 +67,7 @@ pub(super) struct Run {
     pub asked: u64,
     /// `gh pr view` reads of whether a change request merged, and at which head.
     pub merged_views: u64,
-    /// `gh pr list` reads of the branch's open change requests.
+    /// REST listings of the branch's open change requests.
     pub open_lists: u64,
     /// `gh pr view` reads of when a change request merged.
     pub merge_times: u64,
@@ -442,7 +442,7 @@ fn measure(host: &Host, kind: Kind) -> Run {
     let merge_times = views("mergedAt");
     let open_lists = calls
         .iter()
-        .filter(|call| call.starts_with("pr list "))
+        .filter(|call| call.starts_with("api ") && call.contains("/pulls?head="))
         .count() as u64;
     let requests = graphql_points + rest_requests;
     let asked: std::collections::BTreeSet<String> = ledger

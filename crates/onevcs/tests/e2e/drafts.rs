@@ -2629,7 +2629,7 @@ fn readings_before_the_lift(hosted: &crate::host::Hosted) -> usize {
         .unwrap_or_else(|| panic!("the draft was lifted: {calls:?}"));
     calls[..lifted]
         .iter()
-        .filter(|call| call.contains("statusCheckRollup"))
+        .filter(|call| call.contains("/check-runs?per_page"))
         .count()
 }
 

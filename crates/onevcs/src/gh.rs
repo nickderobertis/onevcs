@@ -305,7 +305,7 @@ const RESUME: &str = "resume=";
 /// The call `args` makes, named for a message without the repository it addresses:
 /// the `gh` subcommand a GraphQL call is, or the REST path with the two segments past
 /// `repos/` that name a repository spelled as GitHub's documentation spells them.
-fn what_was_asked(args: &[&str]) -> String {
+pub(crate) fn what_was_asked(args: &[&str]) -> String {
     match args {
         ["api", path, ..] => {
             let path = path.split('?').next().unwrap_or_default();

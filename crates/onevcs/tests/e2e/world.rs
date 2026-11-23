@@ -861,13 +861,13 @@ impl World {
     /// ruleset that requires status checks and will not say which.
     ///
     /// Two more are about the commit a check says it is attached to, one per source:
-    /// `head-not-a-commit` answers the rollup's `headRefOid` with something that is
-    /// not a commit hash, and `actions-only-run-head-not-a-commit` does the same to
-    /// a workflow run's own `head_sha`. Both are host-supplied text a publication
+    /// `head-not-a-commit` answers a check run's own `head_sha` with something that
+    /// is not a commit hash, and `actions-only-run-head-not-a-commit` does the same to
+    /// a workflow run's. Both are host-supplied text a publication
     /// goes on to compare against the commit it pushed, so neither may be taken on
     /// trust.
     ///
-    /// `no-draft-state` answers a `gh pr view` without the field that says whether
+    /// `no-draft-state` answers a change request without the field that says whether
     /// the change request is a draft, which is what a host that will not say looks
     /// like — never the same thing as a host saying it is not one. `no-description`
     /// answers one without the change request's body, which is likewise a host that
@@ -887,25 +887,13 @@ impl World {
     /// Make the substituted host refuse to say which of its checks block the merge.
     ///
     /// It answers about the checks themselves as usual and then declines the one
-    /// question that decides whether a merge was gated — which is the call `gh` puts
-    /// it behind, `pr checks --required`. Deliberately not the wording a repository
-    /// that requires nothing gets: "none block" is an answer, and this is a refusal
-    /// to answer.
+    /// question that decides whether a merge was gated: its rulesets say they require
+    /// status checks and name none. Deliberately not the answer a repository that
+    /// requires nothing gives: "none block" is an answer, and this is a refusal to
+    /// answer.
     pub fn report_checks_that_do_not_say_if_they_block(&self) {
         std::fs::write(self.path("gh-state/partial-checks"), "")
             .expect("a host that answers partially");
-    }
-
-    /// Make the substituted host report **no check at all** on the change request's
-    /// head, which is what `gh` says about a head nothing has registered a run on yet.
-    ///
-    /// Neither of the two answers beside it:
-    /// `report_checks_that_do_not_say_if_they_block` is a host declining the question,
-    /// and a `host_checks` with no required row is a repository that requires nothing.
-    pub fn report_no_checks_on_the_head(&self) {
-        std::fs::create_dir_all(self.path("gh-state")).expect("a host state directory");
-        std::fs::write(self.path("gh-state/no-checks-yet"), "")
-            .expect("a host with nothing reported on the head yet");
     }
 
     /// Tell the substituted host that somebody closed a change request without
@@ -1301,6 +1289,47 @@ impl World {
             .filter(|call| !call.is_empty())
             .map(str::to_owned)
             .collect()
+    }
+
+    /// Every call the substituted host has been asked to make, in order, each with the
+    /// moment it was made on this host's clock, in seconds since the epoch.
+    ///
+    /// What a journey asserts over when what it holds is *when* a call was made — that
+    /// nothing was sent to a host before the reset it named.
+    pub fn host_call_times(&self) -> Vec<(f64, String)> {
+        std::fs::read_to_string(self.path("gh-state/gh-times.log"))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| {
+                let (at, call) = line.split_once(' ')?;
+                Some((at.parse().ok()?, call.trim().to_owned()))
+            })
+            .collect()
+    }
+
+    /// Make the substituted host leave a request unanswered: every call whose
+    /// arguments, read as one line, contain `text` is answered as `how` says —
+    /// `rate-limited:<epoch>` is refused for the rate limit until that moment, as GitHub
+    /// refuses every request until its allowance resets — `rate-limited-for:<n>` is the
+    /// same with the reset `n` seconds after the first call it refuses — and
+    /// `server-error:<n>` and
+    /// `unreachable:<n>` are a `502` and no HTTP response at all, the next `n` times
+    /// (`always` for every time). Each is answered the way `gh` reports it, the
+    /// rate-limit headers GitHub sends included where the call asked `--include`.
+    // llmlint: ignore[tests_mirror_real_usage] a host that does not answer is a state of
+    // GitHub's that no verb of this crate can produce, so the only way a journey puts the
+    // host in it is to say so where this world says everything else it tells the host; the
+    // behaviour under test — what a publication does about it — is driven through the
+    // real binary.
+    pub fn host_does_not_answer(&self, text: &str, how: &str) {
+        use std::io::Write as _;
+        std::fs::create_dir_all(self.path("gh-state")).expect("a host state directory");
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.path("gh-state/unanswered"))
+            .and_then(|mut file| writeln!(file, "{text}|{how}"))
+            .expect("a host that does not answer");
     }
 
     /// Every event a session's stream carries, read the way a consumer reads it.

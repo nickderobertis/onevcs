@@ -674,7 +674,7 @@ impl Landing {
             term_scope: term_scope.clone(),
             adopt: None,
         };
-        let outcome = publish::run(&context, stream);
+        let mut outcome = publish::run(&context, stream);
         if matches!(outcome, Err(_) | Ok(PublishOutcome::Failed { .. })) {
             let _ = git::copy_branch(&context.repo, &self.source, &self.branch);
             // This stream is one per branch name across repositories, so what the
@@ -685,6 +685,19 @@ impl Landing {
             {
                 git::record_on_origin(&self.source, &self.branch, &remote);
             }
+        }
+        // The command that lands a pushed branch whose merge path could not be read is
+        // the one `onevcs status` names for it, and that is decided by the copy just
+        // handed back: a recovery's attestation is in it now, so `recover` would refuse
+        // it and `publish-branch` takes it.
+        match &mut outcome {
+            Err(crate::Error::PushedUnverified { reason })
+            | Ok(PublishOutcome::Failed {
+                kind: publish::FailureKind::PushedUnverified,
+                reason,
+                ..
+            }) => *reason = publish::relanded(&context, reason),
+            _ => {}
         }
         outcome
     }

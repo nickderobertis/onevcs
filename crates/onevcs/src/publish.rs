@@ -772,6 +772,12 @@ pub fn run_for_session(
             Ok(true) => Retention::HandedBack(checkout),
             _ => Retention::Refused(checkout),
         };
+        // The landing command a pushed branch's reason names is decided by what the
+        // hand-back left, as `onevcs status` decides it.
+        let reason = match kind {
+            FailureKind::PushedUnverified => relanded(&context, &reason),
+            _ => reason,
+        };
         PublishOutcome::Failed {
             kind,
             reason,
@@ -2527,7 +2533,7 @@ fn unverified(context: &Context<'_>, pushed_at: Option<&str>, unread: Error) -> 
             reason: format!(
                 "{branch:?} is on origin{at} and the merge path could not be read: {said}. The \
                  work reached the remote, so re-publishing it would repeat what already landed \
-                 there — read the change request on the host, and {landing}",
+                 there — {READ_THE_HOST}{landing}",
                 branch = context.branch,
                 at = pushed_at.map_or_else(String::new, |sha| format!(" at {sha}")),
                 said = match gh::Unanswered::of(&unread) {
@@ -2540,6 +2546,22 @@ fn unverified(context: &Context<'_>, pushed_at: Option<&str>, unread: Error) -> 
                 landing = landing_once_answered(context),
             ),
         },
+    }
+}
+
+/// Where a `pushed-unverified` reason stops describing what happened and begins naming
+/// how to land the branch — which [`relanded`] replaces once the branch is where the
+/// next command will find it.
+const READ_THE_HOST: &str = "read the change request on the host, and ";
+
+/// `reason`, a `pushed-unverified` reason this module wrote for `context`, with its
+/// landing command decided again now: a branch-keyed verb hands its branch back to the
+/// checkout it read it from only after the publication has ended, and what `onevcs
+/// status` names for the branch is decided by the copy that hand-back left there.
+pub(crate) fn relanded(context: &Context<'_>, reason: &str) -> String {
+    match reason.split_once(READ_THE_HOST) {
+        Some((what, _)) => format!("{what}{READ_THE_HOST}{}", landing_once_answered(context)),
+        None => reason.to_owned(),
     }
 }
 

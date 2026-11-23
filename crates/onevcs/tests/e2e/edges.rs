@@ -2946,8 +2946,8 @@ fn a_host_that_answers_in_the_wrong_shape_is_rejected_at_the_boundary() {
     // right to refuse to report a merge it was never told about.
     for (shape, expected, landed) in [
         ("no-head", "returned a change request with no head", 1),
-        ("no-number", "gh pr list returned no number", 1),
-        ("rollup-not-a-list", "returned a non-list rollup", 1),
+        ("no-number", "listed a change request with no number", 1),
+        ("rollup-not-a-list", "returned a non-list of check runs", 1),
         ("no-state", "returned no state for", 2),
     ] {
         let world = World::new();

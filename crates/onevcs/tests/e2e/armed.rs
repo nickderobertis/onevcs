@@ -81,7 +81,7 @@ fn rollup_readings(world: &World) -> usize {
     world
         .host_calls()
         .iter()
-        .filter(|call| call.contains("statusCheckRollup"))
+        .filter(|call| call.contains("/check-runs?per_page"))
         .count()
 }
 

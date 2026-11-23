@@ -191,6 +191,9 @@ mod honesty;
 mod hook_environment;
 #[cfg(unix)]
 mod host;
+// Unix only for the reason `host` is: the program standing in for `gh` is POSIX shell.
+#[cfg(unix)]
+mod host_waits;
 // Unix only: the program that replays GitHub's recorded GraphQL responses as `gh` is
 // POSIX shell. Its own header carries the reason GitHub is the boundary doubled.
 #[cfg(unix)]

@@ -391,26 +391,19 @@ struct Reads {
 
 fn reads_since(hosted: &Hosted, from: usize) -> Reads {
     let calls: Vec<String> = hosted.world.host_calls().into_iter().skip(from).collect();
-    let fields = |call: &str| {
-        call.split_whitespace()
-            .skip_while(|word| *word != "--json")
-            .nth(1)
-            .unwrap_or_default()
-            .to_owned()
-    };
     Reads {
         lists: calls
             .iter()
-            .filter(|call| call.starts_with("pr list"))
+            .filter(|call| call.contains("/pulls?head="))
             .count(),
-        views: calls
-            .iter()
-            .filter(|call| call.starts_with("pr view"))
-            .filter(|call| {
-                let asked = fields(call);
-                asked
-                    .split(',')
-                    .any(|field| matches!(field, "isDraft" | "title" | "body"))
+        // A change request read by its number for its draft state or description: every
+        // such read that is not the first half of a reading of its checks.
+        views: (0..calls.len())
+            .filter(|&at| {
+                calls[at].contains("/pulls/")
+                    && !calls
+                        .get(at + 1)
+                        .is_some_and(|next| next.contains("/check-runs?per_page"))
             })
             .count(),
         probes: calls

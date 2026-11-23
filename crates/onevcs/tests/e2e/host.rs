@@ -164,12 +164,14 @@ fn a_host_that_will_not_describe_a_change_requests_checks_still_opens_one() {
         .iter()
         .position(|call| call.starts_with("pr create "))
         .expect("the change request was opened");
-    let head_read = calls[opened + 1..]
-        .iter()
-        .find(|call| call.starts_with("pr view "))
-        .expect("the opened change's head is read");
+    let head_read = opened
+        + 1
+        + calls[opened + 1..]
+            .iter()
+            .position(|call| call.contains("/pulls/1 "))
+            .expect("the opened change's head is read");
     assert!(
-        !head_read.contains("statusCheckRollup"),
+        !calls[head_read + 1].contains("/check-runs"),
         "opening one must not ask for the checks alongside it: {calls:?}"
     );
 
@@ -405,15 +407,17 @@ fn explicit_complete_check_sources_read_the_rollup() {
 
         let calls = hosted.world.host_calls();
         assert!(
-            calls
-                .iter()
-                .any(|call| call.contains("--json headRefOid,statusCheckRollup")),
-            "{source} reads the complete check rollup, and the commit it is the rollup of: \
-             {calls:?}"
+            calls.windows(3).any(|read| read[0].contains("/pulls/1 ")
+                && read[1].contains("/check-runs?per_page")
+                && read[2].contains("/status?per_page")),
+            "{source} reads the commit the change request is at, then every check run and \
+             commit status on it: {calls:?}"
         );
         assert!(
-            calls.iter().any(|call| call.starts_with("pr checks ")),
-            "{source} asks which rollup checks are required: {calls:?}"
+            calls
+                .iter()
+                .any(|call| call.contains("/rules/branches/main")),
+            "{source} asks which of those checks block the merge: {calls:?}"
         );
         assert_eq!(hosted.origin_log().len(), 2);
     }
@@ -473,11 +477,17 @@ fn an_explicit_status_check_source_never_falls_back_to_actions() {
 /// asks both protection sources. A fine-grained token is refused the classic one, and
 /// the refusal is recorded as the part of the answer it is — never a failure of the
 /// read — so the rulesets it *can* read still answer.
-const CHECK_ENDPOINTS: [&str; 5] = [
+///
+/// The two pull-request reads are the change request itself — found by its head and
+/// base, then read by its number for the commit it is at — which `Pull requests: Read`
+/// answers, over REST rather than the GraphQL `gh pr` would spend.
+const CHECK_ENDPOINTS: [&str; 7] = [
     "repos/{owner}/{repo}/actions/jobs/{job_id}/logs",
     "repos/{owner}/{repo}/actions/runs/{run_id}/jobs?per_page=100",
     "repos/{owner}/{repo}/actions/runs?head_sha={sha}&per_page=100",
     "repos/{owner}/{repo}/branches/{branch}/protection/required_status_checks",
+    "repos/{owner}/{repo}/pulls/{pull_number}",
+    "repos/{owner}/{repo}/pulls?head={owner}:{branch}&base={branch}&state=open&per_page=100",
     "repos/{owner}/{repo}/rules/branches/{branch}",
 ];
 
@@ -495,6 +505,7 @@ fn endpoint(path: &str) -> String {
             _ if previous == "branches" => "{branch}".to_owned(),
             _ if previous == "runs" && digits(segment) => "{run_id}".to_owned(),
             _ if previous == "jobs" && digits(segment) => "{job_id}".to_owned(),
+            _ if previous == "pulls" && digits(segment) => "{pull_number}".to_owned(),
             _ => segment.to_owned(),
         });
         previous = segment;
@@ -509,6 +520,8 @@ fn endpoint(path: &str) -> String {
             // The page size is the build's own and fixed, so it stays literal; the
             // commit is the change request's and would differ every run.
             Some(("head_sha", _)) => "head_sha={sha}".to_owned(),
+            Some(("head", _)) => "head={owner}:{branch}".to_owned(),
+            Some(("base", _)) => "base={branch}".to_owned(),
             _ => pair.to_owned(),
         })
         .collect();
@@ -528,8 +541,8 @@ fn reading_checks_through_actions_asks_for_nothing_that_resolves_a_check_run() {
     // credential a maintainer runs under reads the rollup happily — so what makes
     // the Actions path sufficient cannot be shown by an answer coming back. It is
     // shown by *which calls produced it*: this asserts over what the host was
-    // asked, and the world above answers `pr view --json statusCheckRollup` and
-    // `pr checks` perfectly well, so nothing here is arranged to make them absent.
+    // asked, and the world above answers the check runs on a commit perfectly well, so
+    // nothing here is arranged to make them absent.
     let hosted = Hosted::new(AUTOMATED);
     hosted.world.host_checks(&[Check {
         name: "gate",
@@ -555,7 +568,7 @@ fn reading_checks_through_actions_asks_for_nothing_that_resolves_a_check_run() {
     );
     for call in &calls {
         assert!(
-            !call.contains("statusCheckRollup"),
+            !call.contains("/check-runs?per_page"),
             "the rollup is what no fine-grained token can read, and {call:?} asked for it"
         );
         assert!(
@@ -2035,7 +2048,7 @@ fn a_publication_never_answers_from_a_check_the_host_left_on_the_head_it_replace
         .world
         .host_calls()
         .iter()
-        .filter(|call| call.contains("statusCheckRollup"))
+        .filter(|call| call.contains("/check-runs?per_page"))
         .count();
     assert!(
         rollups >= 2,
@@ -2182,12 +2195,11 @@ fn a_commit_the_host_says_a_check_is_attached_to_is_not_taken_on_trust() {
     // reported the change **merged** while this crate believed nothing had been
     // reported about the commit it had just pushed.
     //
-    // Once per source, because each spells the commit in a field of its own and
-    // neither is reachable from the other: the rollup renders `headRefOid`, and a
-    // workflow run carries its own `head_sha`, which is the only one a fine-grained
-    // credential ever sees.
+    // Once per source, because each spells the commit on a record of its own and
+    // neither is reachable from the other: a check run carries its own `head_sha`, and
+    // so does a workflow run, which is the only one a fine-grained credential ever sees.
     for (shape, field) in [
-        ("head-not-a-commit", "headRefOid"),
+        ("head-not-a-commit", "head_sha"),
         ("actions-only-run-head-not-a-commit", "head_sha"),
     ] {
         let hosted = Hosted::new(AUTOMATED);
