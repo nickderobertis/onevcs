@@ -15,7 +15,8 @@ try {
     const median = (walls[4] + walls[5]) / 2;
     const ms = n => `${n.toFixed(1)}ms`;
     description = `empty-root preparation ${record.preparation_ms / 1000}s; complete journey at load1 ${record.load1}; ` +
-      `holder read over ${holders.records} records: cold ${ms(holders.cold.wall_ms)}, warm median ${ms(median)}, ` +
+      `holder read over ${holders.records} records: scenario ${holders.scenario_ms / 1000}s (build ${holders.build_ms / 1000}s), ` +
+      `cold ${ms(holders.cold.wall_ms)}, priming ${ms(holders.priming.wall_ms)}, warm median ${ms(median)}, ` +
       `slowest warm ${ms(walls[walls.length - 1])}, further warm call ${holders.git_executions} Git`;
   } else if (args.length === 3 && args[0] === "--scale" && ["1", "10"].includes(args[1]) && ["--cold", "--warm"].includes(args[2])) {
     const workload = record.workloads.find(row => row.scale === Number(args[1]));

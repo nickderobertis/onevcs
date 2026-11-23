@@ -132,7 +132,9 @@ fn timed(fixture: &HolderFixture, mode: &str, calls: usize) -> (Vec<Call>, Value
 /// The holder scenario `full_workload_recovery` times: one cold call, one priming
 /// call and ten warm ones in process, and one further warm call's git executions.
 pub(super) fn journey(root: &Path) -> HolderRecord {
+    let started = std::time::Instant::now();
     let fixture = build_holders(root).expect("retained holder history");
+    let build_ms = super::milliseconds(started);
     let expected = vec![fixture.open.to_string()];
     let tokens = |rows: &Value| -> Vec<String> {
         rows.as_array()
@@ -143,9 +145,13 @@ pub(super) fn journey(root: &Path) -> HolderRecord {
     };
     let (cold, rows) = timed(&fixture, "cold", 1);
     assert_eq!(tokens(&rows), expected, "the cold read's holders");
-    let (warm, rows) = timed(&fixture, "warm", 10);
+    // Primed and warm calls are timed separately, so the priming call's own cost is
+    // part of what the journey's detail can attribute to this scenario.
+    let (priming, rows) = timed(&fixture, "once", 1);
+    assert_eq!(tokens(&rows), expected, "the priming read's holders");
+    let (warm, rows) = timed(&fixture, "once", 10);
     assert_eq!(tokens(&rows), expected, "the warm reads' holders");
-    for call in &warm {
+    for call in warm.iter().chain(&priming) {
         assert_eq!(
             call.verdict_sha256, cold[0].verdict_sha256,
             "every warm holder read answers the cold read's holders"
@@ -162,14 +168,18 @@ pub(super) fn journey(root: &Path) -> HolderRecord {
         (walls[4] + walls[5]) / 2.0
     };
     eprintln!(
-        "recovery holders over {HOLDER_RECORDS} records: cold {:.1}ms; warm median {median:.1}ms; further warm call {git_executions} Git",
-        cold[0].wall_ms
+        "recovery holders over {HOLDER_RECORDS} records: build {build_ms}ms; cold {:.1}ms; priming {:.1}ms; warm median {median:.1}ms; further warm call {git_executions} Git",
+        cold[0].wall_ms, priming[0].wall_ms
     );
+    let scenario_ms = super::milliseconds(started);
     HolderRecord {
         records: HOLDER_RECORDS,
+        build_ms,
         cold: cold.into_iter().next().expect("one cold call"),
+        priming: priming.into_iter().next().expect("one priming call"),
         warm: super::ten(warm),
         git_executions,
+        scenario_ms,
     }
 }
 

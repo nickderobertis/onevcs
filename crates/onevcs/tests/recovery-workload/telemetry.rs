@@ -104,12 +104,19 @@ pub(super) struct HostRecord {
 pub(super) struct HolderRecord {
     /// The session records the identity retains.
     pub records: usize,
+    /// How long `build_holders` took.
+    pub build_ms: u64,
     /// One in-process `session_holders` call with every proof cleared first.
     pub cold: Call,
-    /// Ten in-process calls after one priming call, over unchanged records.
+    /// The in-process call after the cold one that the warm calls are primed by.
+    pub priming: Call,
+    /// Ten in-process calls after the priming call, over unchanged records.
     pub warm: [Call; 10],
     /// Git processes one further warm call started, through a counting shim.
     pub git_executions: usize,
+    /// The whole scenario inside the journey, from building its fixture to its last
+    /// counted call: what it adds to the journey's wall time.
+    pub scenario_ms: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]

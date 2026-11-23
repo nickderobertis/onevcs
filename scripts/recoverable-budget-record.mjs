@@ -60,7 +60,8 @@ export function readRecord(directory = recordDirectory, sourceRoot = repositoryR
     throw new Error("incomplete host-shaped detail");
   }
   if (record.holders.records !== schema["x-holder-records"]) throw new Error("foreign holder workload");
-  for (const call of [record.holders.cold, ...record.holders.warm]) {
+  if (!(record.holders.build_ms > 0) || record.holders.scenario_ms < record.holders.build_ms) throw new Error("incomplete holder scenario timing");
+  for (const call of [record.holders.cold, record.holders.priming, ...record.holders.warm]) {
     if (!(call.wall_ms > 0) || !Number.isFinite(call.load1) || call.load1 < 0 || call.rows <= 0 ||
         !digest(call.verdict_sha256) || call.verdict_sha256 !== record.holders.cold.verdict_sha256) {
       throw new Error("incomplete or incorrect holder read");

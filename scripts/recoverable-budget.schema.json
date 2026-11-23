@@ -342,12 +342,22 @@
           "format": "uint",
           "minimum": 0
         },
+        "build_ms": {
+          "description": "How long `build_holders` took.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
         "cold": {
           "description": "One in-process `session_holders` call with every proof cleared first.",
           "$ref": "#/$defs/Call"
         },
+        "priming": {
+          "description": "The in-process call after the cold one that the warm calls are primed by.",
+          "$ref": "#/$defs/Call"
+        },
         "warm": {
-          "description": "Ten in-process calls after one priming call, over unchanged records.",
+          "description": "Ten in-process calls after the priming call, over unchanged records.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/Call"
@@ -360,14 +370,23 @@
           "type": "integer",
           "format": "uint",
           "minimum": 0
+        },
+        "scenario_ms": {
+          "description": "The whole scenario inside the journey, from building its fixture to its last\ncounted call: what it adds to the journey's wall time.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
         }
       },
       "additionalProperties": false,
       "required": [
         "records",
+        "build_ms",
         "cold",
+        "priming",
         "warm",
-        "git_executions"
+        "git_executions",
+        "scenario_ms"
       ]
     }
   },
