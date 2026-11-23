@@ -77,6 +77,7 @@ const refusals = {
   "too few warm holder calls":f=>{f.record.holders.warm.pop();f.save();},
   "a warm holder call answering other holders":f=>{f.record.holders.warm[2].verdict_sha256=sha("other holders");f.save();},
   "an untimed holder call":f=>{f.record.holders.cold.wall_ms=0;f.save();},
+  "a holder call with no digest":f=>{for (const call of [f.record.holders.cold,...f.record.holders.warm]) call.verdict_sha256="";f.save();},
   "foreign holder workload":f=>{f.record.holders.records=97;f.save();},
 };
 for (const [name,mutate] of Object.entries(refusals)) test(`reader refuses ${name}`,()=>{
@@ -114,7 +115,6 @@ test("CLI reader reports through the SDK without subprocess tools and names reco
     const hostResult = JSON.parse(readFileSync(join(f.root, "result.json"), "utf8"));
     assert.equal(hostResult.value, 40);
     assert.match(hostResult.detail, /host warm unfiltered Decision .* Git executable count/);
-    // The journey time carries the holder read's breakdown, read from the record.
     const journey = spawnSync(process.execPath, [join(f.root, "scripts", "recoverable-git-count-budget.mjs"), "--journey-time"], {
       encoding: "utf8", env: { PATH: "", ONEBUDGETSPEC_RESULT: join(f.root, "result.json") }
     });

@@ -2122,57 +2122,54 @@ pub fn build_holders(root: &Path) -> Result<HolderFixture> {
     );
     testing::write_registry(&home, &registry)?;
 
-    let session = |token: &Token, branch: &Ref, tip: &str, open: bool| -> Result<PathBuf> {
-        let run = root.join(format!("sessions/{token}"));
-        let clone = run.join("clone");
-        let worktree = run.join("worktree");
-        std::fs::create_dir_all(&run).map_err(io)?;
-        git(
-            &repo,
-            &[
-                "clone",
-                "-q",
-                "--shared",
-                "--no-checkout",
-                &repo.to_string_lossy(),
-                &clone.to_string_lossy(),
-            ],
-        )?;
-        git(
-            &clone,
-            &["update-ref", &format!("refs/heads/{branch}"), tip],
-        )?;
-        if open {
+    let session =
+        |token: &Token, branch: &Ref, tip: &str, state: onevcs::Lifecycle| -> Result<PathBuf> {
+            let run = root.join(format!("sessions/{token}"));
+            let clone = run.join("clone");
+            let worktree = run.join("worktree");
+            std::fs::create_dir_all(&run).map_err(io)?;
+            git(
+                &repo,
+                &[
+                    "clone",
+                    "-q",
+                    "--shared",
+                    "--no-checkout",
+                    &repo.to_string_lossy(),
+                    &clone.to_string_lossy(),
+                ],
+            )?;
             git(
                 &clone,
-                &["worktree", "add", "-q", &worktree.to_string_lossy(), branch],
+                &["update-ref", &format!("refs/heads/{branch}"), tip],
             )?;
-        }
-        testing::write_session(
-            &home,
-            &SessionSeed {
-                token: token.clone(),
-                identity: key.clone(),
-                alias: alias.clone(),
-                branch: branch.clone(),
-                checkout: repo.clone(),
-                clone: clone.clone(),
-                worktree,
-                state: if open {
-                    onevcs::Lifecycle::Open
-                } else {
-                    onevcs::Lifecycle::Closed
+            if state == onevcs::Lifecycle::Open {
+                git(
+                    &clone,
+                    &["worktree", "add", "-q", &worktree.to_string_lossy(), branch],
+                )?;
+            }
+            testing::write_session(
+                &home,
+                &SessionSeed {
+                    token: token.clone(),
+                    identity: key.clone(),
+                    alias: alias.clone(),
+                    branch: branch.clone(),
+                    checkout: repo.clone(),
+                    clone: clone.clone(),
+                    worktree,
+                    state,
+                    labels: BTreeMap::new(),
                 },
-                labels: BTreeMap::new(),
-            },
-        )?;
-        Ok(clone)
-    };
+            )?;
+            Ok(clone)
+        };
     let mut sessions = Vec::new();
     for (index, branch, _, carried, mark) in branches {
         let token = token(format!("s-held-{index:03}"))?;
         let branch = reference(branch)?;
-        let clone = session(&token, &branch, &marks[&mark], false)?;
+        let clone = session(&token, &branch, &marks[&mark], onevcs::Lifecycle::Closed)?;
         let mut events = vec![(
             EventKind::SessionOpened,
             payload(json!({"branch":&*branch})),
@@ -2200,7 +2197,7 @@ pub fn build_holders(root: &Path) -> Result<HolderFixture> {
         &open,
         &reference(open_branch.clone())?,
         &marks[&open_mark],
-        true,
+        onevcs::Lifecycle::Open,
     )?;
     testing::write_events(
         &home,

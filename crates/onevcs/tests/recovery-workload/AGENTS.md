@@ -79,11 +79,8 @@ rebuilding either would measure another cold attempt instead of a retry.
 taken after one would measure nothing moved. Its samples stay out of the
 `--scale 1|10` workloads the other budgets read.
 
-`holders.rs` is the repository holder read over `onevcs_testing::recovery::build_holders`'s
-118 retained records of one identity. Its journeys hold `session_holders` — one shared
-proof pass, `workspace::proof_pass`, the sweep's too — to `onevcs::testing::holders_proved_alone`,
-the same proof made record by record with every recovery cache cleared before each, and
-count through the shim (which logs each invocation's arguments) that a repeat read asks
-git no ancestry or history question. `full_workload_recovery` times it through the timing
-program's `--holders` read and records it under `holders`, which
-`recoverable-git-count-budget.mjs --journey-time` reports as its detail's breakdown.
+`holders.rs`'s oracle, `onevcs::testing::holders_proved_alone`, must stay the proof made
+record by record with no recovery answer shared: held against another shared read, a
+stale reuse would pass. Its history count is zero for a scoped read because that read
+answers in process, so it guards one regression — a holder pass run outside the
+recovery scope, which started 6126 git processes per read here.

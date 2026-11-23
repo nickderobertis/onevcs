@@ -10,9 +10,6 @@ try {
   let description;
   if (args.length === 1 && args[0] === "--journey-time") {
     value = record.total_ms / 1000;
-    // The repository holder read's breakdown, read from the same telemetry: the cold
-    // call, the median (sorted calls five and six) and slowest of the ten warm calls,
-    // and one further warm call's git executions.
     const holders = record.holders;
     const walls = holders.warm.map(call => call.wall_ms).sort((a, b) => a - b);
     const median = (walls[4] + walls[5]) / 2;

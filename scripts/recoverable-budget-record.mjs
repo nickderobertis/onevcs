@@ -59,12 +59,10 @@ export function readRecord(directory = recordDirectory, sourceRoot = repositoryR
       record.host.checks.by_gain.some(check => !(check.seconds >= 0) || !(check.gained >= 0))) {
     throw new Error("incomplete host-shaped detail");
   }
-  // The repository holder read: one cold call and ten warm ones, every one answering
-  // the same holders, over the retained history the schema declares.
   if (record.holders.records !== schema["x-holder-records"]) throw new Error("foreign holder workload");
   for (const call of [record.holders.cold, ...record.holders.warm]) {
     if (!(call.wall_ms > 0) || !Number.isFinite(call.load1) || call.load1 < 0 || call.rows <= 0 ||
-        call.verdict_sha256 !== record.holders.cold.verdict_sha256) {
+        !digest(call.verdict_sha256) || call.verdict_sha256 !== record.holders.cold.verdict_sha256) {
       throw new Error("incomplete or incorrect holder read");
     }
   }
