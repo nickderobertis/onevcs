@@ -1292,8 +1292,11 @@ case "$subcommand" in
         if [ -f "$STATE/pr-$PR_NUMBER.title" ]; then
           printf ',"title":%s' "$(json_recorded "$STATE/pr-$PR_NUMBER.title")"
         fi
+        # GitHub answers a pull request with no body as `null`, never as an empty string.
         if [ "$malformed" != "no-description" ] && [ -f "$STATE/pr-$PR_NUMBER.body" ]; then
-          printf ',"body":%s' "$(json_recorded "$STATE/pr-$PR_NUMBER.body")"
+          recorded_body="$(json_recorded "$STATE/pr-$PR_NUMBER.body")"
+          [ "$recorded_body" != '""' ] || recorded_body=null
+          printf ',"body":%s' "$recorded_body"
         fi
         [ "$malformed" = "no-mergeable" ] || printf ',"mergeable":%s' "$mergeable"
         printf ',"mergeable_state":"%s"}' "$merge_state"
@@ -1341,6 +1344,8 @@ case "$subcommand" in
         if [ "$malformed" = "rollup-not-a-list" ]; then answered '{"total_count":1,"check_runs":"soon"}'; fi
         # A page that holds entries back says how many there are.
         if [ "$malformed" = "checks-truncated" ]; then answered '{"total_count":101,"check_runs":[]}'; fi
+        # A list that does not say how many entries there are.
+        if [ "$malformed" = "checks-uncounted" ]; then answered '{"check_runs":[]}'; fi
         rows="$(rows_for "$sha")"
         only="$(query_value check_name)"
         # A lookup of one check's job, which is where a host that will not say where a

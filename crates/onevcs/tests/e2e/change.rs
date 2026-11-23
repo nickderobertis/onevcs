@@ -791,6 +791,49 @@ fn one_github_reused_across_operations_never_answers_one_from_anothers_listing()
     assert_eq!(read.body, "rewritten by a person");
 }
 
+#[test]
+fn a_change_request_with_no_body_reads_as_an_empty_description_whichever_read_answers() {
+    // GitHub answers a pull request with no body as `null`. That is a body with nothing
+    // in it, read the same by the listing that finds the change request and by a read
+    // of the change request on its own — never a description the host would not give.
+    let hosted = Hosted::new(OPEN);
+    let token = hosted.change("feature/bodiless", "feat: add the bodiless thing");
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token, "--draft"])
+        .assert()
+        .success();
+    crate::honesty::inhabit(&hosted.world);
+    let providers = onevcs::Providers::real();
+    let listed = onevcs::session_change(&providers, &onevcs::SessionToken(token.clone()))
+        .expect("the host answers")
+        .expect("the change is open");
+    assert_eq!(listed.body, "", "{listed:?}");
+
+    use onevcs::RemoteHost;
+    let github = onevcs::GitHub::new("acme-corp/hosted").expect("a repository");
+    let read = github
+        .change_description(&onevcs::ChangeRequest {
+            id: onevcs::ChangeId("1".to_owned()),
+            url: onevcs::Url::parse("https://github.com/acme-corp/hosted/pull/1").expect("a URL"),
+            head_sha: onevcs::Sha(String::new()),
+            base: "main".to_owned(),
+        })
+        .expect("a description");
+    assert_eq!(read.body, "");
+    assert_eq!(read.title, "feat: add the bodiless thing");
+    assert!(
+        hosted
+            .world
+            .host_calls()
+            .last()
+            .is_some_and(|call| call.contains("/pulls/1 ")),
+        "the change request was read on its own: {:?}",
+        hosted.world.host_calls()
+    );
+}
+
 /// A held draft whose push runs a `pre-push` hook that does `move` to change request 1
 /// on the host while the push is in flight, answering how the publication ended and what
 /// it read.
