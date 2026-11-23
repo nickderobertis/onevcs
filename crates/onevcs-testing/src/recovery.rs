@@ -2165,33 +2165,56 @@ pub fn build_holders(root: &Path) -> Result<HolderFixture> {
             )?;
             Ok(clone)
         };
-    let mut sessions = Vec::new();
-    for (index, branch, _, carried, mark) in branches {
-        let token = token(format!("s-held-{index:03}"))?;
-        let branch = reference(branch)?;
-        let clone = session(&token, &branch, &marks[&mark], onevcs::Lifecycle::Closed)?;
-        let mut events = vec![(
-            EventKind::SessionOpened,
-            payload(json!({"branch":&*branch})),
-        )];
-        if let Some(landing) = landing_marks.get(&index) {
+    // Every closed session is its own clone, record and stream, so they are cut on
+    // several threads: one after another they were most of this workload's build.
+    let closed_session =
+        |(index, branch, _, carried, mark): &(usize, String, String, bool, usize)| {
+            let token = token(format!("s-held-{index:03}"))?;
+            let branch = reference(branch.clone())?;
+            let clone = session(&token, &branch, &marks[mark], onevcs::Lifecycle::Closed)?;
+            let mut events = vec![(
+                EventKind::SessionOpened,
+                payload(json!({"branch":&*branch})),
+            )];
+            if let Some(landing) = landing_marks.get(index) {
+                events.push((
+                    EventKind::MergeCompleted,
+                    payload(json!({"branch":&*branch,"sha":landed[landing]})),
+                ));
+            }
             events.push((
-                EventKind::MergeCompleted,
-                payload(json!({"branch":&*branch,"sha":landed[landing]})),
+                EventKind::SessionClosed,
+                payload(json!({"branch":&*branch})),
             ));
+            testing::write_events(&home, &token, &key, &events)?;
+            Ok::<_, Error>(HolderSession {
+                token,
+                branch,
+                clone,
+                carried: *carried,
+            })
+        };
+    let workers = std::thread::available_parallelism()
+        .map_or(1, usize::from)
+        .min(8);
+    let sessions = std::thread::scope(|scope| {
+        let handles: Vec<_> = branches
+            .chunks(branches.len().div_ceil(workers).max(1))
+            .map(|chunk| {
+                let closed_session = &closed_session;
+                scope.spawn(move || chunk.iter().map(closed_session).collect::<Result<Vec<_>>>())
+            })
+            .collect();
+        let mut all = Vec::new();
+        for handle in handles {
+            all.extend(
+                handle
+                    .join()
+                    .map_err(|_| invalid("holder fixture worker panicked"))??,
+            );
         }
-        events.push((
-            EventKind::SessionClosed,
-            payload(json!({"branch":&*branch})),
-        ));
-        testing::write_events(&home, &token, &key, &events)?;
-        sessions.push(HolderSession {
-            token,
-            branch,
-            clone,
-            carried,
-        });
-    }
+        Ok::<_, Error>(all)
+    })?;
     let open = token("s-held-open".to_owned())?;
     session(
         &open,
