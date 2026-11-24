@@ -72,7 +72,8 @@ pub(super) struct Scenario {
     pub lifted_early: bool,
     /// Readings of the check rollup, one a poll.
     pub polls: u64,
-    /// The requests those readings took: the rollup and the required set, each poll.
+    /// The requests those readings took: the change request's head, its check runs and
+    /// commit statuses, and the required set.
     pub check_read_requests: u64,
     /// Every request the publication made, from opening its change request to its end.
     pub watch_requests: u64,
@@ -355,8 +356,15 @@ fn measure(root: PathBuf, shape: Shape) -> Scenario {
         call.starts_with("api ")
             && (call.contains("/actions/runs?head_sha=") || call.contains("/check-suites"))
     };
-    let rollup = |call: &str| call.contains("statusCheckRollup");
-    let required = |call: &str| call.starts_with("pr checks ") && call.contains("--required");
+    // A reading reads the change request's head, then the check runs and the commit
+    // statuses on it; what blocks the merge is the rulesets and classic protection.
+    let rollup = |call: &str| call.contains("/check-runs?per_page");
+    let beside_the_rollup = |call: &str| {
+        (call.contains("/pulls/") && !call.contains("/pulls?"))
+            || call.contains("/status?per_page")
+            || call.contains("/rules/branches/")
+            || call.contains("/protection/required_status_checks")
+    };
     let lift = calls.iter().position(|call| call.starts_with("pr ready "));
 
     // Walk the polls: each opens with a reading of the rollup, and a fresh
@@ -401,7 +409,7 @@ fn measure(root: PathBuf, shape: Shape) -> Scenario {
         polls: polls.len() as u64,
         check_read_requests: calls
             .iter()
-            .filter(|call| rollup(call) || required(call))
+            .filter(|call| rollup(call) || beside_the_rollup(call))
             .count() as u64,
         watch_requests: calls.len() as u64,
         activity_reads: polls.iter().filter(|(_, asked)| *asked).count() as u64,

@@ -25,7 +25,10 @@ fi
 # answer: a stand-in that replies is indistinguishable from one that was allowed
 # to be asked, so which endpoints a path touched is readable nowhere else. An
 # argument's own newlines are folded into spaces so one call stays one line.
-{ printf '%s ' "$@" | tr '\n' ' '; printf '\n'; } >>"$STATE/gh-calls.log"
+# The call a `lost:` answer performs on the host's side is the same call, logged once.
+if [ -z "${ONEVCS_FAKE_GH_ANSWERING:-}" ]; then
+  { printf '%s ' "$@" | tr '\n' ' '; printf '\n'; } >>"$STATE/gh-calls.log"
+fi
 
 # Whether this call asked to be shown content carrying terminal escape sequences,
 # and whether this world's `gh` predates the flag. One that does rejects it here,
@@ -40,18 +43,149 @@ if [ "$allow_escapes" = "1" ] && [ -f "$STATE/no-escape-flag" ]; then
   exit 1
 fi
 
+# When each call was made, on this host's clock: the same calls `gh-calls.log` lists,
+# each after its moment as seconds since the epoch — how a journey shows that nothing
+# was asked again before the moment a refusal named.
+[ -n "${ONEVCS_FAKE_GH_ANSWERING:-}" ] \
+  || { printf '%s ' "$(date +%s.%N)"; printf '%s ' "$@" | tr '\n' ' '; printf '\n'; } >>"$STATE/gh-times.log"
+
+# The REST reads of a change request and of the checks on a commit, which are answered
+# below from the same records `gh pr` is: the listing (`pulls?head=`), one change
+# request by number (a GET of `pulls/<n>`, which nothing writes to with `--method`), and
+# a commit's check runs and commit statuses. Named here because the call ledger, the
+# repository a call is answered from, and the dispatch below all turn on it.
+rest_call=""
+if [ "${1:-}" = "api" ]; then
+  rest_path="${2:-}"; rest_path="${rest_path%%\?*}"
+  case "$rest_path" in
+    repos/*/*/pulls|repos/*/*/commits/*/check-runs|repos/*/*/commits/*/status) rest_call="$rest_path" ;;
+    repos/*/*/pulls/*)
+      rest_number="${rest_path##*/pulls/}"
+      case "$rest_number" in
+        ""|*[!0-9]*) ;;
+        *)
+          rest_call="$rest_path"
+          for argument in "$@"; do
+            case "$argument" in --method|-X|-f|-F|--field|--raw-field|--input) rest_call="" ;; esac
+          done ;;
+      esac ;;
+  esac
+fi
+
+# A request the host does not answer, as `unanswered` says, one rule a line:
+# `<text>|<how>`, where `<text>` is matched against the call's arguments as one line and
+# `<how>` is `rate-limited:<epoch>` — refused for the rate limit until that moment, as
+# GitHub refuses every request until its allowance resets — `rate-limited-for:<n>`, the
+# same with the reset `n` seconds after the first refusal, or `server-error:<n>` or
+# `unreachable:<n>`: a `502`, or no HTTP response at all, the next `<n>` times (`always`
+# for every time) — `lost:<n>` performs the call and then answers it with a `502`,
+# `retry-after:<n>` is a rate limit naming both a reset and a later `Retry-After`, and
+# `secondary-limited:<n>` the secondary limiter's refusal, which names no reset, and
+# `unreported-limit:<n>` a GraphQL rate-limit refusal `rate_limit` does not bear out.
+# Each answers the way `gh` reports it: asked `--include`, with the
+# status line and GitHub's rate-limit headers ahead of the body; a `gh pr` call, the way
+# a GraphQL request fails.
+if [ -f "$STATE/unanswered" ] && [ "${2:-}" != "rate_limit" ] \
+  && [ -z "${ONEVCS_FAKE_GH_ANSWERING:-}" ]; then
+  called="$(printf '%s ' "$@" | tr '\n' ' ')"
+  include=false
+  for argument in "$@"; do [ "$argument" = "--include" ] && include=true; done
+  line=0
+  while IFS='|' read -r text how; do
+    line=$((line + 1))
+    [ -n "$text" ] || continue
+    case "$called" in *"$text"*) ;; *) continue ;; esac
+    # `rate-limited-for:<n>` is the same refusal with a reset `n` seconds after the
+    # first call it refuses, which is how a journey states a reset a few seconds ahead
+    # without racing the clock to the call it means.
+    case "$how" in
+      rate-limited-for:*)
+        if [ ! -f "$STATE/unanswered.$line.reset" ]; then
+          printf '%s\n' "$(( $(date +%s) + ${how#rate-limited-for:} ))" >"$STATE/unanswered.$line.reset"
+        fi
+        how="rate-limited:$(cat "$STATE/unanswered.$line.reset")" ;;
+    esac
+    case "$how" in
+      rate-limited:*)
+        reset="${how#rate-limited:}"
+        [ "$(date +%s)" -lt "$reset" ] || continue
+        if [ "${1:-}" = "api" ]; then
+          message='API rate limit exceeded for user ID 1. If you reach out to GitHub Support for help, please include the request ID 0000:0000.'
+          if [ "$include" = true ]; then
+            printf 'HTTP/2.0 403 Forbidden\nContent-Type: application/json; charset=utf-8\nX-Ratelimit-Limit: 5000\nX-Ratelimit-Remaining: 0\nX-Ratelimit-Reset: %s\nX-Ratelimit-Resource: core\nX-Ratelimit-Used: 5000\n\n' "$reset"
+          fi
+          printf '{"message":"%s","status":"403"}\n' "$message"
+          printf 'gh: %s (HTTP 403)\n' "$message" >&2
+        else
+          printf 'GraphQL: API rate limit already exceeded for user ID 1.\n' >&2
+        fi
+        exit 1 ;;
+      retry-after:*|secondary-limited:*|unreported-limit:*|server-error:*|unreachable:*|lost:*)
+        left="${how#*:}"
+        counter="$STATE/unanswered.$line.count"
+        if [ "$left" != "always" ]; then
+          spent="$(cat "$counter" 2>/dev/null || printf 0)"
+          [ "$spent" -lt "$left" ] || continue
+          printf '%s\n' "$((spent + 1))" >"$counter"
+        fi
+        case "$how" in
+          retry-after:*)
+            # A rate limit whose headers name a reset a second away and a `Retry-After`
+            # of four — the later of which is when GitHub takes the request again.
+            message='API rate limit exceeded for user ID 1.'
+            if [ "$include" = true ]; then
+              printf 'HTTP/2.0 403 Forbidden\nContent-Type: application/json; charset=utf-8\nRetry-After: 4\nX-Ratelimit-Limit: 5000\nX-Ratelimit-Remaining: 0\nX-Ratelimit-Reset: %s\nX-Ratelimit-Resource: core\n\n' "$(( $(date +%s) + 1 ))"
+            fi
+            printf '{"message":"%s","status":"403"}\n' "$message"
+            printf 'gh: %s (HTTP 403)\n' "$message" >&2 ;;
+          secondary-limited:*)
+            # The secondary limiter: a refusal for the rate limit that names no reset,
+            # while the allowance `rate_limit` reports is not spent.
+            message='You have exceeded a secondary rate limit. Please wait a few minutes before you try again.'
+            if [ "${1:-}" = "api" ]; then
+              [ "$include" = false ] || printf 'HTTP/2.0 403 Forbidden\nContent-Type: application/json; charset=utf-8\n\n'
+              printf '{"message":"%s","status":"403"}\n' "$message"
+              printf 'gh: %s (HTTP 403)\n' "$message" >&2
+            else
+              printf 'GraphQL: %s\n' "$message" >&2
+            fi ;;
+          unreported-limit:*)
+            # A GraphQL refusal for the rate limit that the allowance GitHub reports does
+            # not bear out: nothing says when it lifts.
+            printf 'GraphQL: API rate limit already exceeded for user ID 1.\n' >&2 ;;
+          lost:*)
+            # The host did what it was asked, and its answer never arrived: what a `502`
+            # in front of a request GitHub had already performed looks like.
+            ONEVCS_FAKE_GH_ANSWERING=1 "$0" "$@" >/dev/null 2>&1 || true
+            [ "${1:-}" != "api" ] || [ "$include" = false ] || printf 'HTTP/2.0 502 Bad Gateway\nContent-Type: text/html\n\n'
+            printf 'non-200 OK status code: 502 Bad Gateway body: ""\n' >&2 ;;
+          unreachable:*)
+            printf 'error connecting to api.github.com\ncheck your internet connection or https://githubstatus.com\n' >&2 ;;
+          *)
+            if [ "${1:-}" = "api" ]; then
+              [ "$include" = false ] || printf 'HTTP/2.0 502 Bad Gateway\nContent-Type: text/html\n\n'
+              printf 'gh: HTTP 502: Bad Gateway (https://api.github.com/%s)\n' "${2:-}" >&2
+            else
+              printf 'non-200 OK status code: 502 Bad Gateway body: ""\n' >&2
+            fi ;;
+        esac
+        exit 1 ;;
+    esac
+  done <"$STATE/unanswered"
+fi
+
 # The call ledger: every call this host answers, in order, with the change requests it
 # names and what GitHub charges for it — one JSON object a line. The calls answered by
 # the review host (below) are written there, with the charge that host computes; every
 # other call is written here. `gh pr` subcommands are GraphQL on the real host, one point
 # each; `gh api` paths and `gh run` are REST requests, one each.
 delegated=0
-if [ "${1:-}" = "api" ]; then
+if [ "${1:-}" = "api" ] && [ -z "$rest_call" ]; then
   case "${2:-}" in
     graphql|repos/*/*/pulls/*|repos/*/*/issues/*/comments) delegated=1 ;;
   esac
 fi
-if [ "$delegated" = "0" ]; then
+if [ "$delegated" = "0" ] && [ -z "${ONEVCS_FAKE_GH_ANSWERING:-}" ]; then
   ledger_repo=""; ledger_number=""
   previous=""
   for argument in "$@"; do
@@ -82,11 +216,16 @@ fi
 # answered from there. The calls log and the ledger above stay the world's, so one
 # journey reads every request every repository was asked. A world with no such
 # directory is the one repository it always was.
+if [ -n "$rest_call" ] && [ -z "$called_repo" ]; then
+  called_repo="${rest_call#repos/}"
+  called_repo="${called_repo%%/*}/$(printf '%s' "${rest_call#repos/*/}" | cut -d/ -f1)"
+fi
 case "$called_repo" in
   */*)
     if [ -d "$STATE/repos/$called_repo" ]; then
       STATE="$STATE/repos/$called_repo"
-      { printf '%s ' "$@" | tr '\n' ' '; printf '\n'; } >>"$STATE/gh-calls.log"
+      [ -n "${ONEVCS_FAKE_GH_ANSWERING:-}" ] \
+        || { printf '%s ' "$@" | tr '\n' ' '; printf '\n'; } >>"$STATE/gh-calls.log"
     elif [ -d "$STATE/repos" ]; then
       printf 'invalid --repo: repository %s is not hosted by this world\n' "$called_repo" >&2
       exit 1
@@ -95,12 +234,20 @@ case "$called_repo" in
 esac
 
 ORIGIN="$(cat "$STATE/origin")"
+# How many times the checks on a change request's head have been read, this call
+# included: each reading asks the check runs on the head once (a lookup of one check's
+# job, by `check_name`, is not a reading). Everything below that moves "after the n-th
+# reading" counts in this unit, so a journey states the moment it means rather than
+# racing a clock for it.
+readings_so_far() {
+  grep -c '/check-runs?per_page' "$STATE/gh-calls.log" || true
+}
 # Something that happens on the host at one reading of a rollup, which is how a journey
 # states the moment a branch or a base moves while a publication is between two reads:
 # `on-reading/<n>` is a script run once, with `ORIGIN` naming the bare origin, by the
 # n-th call asking for a rollup — this call counted — before that call answers.
-if [ -d "$STATE/on-reading" ] && printf '%s ' "$@" | grep -q statusCheckRollup; then
-  at="$STATE/on-reading/$(grep -c statusCheckRollup "$STATE/gh-calls.log" || true)"
+if [ -d "$STATE/on-reading" ] && printf '%s ' "$@" | grep -q '/check-runs?per_page'; then
+  at="$STATE/on-reading/$(readings_so_far)"
   if [ -f "$at" ]; then
     ORIGIN="$ORIGIN" bash "$at" >/dev/null 2>&1
     mv "$at" "$at.done"
@@ -134,7 +281,7 @@ CHECKS="$STATE/checks.rows"
 # Counted in readings rather than in wall-clock time so a journey states the moment
 # it means instead of racing for it.
 if [ -f "$STATE/checks-flip-after" ] && [ -f "$STATE/checks.rows.next" ]; then
-  if [ "$(grep -c statusCheckRollup "$STATE/gh-calls.log" || true)" \
+  if [ "$(readings_so_far)" \
        -gt "$(cat "$STATE/checks-flip-after")" ]; then
     CHECKS="$STATE/checks.rows.next"
   fi
@@ -147,7 +294,7 @@ fi
 # in readings for the reason the flip above is.
 PHASE=""
 if [ -d "$STATE/timeline" ]; then
-  readings="$(grep -c statusCheckRollup "$STATE/gh-calls.log" || true)"
+  readings="$(readings_so_far)"
   for dir in "$STATE"/timeline/*/; do
     n="$(basename "$dir")"
     case "$n" in ""|*[!0-9]*) continue ;; esac
@@ -197,10 +344,14 @@ case "$malformed" in *zero-start) STARTED="0001-01-01T00:00:00Z" ;; esac
 # that says nothing here is a host that never noticed, which is the recorded head
 # for ever; one that does says so in readings of the rollup, the same unit the
 # rollup's own flip above is counted in.
+#
+# A third argument of `1` asks as the reading about to be made: a reading reads the
+# change request's head first and its checks second, and the head it reads is that
+# reading's own.
 head_seen() {
-  local recorded="$1" branch="$2"
+  local recorded="$1" branch="$2" ahead="${3:-0}"
   if [ -f "$STATE/head-noticed-after" ] \
-    && [ "$(grep -c statusCheckRollup "$STATE/gh-calls.log" || true)" \
+    && [ "$(( $(readings_so_far) + ahead ))" \
          -gt "$(cat "$STATE/head-noticed-after")" ]; then
     git --git-dir "$ORIGIN" rev-parse "refs/heads/$branch" 2>/dev/null || printf '%s' "$recorded"
     return
@@ -218,7 +369,7 @@ head_seen() {
 mergeability_now() {
   local source="$STATE/mergeable"
   if [ -f "$STATE/mergeable-flip-after" ] && [ -f "$STATE/mergeable.next" ] \
-    && [ "$(grep -c statusCheckRollup "$STATE/gh-calls.log" || true)" \
+    && [ "$(readings_so_far)" \
          -gt "$(cat "$STATE/mergeable-flip-after")" ]; then
     source="$STATE/mergeable.next"
   fi
@@ -332,9 +483,50 @@ case "$command" in
       *\?*) query="${path#*\?}"; path="${path%%\?*}" ;;
     esac
     if [ "$path" = "user" ]; then
-      printf 'tester\n'
+      # Asked `--include`, the user's record as GitHub's REST API answers it; asked for
+      # `--jq .login`, the login alone, as `gh` prints it.
+      jq_login=0
+      for argument in "$@"; do [ "$argument" = "--include" ] && jq_login=2; done
+      for argument in "$@"; do [ "$argument" = "--jq" ] && jq_login=1; done
+      case "$jq_login" in
+        1) printf 'tester\n' ;;
+        2) printf 'HTTP/2.0 200 OK\nContent-Type: application/json; charset=utf-8\nX-Ratelimit-Limit: 5000\nX-Ratelimit-Remaining: 4999\nX-Ratelimit-Resource: core\n\n{"login":"tester","id":1,"type":"User"}\n' ;;
+        *) printf '{"login":"tester","id":1,"type":"User"}\n' ;;
+      esac
       exit 0
     fi
+    if [ "$path" = "rate_limit" ]; then
+      # A host that will not say what is left of the allowance.
+      if [ -f "$STATE/rate-limit-unreadable" ]; then
+        printf 'gh: HTTP 502: Bad Gateway (https://api.github.com/rate_limit)\n' >&2
+        exit 1
+      fi
+      # What is left of each allowance and when it resets, which GitHub answers without
+      # charging it: every allowance a rule in `unanswered` holds spent is spent until
+      # that rule's moment, and every other is whole.
+      now="$(date +%s)"; spent=0
+      if [ -f "$STATE/unanswered" ]; then
+        line=0
+        while IFS='|' read -r text how; do
+          line=$((line + 1))
+          case "$how" in
+            rate-limited-for:*)
+              reset="$(cat "$STATE/unanswered.$line.reset" 2>/dev/null || printf 0)" ;;
+            rate-limited:*)
+              reset="${how#rate-limited:}" ;;
+            *) continue ;;
+          esac
+          if [ "$reset" -gt "$now" ] && [ "$reset" -gt "$spent" ]; then spent="$reset"; fi
+        done <"$STATE/unanswered"
+      fi
+      if [ "$spent" -gt 0 ]; then remaining=0; reset="$spent"; else remaining=5000; reset=$((now + 3600)); fi
+      printf '{"resources":{"core":{"limit":5000,"used":%s,"remaining":%s,"reset":%s},"graphql":{"limit":5000,"used":%s,"remaining":%s,"reset":%s}}}\n' \
+        "$((5000 - remaining))" "$remaining" "$reset" "$((5000 - remaining))" "$remaining" "$reset"
+      exit 0
+    fi
+    # The REST reads of a change request and of a commit's checks are answered below,
+    # beside `gh pr`'s, from the same records.
+    if [ -z "$rest_call" ]; then
     case "$path" in
       graphql|repos/*/*/pulls/*|repos/*/*/issues/*/comments)
         review_host "${ARGUMENTS[@]}" ;;
@@ -608,6 +800,12 @@ Retry-After: Wed, 21 Oct 2026 07:28:00 GMT' "{\"message\":\"$message\",\"status\
           printf '[{"type":"required_status_checks","ruleset_source_type":"Repository","parameters":{"strict_required_status_checks_policy":%s,"required_status_checks":[%s]}}]\n' "$(strict_in rulesets)" "$contexts"
           exit 0
         fi
+        # A host that will not say which of its checks block the merge: a ruleset that
+        # says it requires status checks and names none of them.
+        if [ -f "$STATE/partial-checks" ]; then
+          printf '[{"type":"required_status_checks","parameters":{}}]\n'
+          exit 0
+        fi
         case "$malformed" in
           actions-only-rules-not-a-list)
             printf '{"rules":[]}\n'
@@ -635,6 +833,7 @@ Retry-After: Wed, 21 Oct 2026 07:28:00 GMT' "{\"message\":\"$message\",\"status\
     esac
     printf 'fake gh: unsupported api path %s\n' "$path" >&2
     exit 1
+    fi
     ;;
   run)
     # `gh run view --log --job` addresses a job by its **id**, never by a check's
@@ -676,6 +875,9 @@ Retry-After: Wed, 21 Oct 2026 07:28:00 GMT' "{\"message\":\"$message\",\"status\
 esac
 
 subcommand="${1:-}"; shift || true
+# A REST read answered from the change requests' records below, rather than a `gh pr`
+# subcommand.
+[ -z "$rest_call" ] || subcommand=rest
 number=""
 case "$subcommand" in
   view|merge|checks|ready|edit)
@@ -901,7 +1103,7 @@ settle_auto_merges() {
 # hold: GitHub lands a held change between calls, and landing it during the very
 # call that asked it to hold would leave that call merging something already merged.
 case "$subcommand" in
-  view|checks|list) settle_auto_merges ;;
+  view|checks|list|rest) settle_auto_merges ;;
 esac
 
 case "$subcommand" in
@@ -1018,6 +1220,198 @@ case "$subcommand" in
       separator=","
     done
     printf ']\n'
+    ;;
+  rest)
+    # GitHub's REST API about change requests and the checks on a commit, answered from
+    # the records `gh pr create` wrote and the rows the rollup is rendered from — so the
+    # two transports cannot come to disagree about one host. Asked `--include`, the
+    # status line and GitHub's rate-limit headers come first, as `gh` prints them.
+    include=false
+    for argument in "${ARGUMENTS[@]}"; do [ "$argument" = "--include" ] && include=true; done
+    rest_query=""
+    case "${ARGUMENTS[1]}" in *\?*) rest_query="${ARGUMENTS[1]#*\?}" ;; esac
+    slug="${rest_call#repos/}"; slug="$(printf '%s' "$slug" | cut -d/ -f1-2)"
+    answered() {
+      if [ "$include" = true ]; then
+        printf 'HTTP/2.0 200 OK\nContent-Type: application/json; charset=utf-8\nX-Ratelimit-Limit: 5000\nX-Ratelimit-Remaining: 4999\nX-Ratelimit-Resource: core\n\n'
+      fi
+      printf '%s\n' "$1"
+      exit 0
+    }
+    # What GitHub answers a credential the repository does not let read its check runs
+    # or commit statuses: a 403, which says nothing about whether there are any.
+    forbidden() {
+      [ "$include" = false ] || printf 'HTTP/2.0 403 Forbidden\nContent-Type: application/json; charset=utf-8\n\n'
+      printf '{"message":"Resource not accessible by personal access token","status":"403"}\n'
+      printf 'gh: Resource not accessible by personal access token (HTTP 403)\n' >&2
+      exit 1
+    }
+    # One query parameter's value, decoded as a URL query decodes it.
+    query_value() {
+      local pair value=""
+      for pair in ${rest_query//&/ }; do
+        case "$pair" in "$1="*) value="${pair#*=}" ;; esac
+      done
+      value="${value//+/ }"
+      printf '%b' "${value//%/\\x}"
+    }
+    # One change request's record as GitHub's REST API describes a pull request, with
+    # the head this host has noticed — as the reading about to be made where `$2` says
+    # so — and the malformed answers that leave a field out.
+    pull_json() {
+      local record="$1" ahead="${2:-0}" head_sha state merged merged_at merge_commit draft mergeable merge_state
+      (
+        . "$record"
+        head_sha="$(head_seen "$PR_HEAD_SHA" "$PR_HEAD" "$ahead")"
+        state=open; merged=false
+        case "$PR_STATE" in MERGED) state=closed; merged=true ;; CLOSED) state=closed ;; esac
+        if [ -f "$STATE/closed-$PR_NUMBER" ] && [ "$PR_STATE" = "OPEN" ]; then state=closed; fi
+        merged_at=null; [ -z "${PR_MERGED_AT:-}" ] || merged_at="\"$PR_MERGED_AT\""
+        merge_commit=null; [ -z "$PR_MERGE_COMMIT" ] || merge_commit="\"$PR_MERGE_COMMIT\""
+        draft=false
+        if [ "${PR_DRAFT:-0}" = "1" ] && [ ! -f "$STATE/ready-$PR_NUMBER" ]; then draft=true; fi
+        # GitHub's REST API answers `true`, `false`, or `null` while it has not computed
+        # it; a world that states some other word is a host answering in a shape it
+        # never answers in, which is passed through as that word.
+        case "$(mergeability_now | cut -d' ' -f1)" in
+          MERGEABLE) mergeable=true ;;
+          CONFLICTING) mergeable=false ;;
+          UNKNOWN) mergeable=null ;;
+          *) mergeable="\"$(mergeability_now | cut -d' ' -f1)\"" ;;
+        esac
+        merge_state="$(mergeability_now | cut -d' ' -f2 | tr '[:upper:]' '[:lower:]')"
+        printf '{'
+        [ "$malformed" = "no-number" ] || printf '"number":%s,' "$PR_NUMBER"
+        printf '"html_url":"%s","url":"https://api.github.com/repos/%s/pulls/%s","state":"%s","merged":%s,"merged_at":%s,"merge_commit_sha":%s' \
+          "$PR_URL" "$slug" "$PR_NUMBER" "$state" "$merged" "$merged_at" "$merge_commit"
+        if [ "$malformed" != "no-head" ]; then
+          printf ',"head":{"ref":%s,"sha":"%s"}' "$(json_string "$PR_HEAD")" "$head_sha"
+        fi
+        printf ',"base":{"ref":%s}' "$(json_string "$PR_BASE")"
+        [ "$malformed" = "no-draft-state" ] || printf ',"draft":%s' "$draft"
+        if [ -f "$STATE/pr-$PR_NUMBER.title" ]; then
+          printf ',"title":%s' "$(json_recorded "$STATE/pr-$PR_NUMBER.title")"
+        fi
+        # GitHub answers a pull request with no body as `null`, never as an empty string.
+        if [ "$malformed" != "no-description" ] && [ -f "$STATE/pr-$PR_NUMBER.body" ]; then
+          recorded_body="$(json_recorded "$STATE/pr-$PR_NUMBER.body")"
+          [ "$recorded_body" != '""' ] || recorded_body=null
+          printf ',"body":%s' "$recorded_body"
+        fi
+        [ "$malformed" = "no-mergeable" ] || printf ',"mergeable":%s' "$mergeable"
+        printf ',"mergeable_state":"%s"}' "$merge_state"
+      )
+    }
+    case "$rest_call" in
+      */pulls)
+        # GitHub's "List pull requests": `head` names the branch as `<owner>:<branch>`,
+        # and only the open ones are asked for.
+        wanted_head="$(query_value head)"; wanted_head="${wanted_head#*:}"
+        wanted_base="$(query_value base)"
+        items=""; separator=""
+        for record in "$STATE"/pr-*.env; do
+          [ -e "$record" ] || continue
+          ( . "$record"
+            [ "$PR_STATE" = "OPEN" ] || exit 1
+            # Somebody closed it without merging it, which is a thing that happens to a
+            # change request and leaves the branch exactly where it was.
+            [ ! -f "$STATE/closed-$PR_NUMBER" ] || exit 1
+            [ "$PR_HEAD" = "$wanted_head" ] || exit 1
+            [ -z "$wanted_base" ] || [ "$PR_BASE" = "$wanted_base" ] ) || continue
+          items="$items$separator$(pull_json "$record")"
+          separator=","
+        done
+        answered "[$items]" ;;
+      */pulls/*)
+        number="${rest_call##*/pulls/}"
+        if [ ! -f "$STATE/pr-$number.env" ]; then
+          [ "$include" = false ] || printf 'HTTP/2.0 404 Not Found\nContent-Type: application/json; charset=utf-8\n\n'
+          printf '{"message":"Not Found","status":"404"}\n'
+          printf 'gh: Not Found (HTTP 404)\n' >&2
+          exit 1
+        fi
+        answered "$(pull_json "$STATE/pr-$number.env" 1)" ;;
+      */check-runs)
+        sha="${rest_call%/check-runs}"; sha="${sha##*/}"
+        if [ "$malformed" = "misleading-refusal" ]; then
+          # A failure that merely mentions the wording of a refusal: not this credential
+          # being refused, and not to be answered from somewhere narrower.
+          [ "$include" = false ] || printf 'HTTP/2.0 422 Unprocessable Entity\nContent-Type: application/json; charset=utf-8\n\n'
+          printf 'gh: another field said Resource not accessible while the checks service was unavailable (HTTP 422)\n' >&2
+          exit 1
+        fi
+        readable_rollup || forbidden
+        if [ "$malformed" = "rollup-not-a-list" ]; then answered '{"total_count":1,"check_runs":"soon"}'; fi
+        # A page that holds entries back says how many there are.
+        if [ "$malformed" = "checks-truncated" ]; then answered '{"total_count":101,"check_runs":[]}'; fi
+        # A list that does not say how many entries there are.
+        if [ "$malformed" = "checks-uncounted" ]; then answered '{"check_runs":[]}'; fi
+        rows="$(rows_for "$sha")"
+        only="$(query_value check_name)"
+        # A lookup of one check's job, which is where a host that will not say where a
+        # check ran says so.
+        if [ -n "$only" ]; then
+          case "$malformed" in
+            no-check-list)
+              [ "$include" = false ] || printf 'HTTP/2.0 422 Unprocessable Entity\nContent-Type: application/json; charset=utf-8\n\n'
+              printf 'gh: the host will not list the checks on this commit (HTTP 422)\n' >&2
+              exit 1 ;;
+            non-list)
+              answered '{"total_count":0,"check_runs":{"soon":true}}' ;;
+          esac
+        fi
+        # A host whose check runs say they ran against something that is not a commit
+        # hash: the commit a check is attached to is read off this field, so this is
+        # where that answer arrives malformed on the REST path.
+        run_head="\"$sha\""
+        if [ "$malformed" = "head-not-a-commit" ]; then run_head='"the tip of the branch"'; fi
+        # A check run whose record does not say which commit it ran against.
+        if [ "$malformed" = "checks-headless" ]; then run_head=null; fi
+        runs=""; separator=""; row=0; total=0
+        while IFS='|' read -r name status conclusion required kind; do
+          [ -n "$name" ] || continue
+          # Counted over every row, so the job id a row reports is the one `gh run view
+          # --job` answers to.
+          row=$((row + 1))
+          [ "$kind" != "status" ] || continue
+          [ -z "$only" ] || [ "$name" = "$only" ] || continue
+          if [ -n "$conclusion" ]; then entry="\"$conclusion\""; else entry=null; fi
+          if [ "$status" = "completed" ]; then completed="\"${STARTED%:00Z}:30Z\""; else completed=null; fi
+          details=",\"details_url\":\"https://github.com/$slug/actions/runs/1/job/$row\""
+          if [ -n "$only" ]; then
+            case "$malformed" in
+              no-job) details="" ;;
+              jobless-link) details=",\"details_url\":\"https://github.com/$slug/actions/runs/1\"" ;;
+            esac
+          fi
+          runs="$runs$separator{\"id\":$row,\"name\":\"$name\",\"head_sha\":$run_head,\"status\":\"$status\",\"conclusion\":$entry$details,\"html_url\":\"https://github.com/$slug/runs/$row\",\"started_at\":\"$STARTED\",\"completed_at\":$completed}"
+          separator=","
+          total=$((total + 1))
+        done <"$rows" 2>/dev/null || true
+        answered "{\"total_count\":$total,\"check_runs\":[$runs]}" ;;
+      */status)
+        # GitHub's combined status of a commit: one entry per context an integration
+        # posted, its `state` pending until it has a verdict.
+        sha="${rest_call%/status}"; sha="${sha##*/}"
+        readable_rollup || forbidden
+        if [ "$malformed" = "statuses-truncated" ]; then
+          answered "{\"state\":\"pending\",\"sha\":\"$sha\",\"total_count\":101,\"statuses\":[]}"
+        fi
+        rows="$(rows_for "$sha")"
+        statuses=""; separator=""; row=0; total=0
+        while IFS='|' read -r name status conclusion required kind; do
+          [ -n "$name" ] || continue
+          row=$((row + 1))
+          [ "$kind" = "status" ] || continue
+          if [ "$status" = "completed" ]; then state="$conclusion"; else state=pending; fi
+          statuses="$statuses$separator{\"context\":\"$name\",\"state\":\"$state\",\"target_url\":\"https://ci.example.com/$slug/$row\",\"created_at\":\"$STARTED\",\"updated_at\":\"$STARTED\"}"
+          separator=","
+          total=$((total + 1))
+        done <"$rows" 2>/dev/null || true
+        answered "{\"state\":\"pending\",\"sha\":\"$sha\",\"total_count\":$total,\"statuses\":[$statuses]}" ;;
+    esac
+    printf 'fake gh: unsupported REST read %s\n' "$rest_call" >&2
+    exit 1
     ;;
   create)
     case "$malformed" in

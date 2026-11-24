@@ -117,7 +117,7 @@
           "minimum": 0
         },
         "open_lists": {
-          "description": "`gh pr list` reads of the branch's open change requests.",
+          "description": "REST listings of the branch's open change requests.",
           "type": "integer",
           "format": "uint64",
           "minimum": 0

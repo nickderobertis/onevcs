@@ -772,6 +772,12 @@ pub fn run_for_session(
             Ok(true) => Retention::HandedBack(checkout),
             _ => Retention::Refused(checkout),
         };
+        // The landing command a pushed branch's reason names is decided by what the
+        // hand-back left, as `onevcs status` decides it.
+        let reason = match kind {
+            FailureKind::PushedUnverified => relanded(&context, &reason),
+            _ => reason,
+        };
         PublishOutcome::Failed {
             kind,
             reason,
@@ -2525,21 +2531,66 @@ fn unverified(context: &Context<'_>, pushed_at: Option<&str>, unread: Error) -> 
         | Error::Cancelled { .. }) => verdict,
         unread => Error::PushedUnverified {
             reason: format!(
-                "{branch:?} is on origin{at} and the merge path could not be read: {unread}. The \
+                "{branch:?} is on origin{at} and the merge path could not be read: {said}. The \
                  work reached the remote, so re-publishing it would repeat what already landed \
-                 there — read the change request on the host, and land the branch with \
-                 `{command}` once the host answers",
+                 there — {READ_THE_HOST}{landing}",
                 branch = context.branch,
                 at = pushed_at.map_or_else(String::new, |sha| format!(" at {sha}")),
-                command = guidance::command([
-                    "onevcs",
-                    "publish-branch",
-                    &context.branch,
-                    "--repo",
-                    &context.resolution.publication.to_string_lossy(),
-                ]),
+                said = match gh::Unanswered::of(&unread) {
+                    Some(unanswered) => format!(
+                        "{}, through the whole of the watch's bound ({})",
+                        unanswered.said, unanswered.detail
+                    ),
+                    None => unread.to_string(),
+                },
+                landing = landing_once_answered(context),
             ),
         },
+    }
+}
+
+/// Where a `pushed-unverified` reason stops describing what happened and begins naming
+/// how to land the branch — which [`relanded`] replaces once the branch is where the
+/// next command will find it.
+const READ_THE_HOST: &str = "read the change request on the host, and ";
+
+/// `reason`, a `pushed-unverified` reason this module wrote for `context`, with its
+/// landing command decided again now: a branch-keyed verb hands its branch back to the
+/// checkout it read it from only after the publication has ended, and what `onevcs
+/// status` names for the branch is decided by the copy that hand-back left there.
+pub(crate) fn relanded(context: &Context<'_>, reason: &str) -> String {
+    match reason.split_once(READ_THE_HOST) {
+        Some((what, _)) => format!("{what}{READ_THE_HOST}{}", landing_once_answered(context)),
+        None => reason.to_owned(),
+    }
+}
+
+/// How to land a branch whose push reached the origin and whose merge path could not
+/// be read, as `onevcs status` (the library's `work_status`) would name it for that branch: the verb its provenance
+/// and its session decide, through the one decision that makes — never a verb the
+/// branch then refuses.
+fn landing_once_answered(context: &Context<'_>) -> String {
+    let status = guidance::command(["onevcs", "status", &context.branch]);
+    let next = crate::store::load().and_then(|registry| {
+        crate::status::next_without_the_host(&registry, &context.resolution.key, &context.branch)
+    });
+    match next {
+        Ok(crate::status::NextReport {
+            command: Some(command),
+            because,
+        }) => format!("land the branch with `{command}` once the host answers ({because})"),
+        Ok(crate::status::NextReport {
+            command: None,
+            because,
+        }) => format!("`{status}` names no command that lands it now: {because}"),
+        // llmlint: ignore[changed_behavior_has_e2e] the publication has just resolved this
+        // identity and branch from the same registry, so no state the CLI can arrange makes
+        // the read fail here; the branch is the fail-safe that keeps a refusal from naming a
+        // verb nobody decided, and it names the command that decides it.
+        Err(failure) => format!(
+            "run `{status}` once the host answers for the command that lands it, which could \
+             not be decided here: {failure}"
+        ),
     }
 }
 
@@ -2564,8 +2615,18 @@ fn land_as_change(
     subject: &str,
     pushed: &Sha,
 ) -> Result<PublishOutcome> {
+    // The push has just landed, which is when the watch's bound begins: every request
+    // the host does not answer from here is waited out inside it.
+    let pushed_since = std::time::Instant::now();
     let slug = change_host(&context.resolution.key)?;
     let host = context.hosting.for_repo(&slug)?;
+    let host = crate::patience::Patient::new(
+        host.as_ref(),
+        stream,
+        context.cancellation,
+        context.checks_wait.effective()?.value.get(),
+        pushed_since,
+    );
     // Who the host believes is calling travels with the change: a change request
     // opened by an identity nobody expected is the thing an operator reads this to
     // find out.
@@ -2596,15 +2657,7 @@ fn land_as_change(
         })?,
     };
     record_boundary(context, &change, pushed);
-    land_opened_change(
-        context,
-        stream,
-        host.as_ref(),
-        &author,
-        &change,
-        adopted,
-        pushed,
-    )
+    land_opened_change(context, stream, &host, &author, &change, adopted, pushed)
 }
 
 /// Resume a publication whose verification already passed, at its hosted checks.
@@ -2654,19 +2707,19 @@ fn resume_within(
             "change_url": change.url.to_string(),
         })),
     );
+    let resumed_since = std::time::Instant::now();
     (|| -> Result<PublishOutcome> {
         let slug = change_host(&context.resolution.key)?;
         let host = context.hosting.for_repo(&slug)?;
-        let author = host.authenticated_user()?;
-        land_opened_change(
-            context,
-            stream,
+        let host = crate::patience::Patient::new(
             host.as_ref(),
-            &author,
-            change,
-            true,
-            pushed,
-        )
+            stream,
+            context.cancellation,
+            context.checks_wait.effective()?.value.get(),
+            resumed_since,
+        );
+        let author = host.authenticated_user()?;
+        land_opened_change(context, stream, &host, &author, change, true, pushed)
     })()
     .map_err(|unread| unverified(context, Some(&pushed.0), unread))
 }

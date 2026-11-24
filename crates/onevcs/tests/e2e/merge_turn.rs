@@ -133,13 +133,14 @@ fn publish(world: &World, session: &Session) -> (bool, String) {
     ended(start(world, session))
 }
 
-/// How many times the host has been asked for change request `number`'s rollup.
+/// How many times the host has been asked for the checks on change request
+/// `number`'s head: a reading reads the change request, then the check runs on its head.
 fn readings_of(world: &World, number: u32) -> usize {
-    let asked = format!("pr view {number} ");
-    world
-        .host_calls()
-        .iter()
-        .filter(|call| call.starts_with(&asked) && call.contains("statusCheckRollup"))
+    let asked = format!("/pulls/{number} ");
+    let calls = world.host_calls();
+    calls
+        .windows(2)
+        .filter(|pair| pair[0].contains(&asked) && pair[1].contains("/check-runs?per_page"))
         .count()
 }
 

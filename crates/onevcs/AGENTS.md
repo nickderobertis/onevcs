@@ -613,6 +613,33 @@ What is easy to undo is how `publish.rs` holds the lifecycle's rules.
   `SyncConflict` and `Cancelled` through untouched; folding either into
   `PushedUnverified` would send a router the wrong way.
 
+## A publication waits out a host that did not answer, inside its watch's bound
+
+`patience.rs` is the `RemoteHost` (`Patient`) a publication asks after its push
+(onevcs#229, the contract's section of that name). Four things are easy to undo.
+
+- **It waits on `gh::Unanswered` and nothing else.** A rate limit until the reset the host
+  named, a `5xx` or no response on a doubling backoff — all inside the watch's bound,
+  counted from the push. Every other answer, a refusal included, passes through: a wait
+  on a refusal is a publication that never ends. `gh::invoke` classifies what `gh` wrote
+  (a GraphQL refusal's reset is read from `gh api rate_limit`, which costs nothing), and
+  `GitHub::rest` reads the status and headers of `gh api --include`.
+- **A write is sent again only where it cannot land twice.** A rate-limited write did
+  nothing; otherwise opening the change request asks the host's listing first and the
+  merge asks `merged_at` first. A new write method added to the trait decides this in
+  `Patient` too, or it inherits a retry it may not survive.
+- **The reads after the push are REST**: the listing, the change request by number, the
+  check runs and commit statuses on its head, and the user. What blocks the merge comes
+  from `required_checks_on`, read once per operation (`GitHub::required_by`) for the
+  watch's declaration and every reading alike. The merge, the lift, the closures read,
+  `mergedAt` and `autoMergeAllowed` stay GraphQL, and their rate limits are waited out
+  the same way. In the stand-in, a *reading* of the checks is a `check-runs?per_page`
+  call, and everything that moves "after the n-th reading" counts those.
+- **The landing command a `pushed-unverified` reason names is `onevcs status`'s**
+  (`status::next_without_the_host`), decided again after the branch is handed back
+  (`publish::relanded`): a `recover` that pushed has attested the copy it hands back, so
+  `recover` refuses it then and `publish-branch` lands it.
+
 ## A publication observes, captures, and does not settle early
 
 - **Polling is driven by `context.effective`, and by nothing else.** What a policy
@@ -1157,8 +1184,8 @@ script written beside them that answered to what they asked.
   through. Granting the permission is the operator's move, not the parser's.
 - **A fine-grained token can never read a check run, so the checks are read from
   GitHub Actions.** Not a scope to widen: GitHub offers no `Checks` permission for
-  that credential class, so `gh pr view --json statusCheckRollup` and `gh pr checks`
-  are both out of reach for `RELEASE_PLZ_TOKEN` and for anyone who authenticates
+  that credential class, so the REST check runs and commit statuses a publication reads
+  are out of reach for `RELEASE_PLZ_TOKEN` and for anyone who authenticates
   `onevcs` the way GitHub recommends. `change_checks` and `check_log` fall back to
   the Actions API (`Actions: Read`), which reports one check per workflow job and
   addresses its log by job id, and the answer carries `sources` so a caller can tell
@@ -1180,7 +1207,8 @@ script written beside them that answered to what they asked.
   whatever it is asked. `CHECK_ENDPOINTS` in `tests/e2e/host.rs` is the list, and
   the journey beside it drives a whole publication and asserts over the calls the
   substituted host recorded: the set of `gh api` paths reached is exactly that list,
-  and no call names `statusCheckRollup`, `pr checks`, or `run view`. Add an endpoint
+  and no call reads the check runs on a commit, runs `pr checks`, or runs `run view`.
+  Add an endpoint
   to the read and add it there.
 - **A call whose output is content goes through `gh::invoke_content`, and a log
   that did not arrive is never an artifact.** `gh` will not print content carrying

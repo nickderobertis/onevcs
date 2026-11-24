@@ -105,7 +105,7 @@
           "minimum": 0
         },
         "check_read_requests": {
-          "description": "The requests those readings took: the rollup and the required set, each poll.",
+          "description": "The requests those readings took: the change request's head, its check runs and\ncommit statuses, and the required set.",
           "type": "integer",
           "format": "uint64",
           "minimum": 0

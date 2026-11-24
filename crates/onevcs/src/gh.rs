@@ -133,10 +133,18 @@ pub fn invoke(args: &[&str]) -> Result<String> {
     Err(refused(args, &answer))
 }
 
-/// What a `gh` call that did not succeed is reported as, naming what was run.
+/// What a `gh` call that did not succeed is reported as, naming what was run — or,
+/// where what `gh` wrote says the host did not answer it at all, that
+/// [`Unanswered`], so a caller that waits on one can tell it from a refusal.
 fn refused(args: &[&str], answer: &Answer) -> Error {
-    Error::Invalid {
-        reason: format!("gh {} failed: {}", args.join(" "), answer.detail()),
+    let reason = format!("gh {} failed: {}", args.join(" "), answer.detail());
+    match Unanswered::said_by_gh(args, answer) {
+        Some(said) => Unanswered {
+            detail: reason,
+            ..said
+        }
+        .into_error(),
+        None => Error::Invalid { reason },
     }
 }
 
@@ -289,6 +297,77 @@ pub fn slug(identity: &str) -> Option<String> {
 
 /// How the reason an [`Unanswered`] request is refused with begins.
 const UNANSWERED: &str = "the host did not answer: ";
+/// How that reason's second line names whether it was a rate limit.
+const LIMITED: &str = "limited=";
+/// How that reason's second line names the moment the host named for asking again.
+const RESUME: &str = "resume=";
+
+/// The call `args` makes, named for a message without the repository it addresses:
+/// the `gh` subcommand a GraphQL call is, or the REST method and path with the two
+/// segments past `repos/` that name a repository spelled as GitHub's documentation
+/// spells them. `gh api` sends a GET unless it is told a method, or handed fields,
+/// which it sends as a POST.
+pub(crate) fn what_was_asked(args: &[&str]) -> String {
+    match args {
+        ["api", "graphql", ..] => "GitHub's GraphQL API (gh api graphql)".to_owned(),
+        ["api", path, rest @ ..] => {
+            let path = path.split('?').next().unwrap_or_default();
+            let mut segments = path.split('/').collect::<Vec<_>>();
+            if segments.first() == Some(&"repos") && segments.len() >= 3 {
+                segments.splice(1..3, ["{owner}", "{repo}"]);
+            }
+            let named = rest
+                .windows(2)
+                .find(|pair| matches!(pair[0], "--method" | "-X"))
+                .map(|pair| pair[1].to_ascii_uppercase());
+            let fields = rest.iter().any(|argument| {
+                matches!(
+                    *argument,
+                    "-f" | "-F" | "--field" | "--raw-field" | "--input"
+                )
+            });
+            let method = named.unwrap_or_else(|| if fields { "POST" } else { "GET" }.to_owned());
+            format!("GitHub's REST API ({method} /{})", segments.join("/"))
+        }
+        [command, subcommand, ..] if !subcommand.starts_with('-') => {
+            format!("GitHub's GraphQL API (gh {command} {subcommand})")
+        }
+        _ => "GitHub's API".to_owned(),
+    }
+}
+
+/// The `5xx` status `gh` reports a request failing with on the host's side, in either
+/// of the two ways it words one.
+fn server_failure(written: &str) -> Option<u16> {
+    ["HTTP ", "status code: "].iter().find_map(|marker| {
+        written.match_indices(marker).find_map(|(at, _)| {
+            let code = written.get(at + marker.len()..at + marker.len() + 3)?;
+            let status: u16 = code.parse().ok()?;
+            (500..600).contains(&status).then_some(status)
+        })
+    })
+}
+
+/// When `resource` — `core` or `graphql` — of this credential's allowance resets, as
+/// GitHub's `rate_limit` endpoint says, which answers whatever is left of the
+/// allowance itself. `None` where it cannot be read, where the allowance is not spent,
+/// or where it names a moment already passed.
+fn limit_reset(resource: &str) -> Option<time::OffsetDateTime> {
+    let answer = attempt(&["api", "rate_limit"]).ok()?;
+    if answer.code != Some(0) {
+        return None;
+    }
+    let value: Value = serde_json::from_str(answer.stdout.trim()).ok()?;
+    let allowance = value.get("resources")?.get(resource)?;
+    // An allowance with requests left is not what refused the call — that is the
+    // secondary limiter, which nothing reports — so its reset is not one to wait for.
+    if allowance.get("remaining")?.as_i64()? != 0 {
+        return None;
+    }
+    let reset =
+        time::OffsetDateTime::from_unix_timestamp(allowance.get("reset")?.as_i64()?).ok()?;
+    (reset > time::OffsetDateTime::now_utc()).then_some(reset)
+}
 
 /// A request the host did not answer — rate limited, failing on its own side, or never
 /// reached — as opposed to one it answered with a refusal such as `404`.
@@ -304,6 +383,19 @@ pub struct Unanswered {
     pub said: String,
     /// What `gh` wrote, which may name the repository it asked about.
     pub detail: String,
+    /// The rate limit the host refused it for, or `None` where it failed or was never
+    /// reached instead: only a refused request is one it is safe to send again whatever
+    /// it would have changed, because the host did nothing with it.
+    pub rate_limit: Option<RateLimit>,
+}
+
+/// A rate limit a request was refused for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RateLimit {
+    /// The moment, in seconds since the Unix epoch, the host named for asking again —
+    /// its rate limit's reset, or `Retry-After` from when it answered — where it named
+    /// one. Nothing is to be sent before it.
+    pub resume: Option<time::OffsetDateTime>,
 }
 
 // llmlint: ignore-block[invalid_states_unrepresentable] the classification crosses the
@@ -319,8 +411,12 @@ impl Unanswered {
     pub fn into_error(self) -> Error {
         Error::Invalid {
             reason: format!(
-                "{UNANSWERED}{}\n{}",
+                "{UNANSWERED}{}\n{LIMITED}{} {RESUME}{}\n{}",
                 self.said.replace('\n', " "),
+                u8::from(self.rate_limit.is_some()),
+                self.rate_limit
+                    .and_then(|limit| limit.resume)
+                    .map_or_else(|| "-".to_owned(), |at| at.unix_timestamp().to_string()),
                 self.detail
             ),
         }
@@ -332,14 +428,79 @@ impl Unanswered {
         let Error::Invalid { reason } = error else {
             return None;
         };
-        let (said, detail) = reason.strip_prefix(UNANSWERED)?.split_once('\n')?;
-        if said.is_empty() {
+        let (said, rest) = reason.strip_prefix(UNANSWERED)?.split_once('\n')?;
+        let (meta, detail) = rest.split_once('\n')?;
+        let (limited, resume) = meta.split_once(' ')?;
+        let limited = match limited.strip_prefix(LIMITED)? {
+            "0" => false,
+            "1" => true,
+            _ => return None,
+        };
+        let resume = match resume.strip_prefix(RESUME)? {
+            "-" => None,
+            at => Some(time::OffsetDateTime::from_unix_timestamp(at.parse().ok()?).ok()?),
+        };
+        if said.is_empty() || (!limited && resume.is_some()) {
             return None;
         }
         Some(Unanswered {
             said: said.to_owned(),
             detail: detail.to_owned(),
+            rate_limit: limited.then_some(RateLimit { resume }),
         })
+    }
+
+    /// How the host's not answering `args` reads in what `gh` wrote, where it was
+    /// not asked for the response's status and headers: a rate limit (GitHub's own
+    /// words for one, in a REST message or a GraphQL error), a `5xx`, or no
+    /// connection at all. A rate limit's reset is then asked of GitHub's
+    /// `rate_limit` endpoint, which no limit applies to — for the GraphQL allowance
+    /// where the refusal came from a GraphQL call, and the REST one otherwise — and is
+    /// left unnamed where that cannot be read. Every other failure is an answer.
+    fn said_by_gh(args: &[&str], answer: &Answer) -> Option<Unanswered> {
+        let written = format!("{}\n{}", answer.stderr, answer.stdout);
+        let lowered = written.to_lowercase();
+        let call = what_was_asked(args);
+        let graphql = !matches!(args.first(), Some(&"api")) || lowered.contains("graphql");
+        if lowered.contains("rate limit") || lowered.contains("(http 429)") {
+            let secondary = lowered.contains("secondary rate limit");
+            // A secondary limit is not the allowance `rate_limit` reports, so its reset
+            // is not one to wait for, and it is not asked.
+            let resume = if secondary {
+                None
+            } else {
+                limit_reset(if graphql { "graphql" } else { "core" })
+            };
+            let which = if secondary {
+                "a secondary rate limit"
+            } else {
+                "its rate limit"
+            };
+            let mut said = format!("{call} is refused for {which}");
+            if let Some(at) = resume {
+                said.push_str(&format!(", resets at {}", crate::ids::stamp(at)));
+            }
+            return Some(Unanswered {
+                said,
+                detail: String::new(),
+                rate_limit: Some(RateLimit { resume }),
+            });
+        }
+        if let Some(status) = server_failure(&written) {
+            return Some(Unanswered {
+                said: format!("{call} failed on the host's side: HTTP {status}"),
+                detail: String::new(),
+                rate_limit: None,
+            });
+        }
+        if lowered.contains("error connecting to") {
+            return Some(Unanswered {
+                said: format!("{call} gave no HTTP response"),
+                detail: String::new(),
+                rate_limit: None,
+            });
+        }
+        None
     }
 
     /// Whether the `gh api --include` call that wrote `answer` is one the host did
@@ -392,11 +553,30 @@ impl Unanswered {
                 if let Some(retry) = retry {
                     said.push_str(&format!(", retry after {retry}s"));
                 }
-                said
+                let reset = response.moment("x-ratelimit-reset");
+                // A `Retry-After` too large to name a moment names none.
+                let after = retry.and_then(|retry| {
+                    i64::try_from(retry).ok().and_then(|retry| {
+                        time::OffsetDateTime::now_utc().checked_add(time::Duration::seconds(retry))
+                    })
+                });
+                return Some(Unanswered {
+                    said,
+                    detail,
+                    // The later of the two where the host named both: before either,
+                    // the request is refused again.
+                    rate_limit: Some(RateLimit {
+                        resume: reset.max(after),
+                    }),
+                });
             }
             Some(_) => return None,
         };
-        Some(Unanswered { said, detail })
+        Some(Unanswered {
+            said,
+            detail,
+            rate_limit: None,
+        })
     }
 }
 // llmlint: ignore-end[invalid_states_unrepresentable]

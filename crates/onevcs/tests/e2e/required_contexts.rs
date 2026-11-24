@@ -162,7 +162,7 @@ fn a_ready_change_records_its_checks_passed_only_once_the_declared_gate_has_repo
             .world
             .host_calls()
             .iter()
-            .filter(|call| call.contains("statusCheckRollup"))
+            .filter(|call| call.contains("/check-runs?per_page"))
             .count()
             >= 3,
         "the watch read the rollup until the gate reported: {:?}",

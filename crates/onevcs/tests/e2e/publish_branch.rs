@@ -4242,13 +4242,15 @@ fn a_push_that_landed_with_the_merge_path_unread_is_not_a_publication_that_faile
     // contract fixes `1` for every verification failure — so what says which this was
     // is the sentence on stderr.
     //
-    // First: the push reaches the remote and the host will not then say what blocks
-    // the merge. This is the one that read as the other two.
+    // First: the push reaches the remote and the host then fails the read of its checks
+    // once, as GitHub does now and then with a 502. That used to end the publication at
+    // once, `pushed-unverified`, naming a verb the branch then refused; it is a short
+    // wait now, inside the watch's bound, and the answer that follows decides it.
     let hosted = Hosted::new(AUTOMATED);
-    // The rollup answers, and `gh pr checks --required` reports no check at all on the
-    // head — the race a publication reading its checks seconds after pushing meets.
     hosted.world.host_checks(&[green_check()]);
-    hosted.world.report_no_checks_on_the_head();
+    hosted
+        .world
+        .host_does_not_answer("/check-runs?per_page", "server-error:1");
     finished_hosted_branch(&hosted, "feature/unread", "feat: add the unread thing");
     let pushing = hosted.world.git(
         &hosted.checkout,
@@ -4265,38 +4267,28 @@ fn a_push_that_landed_with_the_merge_path_unread_is_not_a_publication_that_faile
             &hosted.checkout.to_string_lossy(),
         ])
         .assert()
-        // 1 is the contract's code for a verification failure, and it does not move:
-        // what is new is which of them this was.
-        .code(1)
-        .stderr(predicate::str::contains("pushed, merge path unverified"));
+        .success()
+        .stdout(predicate::str::contains("merged at"));
     let said = stderr_of(&assert);
     assert!(
-        said.contains(&format!("\"feature/unread\" is on origin at {pushing}")),
-        "the outcome names where the push landed:\n{said}"
+        !said.contains("pushed, merge path unverified"),
+        "a read the host failed once is waited out, not reported:\n{said}"
     );
+    let waits = hosted
+        .world
+        .events_of("publish-branch-feature-unread", "host-wait");
+    assert_eq!(waits.len(), 1, "one wait, recorded: {waits:?}");
+    assert_eq!(waits[0]["payload"]["rate_limited"], false, "{waits:?}");
     assert!(
-        said.contains("the merge path could not be read: "),
-        "and that the merge path is what could not be read:\n{said}"
-    );
-    assert!(
-        said.contains("the host reports no check at all yet on the head of"),
-        "carrying the reason the host gave:\n{said}"
-    );
-    assert!(
-        !said.contains("required check failed") && !said.contains("push rejected"),
-        "and it is neither of the two failures it used to be reported as:\n{said}"
-    );
-    // The fact the old report contradicted: the work really is on the remote, at the
-    // commit this run pushed.
-    assert_eq!(
-        hosted.branch_on_origin("feature/unread").as_deref(),
-        Some(pushing.as_str()),
-        "the branch is on the origin at the commit that was pushed"
+        waits[0]["payload"]["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("HTTP 502")),
+        "naming what the host said: {waits:?}"
     );
     assert_eq!(
         hosted.origin_log().len(),
-        1,
-        "and nothing merged, which is why this is still a failure"
+        2,
+        "and the work landed at the commit that was pushed ({pushing})"
     );
 
     // The second: a push the merge path *refused*. Nothing reached the remote, so it

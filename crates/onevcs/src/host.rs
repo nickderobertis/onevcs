@@ -17,53 +17,6 @@ use crate::rules::MergePolicy;
 use crate::standings::{ChangeStandings, FollowedChecks, ReviewStandings};
 use crate::{gh, git, review, standings, stream};
 
-/// What `gh pr checks` exits with when a check it has just reported has not
-/// settled. The rollup it printed is still the answer, so this status is read
-/// alongside `0` rather than as a failure.
-const CHECKS_PENDING: i32 = 8;
-
-/// How `gh pr checks --required` opens its stderr when the repository declares no
-/// required check at all — a repository with no branch protection genuinely has
-/// none. The rest of that line names the branch, so only the prefix is fixed.
-const NO_REQUIRED_CHECKS: &str = "no required checks reported on the ";
-
-/// Whether a `gh pr checks` answer is one to read.
-fn usable(answer: &gh::Answer) -> bool {
-    matches!(answer.code, Some(0) | Some(CHECKS_PENDING))
-}
-
-/// How `gh pr checks` opens its stderr when the head carries no check **at all** —
-/// which is every head for the first seconds after it is pushed. The rest of that
-/// line names the branch, so only the prefix is fixed.
-const NO_CHECKS_YET: &str = "no checks reported on the ";
-
-/// Whether a failing `gh pr checks --required` failed by *answering* "none".
-///
-/// The whole shape, not a substring anywhere in the output: `gh` exits `1`, writes
-/// nothing to stdout, and opens stderr with [`NO_REQUIRED_CHECKS`]. Measured against
-/// real GitHub — a repository with no branch protection answers exactly that. It is
-/// held to all three because this is the one place a *failed* `gh` call is read as a
-/// meaningful answer, and a looser test would swallow an unrelated failure whose
-/// message happened to contain the phrase, reporting "nothing blocks the merge"
-/// about a host that never said so.
-fn no_required_checks(answer: &gh::Answer) -> bool {
-    answer.code == Some(1)
-        && answer.stdout.trim().is_empty()
-        && answer.stderr.trim_start().starts_with(NO_REQUIRED_CHECKS)
-}
-
-/// Whether a failing `gh pr checks` failed by reporting **no check at all** on the
-/// head, which is not an answer about what blocks the merge.
-///
-/// Held to the same three facts as [`no_required_checks`], and one word of `gh`'s own
-/// wording apart from it. Reading this one as that one would wave a merge through on
-/// a head no verification has begun on.
-fn no_checks_yet(answer: &gh::Answer) -> bool {
-    answer.code == Some(1)
-        && answer.stdout.trim().is_empty()
-        && answer.stderr.trim_start().starts_with(NO_CHECKS_YET)
-}
-
 /// How `gh api` reports a branch that has no classic protection at all — GitHub's
 /// own message, which is an answer (the source names nothing) and not a refusal.
 const NOT_PROTECTED: &str = "Branch not protected";
@@ -119,7 +72,7 @@ const PAGE: u32 = 100;
 /// the shapes it declines it in: a GraphQL error naming the node it would not
 /// produce, and a REST 403. The wording is GitHub's, and it is the whole of the
 /// test because it is the whole of what distinguishes the two cases below.
-const CHECK_RUN_REFUSAL: &str = "GraphQL: Resource not accessible by personal access token";
+const CHECK_RUN_REFUSAL: &str = "Resource not accessible by personal access token";
 
 /// Whether a refusal is one this credential will *always* get.
 ///
@@ -134,7 +87,9 @@ fn check_rollup_refused_for_pat(error: &Error) -> bool {
     let Error::Invalid { reason } = error else {
         return false;
     };
-    reason.contains(CHECK_RUN_REFUSAL) && reason.contains("statusCheckRollup")
+    gh::Unanswered::of(error).is_none()
+        && reason.contains(CHECK_RUN_REFUSAL)
+        && (reason.contains("/check-runs") || reason.contains("/status?"))
 }
 
 /// Everything `onevcs` asks of a repository's remote host.
@@ -1027,7 +982,37 @@ pub struct GitHub {
     /// What a listing already read about each change request beyond what a
     /// [`ChangeRequest`] carries, kept for the one read that asks it next.
     listed: Listed,
+    /// What blocks a merge into each base, as one operation read it — see
+    /// [`GitHub::required_by`].
+    required: Required,
 }
+
+/// The checks each base requires, by base, with the operation that read them: kept
+/// for the rest of that operation and for nobody else, as [`Listed`] keeps what a
+/// listing said. Not part of which host this is, so a clone starts with nothing.
+#[derive(Debug, Default)]
+struct Required(std::sync::Mutex<BTreeMap<String, (u64, RequiredChecks)>>);
+
+impl std::ops::Deref for Required {
+    type Target = std::sync::Mutex<BTreeMap<String, (u64, RequiredChecks)>>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Clone for Required {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl PartialEq for Required {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for Required {}
 
 /// The draft state and description a `gh pr list` answered beside each change request
 /// it found, by number, so the read a caller makes next of that same change request —
@@ -1182,101 +1167,55 @@ impl GitHub {
         Ok(Self {
             repo,
             listed: Listed::default(),
+            required: Required::default(),
         })
     }
 
-    /// The names of the checks the host says block the merge.
-    ///
-    /// A second call, and it has to be one: `gh pr view`'s `statusCheckRollup`
-    /// carries a check's name, status, and conclusion and *nothing* about whether it
-    /// blocks anything. This build asked it for `isRequired` anyway and read the
-    /// field's absence as a host answering partially, so every `change_checks`
-    /// against real GitHub failed — a field `gh pr view` has never returned, checked
-    /// only ever against a stand-in that returned it. `gh pr checks --required` is
-    /// where `gh` reports it.
-    fn required_checks(&self, cr: &ChangeRequest) -> Result<BTreeSet<String>> {
-        addressable(&cr.id.0, "change request id")?;
-        let answer = gh::attempt(&[
-            "pr",
-            "checks",
-            &cr.id.0,
-            "--repo",
-            &self.repo,
-            "--required",
-            "--json",
-            "name",
-        ])?;
-        if !usable(&answer) {
-            // A repository that declares no required check at all is answering, not
-            // failing: refusing here would make every unprotected repository
-            // unreadable, and "nothing blocks the merge" is what the publication
-            // path already knows how to act on.
-            if no_required_checks(&answer) {
-                return Ok(BTreeSet::new());
-            }
-            if no_checks_yet(&answer) {
-                return Err(unregistered(&cr.url, answer.stderr.trim()));
-            }
-            return Err(unsaid(&cr.url, &answer.detail()));
-        }
-        let value = gh::json(&answer.stdout)?;
-        let entries = value
-            .as_array()
-            .ok_or_else(|| unsaid(&cr.url, &value.to_string()))?;
-        let mut names = BTreeSet::new();
-        for entry in entries {
-            let name = entry
-                .get("name")
-                .and_then(|value| value.as_str())
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| unsaid(&cr.url, &entry.to_string()))?;
-            names.insert(name.to_owned());
-        }
-        Ok(names)
-    }
-
-    /// The log of the job one check ran in.
-    ///
     /// Two calls, because `gh` addresses a job's log by the job's *id* and a check's
-    /// name is not one. This build passed the name to `gh run view --job`, which has
-    /// never accepted anything but a number — so the artifact every settled check
+    /// name is not one. This build once passed the name to `gh run view --job`, which
+    /// has never accepted anything but a number — so the artifact every settled check
     /// carried held a refusal to produce a log rather than the log, and no offline
     /// journey could tell, because the program standing in for `gh` answered to the
-    /// name. The id is the last segment of the details URL `gh pr checks` reports.
-    fn job_log(&self, cr: &ChangeRequest, name: &str) -> Result<String> {
-        addressable(&cr.id.0, "change request id")?;
-        let answer = gh::attempt(&[
-            "pr",
-            "checks",
-            &cr.id.0,
-            "--repo",
-            &self.repo,
-            "--json",
-            "name,link",
-        ])?;
-        if !usable(&answer) {
-            return Err(invalid(format!(
-                "gh pr checks would not say where check {name:?} on {} ran: {}",
-                cr.url,
-                answer.detail()
-            )));
-        }
-        let value = gh::json(&answer.stdout)?;
+    /// name. The id is the last segment of the details URL the check run on the head
+    /// reports, found by GitHub's REST `check_name` filter.
+    fn job_log(&self, cr: &ChangeRequest, check: &Check) -> Result<String> {
+        let name = check.name.as_str();
+        let head = match &check.head {
+            Some(head) => head.clone(),
+            None => pull_head(&self.pull(&cr.id.0)?)?,
+        };
+        let sha = commit(&head)?;
+        let value = self
+            .rest(&format!(
+                "repos/{}/commits/{sha}/check-runs?check_name={}&per_page={PAGE}",
+                self.repo,
+                url::form_urlencoded::byte_serialize(name.as_bytes()).collect::<String>(),
+            ))
+            .map_err(|error| match gh::Unanswered::of(&error) {
+                Some(_) => error,
+                None => invalid(format!(
+                    "GitHub would not say where check {name:?} on {} ran: {error}",
+                    cr.url
+                )),
+            })?;
         // Rejected here rather than searched through: a host that answered with
         // something other than a list of checks has not said this check has no job,
         // and reporting it as though it had would put the wrong reason in the
         // artifact an operator reads to find out why there is no log.
-        let entries = value.as_array().ok_or_else(|| {
-            invalid(format!(
-                "gh pr checks returned a non-list of checks on {}, so where check {name:?} ran \
-                 cannot be read from it: {value}",
-                cr.url
-            ))
-        })?;
+        let entries = value
+            .get("check_runs")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| {
+                invalid(format!(
+                    "GitHub returned a non-list of checks on {}, so where check {name:?} ran \
+                     cannot be read from it: {value}",
+                    cr.url
+                ))
+            })?;
         let link = entries
             .iter()
             .find(|entry| entry.get("name").and_then(|value| value.as_str()) == Some(name))
-            .and_then(|entry| entry.get("link"))
+            .and_then(|entry| entry.get("details_url"))
             .and_then(|value| value.as_str())
             .ok_or_else(|| {
                 invalid(format!(
@@ -1300,24 +1239,25 @@ impl GitHub {
     /// One check's log, from whichever source this credential can read.
     ///
     /// The same order [`RemoteHost::change_checks`] consults them in, for the same
-    /// reason: `gh pr checks` reports where *every* check ran, including one no
-    /// workflow produced, and the Actions API answers for the ones it owns when the
+    /// reason: the check runs on the head report where *every* check ran, including
+    /// one no workflow produced, and the Actions API answers for the ones it owns when the
     /// credential may not read the rollup at all.
-    fn log_of(&self, cr: &ChangeRequest, name: &str) -> Result<String> {
+    fn log_of(&self, cr: &ChangeRequest, check: &Check) -> Result<String> {
+        let name = check.name.as_str();
         match consult()? {
-            Consult::StatusChecks => self.job_log(cr, name),
+            Consult::StatusChecks => self.job_log(cr, check),
             Consult::Actions => self.actions_log(cr, name),
             // As above, and for the same reason: where a check ran is a question
-            // `gh pr checks` can answer about every check, and only a credential
+            // the check runs can answer about every check, and only a credential
             // that may not ask it at all has cause to ask a narrower source.
-            Consult::Either => self.job_log(cr, name).or_else(|reported| {
+            Consult::Either => self.job_log(cr, check).or_else(|reported| {
                 if !check_rollup_refused_for_pat(&reported) {
                     return Err(reported);
                 }
                 self.actions_log(cr, name).map_err(|actions| {
                     invalid(format!(
                         "neither of GitHub's check sources would produce the log of check \
-                         {name:?} on {}: gh pr checks answered {reported}, and the Actions API \
+                         {name:?} on {}: its check runs answered {reported}, and the Actions API \
                          answered {actions}",
                         cr.url
                     ))
@@ -1334,36 +1274,39 @@ impl GitHub {
     /// one and cannot become one, which is what [`GitHub::actions_checks`] answers
     /// instead.
     fn rollup_checks(&self, cr: &ChangeRequest) -> Result<Vec<Check>> {
-        // `headRefOid` in the same call, because the rollup GitHub renders is the
-        // rollup of the change request's *last commit* as that one response saw it —
-        // and which commit that was is the whole of what makes the answer
-        // addressable. Asked together rather than in a second call for the same
-        // reason a second call could not answer it: the head moves, so a commit read
-        // afterwards is not necessarily the one those checks were about. It costs
-        // this call nothing, because the field needs no more than the read access
-        // that found the change request while `statusCheckRollup` needs far more —
-        // a credential refused for one of them was already refused for the call.
-        let value = self.view(&cr.id.0, "headRefOid,statusCheckRollup")?;
-        let head = reported_sha(&value, "headRefOid")?;
-        let reported = value.get("statusCheckRollup").ok_or_else(|| {
-            invalid(format!(
-                "gh pr view reported no checks at all on {}",
-                cr.url
-            ))
-        })?;
-        if reported.is_null() {
+        // The change request's head first, because the checks are a commit's and which
+        // commit the change request is at *now* is the whole of what makes the answer
+        // addressable: a publication finds it moments after pushing, when the host may
+        // not have processed the push yet.
+        let head = pull_head(&self.pull(&cr.id.0)?)?;
+        let sha = commit(&head)?;
+        let runs = self.rest(&format!(
+            "repos/{}/commits/{sha}/check-runs?per_page={PAGE}",
+            self.repo
+        ))?;
+        let runs = whole(&runs, "check_runs", "check runs", sha)?;
+        let combined = self.rest(&format!(
+            "repos/{}/commits/{sha}/status?per_page={PAGE}",
+            self.repo
+        ))?;
+        let statuses = whole(&combined, "statuses", "commit statuses", sha)?;
+        if runs.is_empty() && statuses.is_empty() {
             return Ok(Vec::new());
         }
-        let rollup = reported
-            .as_array()
-            .ok_or_else(|| invalid(format!("gh pr view returned a non-list rollup: {reported}")))?;
-        if rollup.is_empty() {
-            return Ok(Vec::new());
-        }
-        let required = self.required_checks(cr)?;
-        rollup
-            .iter()
-            .map(|entry| check(entry, cr, &required, head.as_ref()))
+        // The commit the combined status names itself as being about, which is the one
+        // its statuses were posted to; none where it names none.
+        let posted_to = reported_sha(&combined, "sha")?;
+        // What blocks: both protection sources, a source this credential may not read
+        // naming nothing it can be shown — the answer `required_checks_on` gives, where
+        // that refusal is recorded beside it.
+        let required = self.required_by(&cr.base)?.checks;
+        runs.iter()
+            .map(|entry| check_run(entry, cr, &required))
+            .chain(
+                statuses
+                    .iter()
+                    .map(|entry| status_context(entry, cr, &required, posted_to.as_ref())),
+            )
             .collect()
     }
 
@@ -1419,7 +1362,7 @@ impl GitHub {
     /// watched. The rollup source re-reads the same field on every call for the same
     /// reason; this is that, on the source a fine-grained token is left with.
     fn actions_jobs(&self, cr: &ChangeRequest) -> Result<Vec<Job>> {
-        let current = head_sha(&self.view(&cr.id.0, "headRefOid")?)?;
+        let current = pull_head(&self.pull(&cr.id.0)?)?;
         let sha = commit(&current)?;
         let runs = self.api(&format!(
             "repos/{}/actions/runs?head_sha={sha}&per_page={PAGE}",
@@ -1661,30 +1604,93 @@ impl GitHub {
         gh::json(&gh::invoke(&["api", path])?)
     }
 
-    /// One change request as `gh` describes it, in the fields the caller reads and
-    /// no others.
-    ///
-    /// The field list is the caller's, not a constant, because `gh pr view` fails
-    /// *whole* when GitHub refuses one field of the several it was asked for — and
-    /// the fields differ in what a credential has to be allowed to see.
-    /// `statusCheckRollup` resolves the change request's check runs, which a
-    /// fine-grained token may not read without the repository's Checks permission,
-    /// while `state`, `headRefOid`, and `mergeCommit` need no more than the read
-    /// access that found the change request at all. This build asked for all of them
-    /// at every call, so a token that could open and merge a change request was
-    /// refused at both over a field neither reads — and only from the moment a check
-    /// first appeared on it, so the same credential merged a young change request and
-    /// failed on an older one. Ask for what you read.
-    fn view(&self, id: &str, fields: &str) -> Result<serde_json::Value> {
-        addressable(id, "change request id")?;
-        let raw = gh::invoke(&["pr", "view", id, "--repo", &self.repo, "--json", fields])?;
-        gh::json(&raw)
+    /// One REST read, asked with `--include` so a request the host did not answer —
+    /// rate limited, failing on its own side, or never reached — is told from one it
+    /// refused, and is a [`gh::Unanswered`] carrying the reset its headers name.
+    fn rest(&self, path: &str) -> Result<serde_json::Value> {
+        let answer = gh::attempt(&["api", path, "--include"])?;
+        if answer.code != Some(0) {
+            return Err(
+                match gh::Unanswered::read(&gh::what_was_asked(&["api", path]), &answer) {
+                    Some(unanswered) => unanswered.into_error(),
+                    None => invalid(format!("gh api {path} failed: {}", answer.detail())),
+                },
+            );
+        }
+        gh::json(&gh::Response::read(&answer.stdout).body)
     }
 
-    /// The read a merge is recorded from: [`view`](Self::view) of `fields`, which name
+    /// One change request by its number, as GitHub's REST API describes it: its head,
+    /// draft state, title, body, state, and whether it can merge.
+    fn pull(&self, id: &str) -> Result<serde_json::Value> {
+        addressable(id, "change request id")?;
+        if !id.chars().all(|c| c.is_ascii_digit()) {
+            return Err(invalid(format!(
+                "{id:?} is not a change request number this host can ask about"
+            )));
+        }
+        self.rest(&format!("repos/{}/pulls/{id}", self.repo))
+    }
+
+    /// What blocks a merge into `base` — [`RemoteHost::required_checks_on`]'s answer —
+    /// read once per operation for each base, since it is a setting on that branch
+    /// rather than on any one reading of the checks: the watch asks it of the host's
+    /// declaration and every reading of the checks marks what blocks from it, and one
+    /// publication reading it once for both is what keeps moving the checks to REST from
+    /// adding requests.
+    fn required_by(&self, base: &str) -> Result<RequiredChecks> {
+        let operation = OPERATION.with(std::cell::Cell::get);
+        if let Some(operation) = operation {
+            let kept = self
+                .required
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(base)
+                .filter(|(when, _)| *when == operation)
+                .map(|(_, answer)| answer.clone());
+            if let Some(answer) = kept {
+                return Ok(answer);
+            }
+        }
+        let answer = self.read_required(base)?;
+        if let Some(operation) = operation {
+            self.required
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(base.to_owned(), (operation, answer.clone()));
+        }
+        Ok(answer)
+    }
+
+    fn read_required(&self, base: &str) -> Result<RequiredChecks> {
+        // The rulesets first, and their refusal is the whole read's: every
+        // credential that can see the repository can read them, so one that cannot
+        // has not answered about anything. Classic protection is asked second and
+        // its refusal is recorded rather than raised, because the credential GitHub
+        // steers people toward is refused it on every repository, and the rulesets'
+        // answer is still worth having — marked as the part it is.
+        let checks = self.required_on(base, &self.repo)?;
+        let mut answer = RequiredChecks {
+            checks,
+            unconsulted: BTreeMap::new(),
+        };
+        match self.classic_protection(base)? {
+            Ok(contexts) => answer.checks.extend(contexts),
+            Err(refusal) => {
+                answer
+                    .unconsulted
+                    .insert(ProtectionSource::BranchProtection, refusal);
+            }
+        }
+        Ok(answer)
+    }
+
+    /// The read a merge is recorded from: `gh pr view` of `fields`, which name
     /// [`CLOSES_FIELD`] beside what decides the merge, keeping what a merged change
     /// request closes for the record of its landing — so reporting closures costs that
-    /// record no request of its own.
+    /// record no request of its own. It stays a GraphQL read for that field, which no
+    /// REST endpoint offers; a publication waits out its rate limit as it waits out
+    /// arming the merge.
     ///
     /// A `gh` or a credential that refuses the closures field alone is asked again
     /// without it ([`gh::invoke_unless_refused`]): whether the change merged is the
@@ -1970,6 +1976,43 @@ fn listed<'a>(
     Ok(entries)
 }
 
+/// The `field` list of one REST answer about commit `sha`'s `what`, refused where it
+/// is not a list or where the answer does not say how many there are, or says there
+/// are more than it returned: a build that read a short page as the whole answer would
+/// wait for a check it was never shown, or wave a merge past one.
+fn whole<'a>(
+    value: &'a serde_json::Value,
+    field: &str,
+    what: &str,
+    sha: &str,
+) -> Result<&'a Vec<serde_json::Value>> {
+    let entries = value
+        .get(field)
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| {
+            invalid(format!(
+                "GitHub returned a non-list of {what} on {sha}: {value}"
+            ))
+        })?;
+    let total = value
+        .get("total_count")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| {
+            invalid(format!(
+                "GitHub did not say how many {what} there are on {sha}, so whether it showed \
+                 all of them cannot be read: {value}"
+            ))
+        })?;
+    if total > entries.len() as u64 {
+        return Err(invalid(format!(
+            "GitHub reports {total} {what} on {sha} and returned {}, so this build has not been \
+             shown all of them",
+            entries.len()
+        )));
+    }
+    Ok(entries)
+}
+
 /// Whether a workflow run or a check suite GitHub reported has completed: its
 /// `status` is `completed`. Anything else — `queued`, `in_progress`, `waiting`,
 /// `requested`, `pending`, or no status at all — is work still going.
@@ -2006,7 +2049,8 @@ fn refused_to_this_credential(error: &Error) -> bool {
     let Error::Invalid { reason } = error else {
         return false;
     };
-    reason.contains("(HTTP 403)") || reason.contains("Resource not accessible")
+    gh::Unanswered::of(error).is_none()
+        && (reason.contains("(HTTP 403)") || reason.contains("Resource not accessible"))
 }
 
 /// The refusal for a credential that can read none of the host's check sources.
@@ -2058,7 +2102,11 @@ impl RemoteHost for GitHub {
     }
 
     fn authenticated_user(&self) -> Result<String> {
-        let login = gh::invoke(&["api", "user", "--jq", ".login"])?
+        let user = self.rest("user")?;
+        let login = user
+            .get("login")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
             .trim()
             .to_owned();
         if login.is_empty() {
@@ -2112,52 +2160,73 @@ impl RemoteHost for GitHub {
                 ))
             })?
             .to_owned();
+        // The commit the new change request's checks will be reported against, which
+        // `gh pr create` does not print — and, from the same read, its draft state,
+        // which the publication asks next.
+        let pull = self.pull(&id)?;
+        self.listed.keep(
+            &id,
+            pull.get("draft").and_then(serde_json::Value::as_bool),
+            None,
+        );
         Ok(ChangeRequest {
-            // The commit the new change request's checks will be reported against,
-            // which `gh pr create` does not print.
-            head_sha: head_sha(&self.view(&id, "headRefOid")?)?,
+            head_sha: pull_head(&pull)?,
             id: ChangeId(id),
             url: parsed,
             base: req.base,
         })
     }
 
+    /// One REST listing of the open change requests from `head` into `base`.
+    ///
+    /// GitHub's REST API rather than `gh pr list`, which is a GraphQL query: the two
+    /// allowances are separate, and the GraphQL one is the one other tools on the same
+    /// login spend. The head is matched as `<owner>:<branch>`, which is how the REST
+    /// API names a head in the repository itself.
     fn find_changes(&self, head: &str, base: &str) -> Result<Vec<ChangeRequest>> {
         addressable_branch(head, "the head branch")?;
         addressable_branch(base, "the base branch")?;
-        let raw = gh::invoke(&[
-            "pr",
-            "list",
-            "--repo",
-            &self.repo,
-            "--head",
-            head,
-            "--base",
-            base,
-            "--state",
-            "open",
-            "--json",
-            // The draft state and the description too, which the caller of a listing
-            // asks next of what it found — a publication adopting a change request, a
-            // session reading its own — and which cost nothing more in the one query.
-            "number,url,state,headRefOid,isDraft,title,body",
-        ])?;
-        let value = gh::json(&raw)?;
-        let items = value
-            .as_array()
-            .ok_or_else(|| invalid(format!("gh pr list returned {raw:?}, not a list")))?;
+        let owner = self.repo.split('/').next().unwrap_or_default();
+        let query = |value: &str| {
+            url::form_urlencoded::byte_serialize(value.as_bytes()).collect::<String>()
+        };
+        let value = self.rest(&format!(
+            "repos/{}/pulls?head={}&base={}&state=open&per_page={PAGE}",
+            self.repo,
+            query(&format!("{owner}:{head}")),
+            query(base),
+        ))?;
+        let items = value.as_array().ok_or_else(|| {
+            invalid(format!(
+                "GitHub listed change requests as {value}, not a list"
+            ))
+        })?;
         let mut changes = Vec::new();
         for item in items {
-            let url = item.get("url").and_then(|v| v.as_str()).unwrap_or_default();
-            let parsed = Url::parse(url)
-                .map_err(|e| invalid(format!("gh pr list returned {url:?}, not a URL: {e}")))?;
+            let url = item
+                .get("html_url")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let parsed = Url::parse(url).map_err(|e| {
+                invalid(format!(
+                    "GitHub listed a change request at {url:?}, not a URL: {e}"
+                ))
+            })?;
             let number = item
                 .get("number")
                 .and_then(|value| value.as_u64())
-                .ok_or_else(|| invalid(format!("gh pr list returned no number: {raw:?}")))?
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "GitHub listed a change request with no number: {item}"
+                    ))
+                })?
                 .to_string();
-            let head_sha = head_sha(item)?;
-            let text = |name: &str| item.get(name).and_then(serde_json::Value::as_str);
+            let head_sha = pull_head(item)?;
+            let text = |name: &str| match item.get(name) {
+                // GitHub answers an empty body as null; a title is never empty.
+                Some(serde_json::Value::Null) if name == "body" => Some(""),
+                other => other.and_then(serde_json::Value::as_str),
+            };
             let description = match (text("title"), text("body")) {
                 (Some(title), Some(body)) => Some(Description {
                     title: title.to_owned(),
@@ -2167,7 +2236,7 @@ impl RemoteHost for GitHub {
             };
             self.listed.keep(
                 &number,
-                item.get("isDraft").and_then(serde_json::Value::as_bool),
+                item.get("draft").and_then(serde_json::Value::as_bool),
                 description,
             );
             changes.push(ChangeRequest {
@@ -2220,7 +2289,12 @@ impl RemoteHost for GitHub {
         // fixed across the libraries that route on it; the message is where the
         // actor is named.
         matchable(&check.name, cr)?;
-        let log = self.log_of(cr, &check.name).map_err(|error| {
+        let log = self.log_of(cr, check).map_err(|error| {
+            // A request the host did not answer is said as one, so whoever waits on such
+            // a request recognises it; every other failure is attributed here.
+            if gh::Unanswered::of(&error).is_some() {
+                return error;
+            }
             invalid(format!(
                 "the host could not produce a log for check {:?} on {}: {error}",
                 check.name, cr.url
@@ -2302,8 +2376,8 @@ impl RemoteHost for GitHub {
         gh::invoke(&args).map(|_| ())
     }
 
-    /// One `gh pr view`, reading the two fields a description is — or none, where the
-    /// listing that found the change request already read them.
+    /// One REST read of the change request, reading the two fields a description is —
+    /// or none, where the listing that found the change request already read them.
     ///
     /// The view asks the draft state beside them, and keeps it for the
     /// [`is_draft`](RemoteHost::is_draft) that a caller reporting the change asks next.
@@ -2317,18 +2391,21 @@ impl RemoteHost for GitHub {
         if let Some(listed) = self.listed.take_description(&cr.id.0) {
             return Ok(listed);
         }
-        let view = self.view(&cr.id.0, "title,body,isDraft")?;
-        let read = |name: &str| {
-            view.get(name)
+        let view = self.pull(&cr.id.0)?;
+        let read = |name: &str| match view.get(name) {
+            // GitHub answers an empty body as null, which is a body with nothing in it;
+            // a field that is not there at all is a host that would not say.
+            Some(serde_json::Value::Null) if name == "body" => Ok(String::new()),
+            other => other
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_owned)
                 .ok_or_else(|| {
                     invalid(format!(
-                        "gh pr view answered about {} without its {name}, so what the change \
+                        "GitHub answered about {} without its {name}, so what the change \
                          request says cannot be read",
                         cr.url
                     ))
-                })
+                }),
         };
         let description = Description {
             title: read("title")?,
@@ -2336,7 +2413,7 @@ impl RemoteHost for GitHub {
         };
         self.listed.keep(
             &cr.id.0,
-            view.get("isDraft").and_then(serde_json::Value::as_bool),
+            view.get("draft").and_then(serde_json::Value::as_bool),
             None,
         );
         Ok(description)
@@ -2376,9 +2453,9 @@ impl RemoteHost for GitHub {
         }
     }
 
-    /// One `gh pr view`, reading the one field the host decides a draft by — or none,
-    /// where the read that found the change request or described it just now already
-    /// answered it.
+    /// One REST read of the change request, reading the one field the host decides a
+    /// draft by — or none, where the read that found the change request or described
+    /// it just now already answered it.
     ///
     /// A response that does not carry it is refused rather than read as "not a
     /// draft": what this decides is whether a change may be asked to merge, and
@@ -2389,12 +2466,12 @@ impl RemoteHost for GitHub {
         if let Some(listed) = self.listed.take_draft(&cr.id.0) {
             return Ok(listed);
         }
-        let view = self.view(&cr.id.0, "isDraft")?;
-        view.get("isDraft")
+        let view = self.pull(&cr.id.0)?;
+        view.get("draft")
             .and_then(serde_json::Value::as_bool)
             .ok_or_else(|| {
                 invalid(format!(
-                    "gh pr view answered about {} without saying whether it is a draft, so \
+                    "GitHub answered about {} without saying whether it is a draft, so \
                      whether the host is holding it cannot be read",
                     cr.url
                 ))
@@ -2422,52 +2499,50 @@ impl RemoteHost for GitHub {
         }))
     }
 
-    /// One `gh pr view`, reading exactly the field GitHub records a merge's time in.
+    /// One `gh pr view`, reading exactly the field GitHub records a merge's time in —
+    /// the record of a landing, read once the change has merged, beside the closures
+    /// `merge_view` reads over the same GraphQL API.
     ///
     /// `mergedAt` is null — or GitHub's zero time — on a change request that has not
     /// merged, and both read as `None`.
     fn merge_time(&self, cr: &ChangeRequest) -> Result<Option<String>> {
         addressable(&cr.id.0, "change request id")?;
-        Ok(reported_time(
-            &self.view(&cr.id.0, MERGE_TIME_FIELDS)?,
-            "mergedAt",
-        ))
+        let raw = gh::invoke(&[
+            "pr", "view", &cr.id.0, "--repo", &self.repo, "--json", "mergedAt",
+        ])?;
+        Ok(reported_time(&gh::json(&raw)?, "mergedAt"))
     }
 
-    /// One `gh pr view`, reading exactly the two fields GitHub decides a merge's
-    /// mergeability by.
+    /// One REST read of the change request, reading the two fields GitHub decides a
+    /// merge's mergeability by.
     ///
-    /// `mergeable` is the answer — `MERGEABLE`, `CONFLICTING`, or `UNKNOWN` while
-    /// GitHub has not computed it — and `mergeStateStatus` is quoted beside it, since
-    /// `DIRTY` is how GitHub spells the same conflict there. A response that carries
-    /// no `mergeable`, or a value GitHub has never answered, is refused rather than
-    /// read as either: a conflict nobody reported ends a publication, and a mergeable
-    /// change nobody reported hides one.
+    /// `mergeable` is the answer — `true`, `false`, or `null` while GitHub has not
+    /// computed it — and `mergeable_state` is quoted beside it, since `dirty` is how
+    /// GitHub spells the same conflict there. A response that carries no `mergeable`,
+    /// or a value GitHub has never answered, is refused rather than read as either: a
+    /// conflict nobody reported ends a publication, and a mergeable change nobody
+    /// reported hides one.
     fn mergeability(&self, cr: &ChangeRequest) -> Result<Mergeability> {
         addressable(&cr.id.0, "change request id")?;
-        let view = self.view(&cr.id.0, MERGEABILITY_FIELDS)?;
-        let mergeable = view
-            .get("mergeable")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| {
-                invalid(format!(
-                    "gh pr view answered about {} without saying whether it can merge: {view}",
-                    cr.url
-                ))
-            })?;
+        let view = self.pull(&cr.id.0)?;
         let status = view
-            .get("mergeStateStatus")
+            .get("mergeable_state")
             .and_then(serde_json::Value::as_str)
             .unwrap_or("unreported");
-        match mergeable.to_ascii_uppercase().as_str() {
-            "MERGEABLE" => Ok(Mergeability::Mergeable),
-            "CONFLICTING" => Ok(Mergeability::Conflicting {
-                reported: format!("mergeable: {mergeable}, mergeStateStatus: {status}"),
+        match view.get("mergeable") {
+            Some(serde_json::Value::Bool(true)) => Ok(Mergeability::Mergeable),
+            Some(serde_json::Value::Bool(false)) => Ok(Mergeability::Conflicting {
+                reported: format!("mergeable: false, mergeable_state: {status}"),
             }),
-            "UNKNOWN" => Ok(Mergeability::Unknown),
-            _ => Err(invalid(format!(
-                "gh pr view reports {} as mergeable {mergeable:?}, which is none of \
-                 MERGEABLE, CONFLICTING or UNKNOWN, so whether it can merge cannot be read",
+            Some(serde_json::Value::Null) => Ok(Mergeability::Unknown),
+            Some(other) => Err(invalid(format!(
+                "GitHub reports {} as mergeable {other}, which is none of true, false or null, \
+                 so whether it can merge cannot be read",
+                cr.url
+            ))),
+            None => Err(invalid(format!(
+                "GitHub answered about {} without saying whether it can merge, so whether it \
+                 can merge cannot be read: {view}",
                 cr.url
             ))),
         }
@@ -2604,26 +2679,7 @@ impl RemoteHost for GitHub {
     }
 
     fn required_checks_on(&self, base: &str) -> Result<RequiredChecks> {
-        // The rulesets first, and their refusal is the whole read's: every
-        // credential that can see the repository can read them, so one that cannot
-        // has not answered about anything. Classic protection is asked second and
-        // its refusal is recorded rather than raised, because the credential GitHub
-        // steers people toward is refused it on every repository, and the rulesets'
-        // answer is still worth having — marked as the part it is.
-        let checks = self.required_on(base, &self.repo)?;
-        let mut answer = RequiredChecks {
-            checks,
-            unconsulted: BTreeMap::new(),
-        };
-        match self.classic_protection(base)? {
-            Ok(contexts) => answer.checks.extend(contexts),
-            Err(refusal) => {
-                answer
-                    .unconsulted
-                    .insert(ProtectionSource::BranchProtection, refusal);
-            }
-        }
-        Ok(answer)
+        self.required_by(base)
     }
 
     fn requires_up_to_date(&self, base: &str) -> Result<bool> {
@@ -2665,20 +2721,6 @@ impl RemoteHost for GitHub {
     }
 }
 
-/// The refusal for a host that will not say which of its checks block the merge.
-///
-/// Inferring it is the one shape that must never be guessed: it is the difference
-/// between a merge that was gated and one that only looked like it. What changed
-/// with the real backend is *where* the question is asked, not that it may be
-/// skipped — a host that answers `gh pr checks --required` with something other
-/// than the checks it requires is refused here rather than read as requiring none.
-fn unsaid(url: &Url, detail: &str) -> Error {
-    invalid(format!(
-        "gh pr checks --required answered about {url} with {detail}, so a check it reported does \
-         not say whether it blocks the merge"
-    ))
-}
-
 /// The same refusal from the rulesets read, which is addressed to a base branch and
 /// names whatever asked about it — a change request's URL, or an identity.
 fn unsaid_about(about: &str, detail: &str) -> Error {
@@ -2688,33 +2730,16 @@ fn unsaid_about(about: &str, detail: &str) -> Error {
     ))
 }
 
-/// The refusal for a host that has no check on the head to report yet.
-///
-/// Separate from [`unsaid`] because the next move differs: this one is a clock, and
-/// whoever reads it waits rather than re-runs.
-fn unregistered(url: &Url, said: &str) -> Error {
-    invalid(format!(
-        "the host reports no check at all yet on the head of {url} ({said}), which is not the \
-         same as a repository that declares none required — it is what a head pushed moments ago \
-         looks like — so whether anything blocks the merge cannot be read from it"
-    ))
-}
-
-/// One entry of the host's check rollup, required to say what it is.
+/// One check run on the head, required to say what it is.
 ///
 /// Defaulting a missing field here is what would let a host that answered
 /// partially be read as a green check — the one shape that must never be inferred.
-/// Whether the check *blocks* is not in this entry at all and never was: it comes
-/// from [`GitHub::required_checks`], which refuses a host that will not say.
-///
-/// Two shapes, told apart by the `__typename` GitHub writes on each: a check run
-/// (`CheckRun` — every Actions job, and any app's run), and a commit status an
-/// integration posted (`StatusContext`), which [`status_context`] reads.
-fn check(
+/// Whether the check *blocks* is not in this entry at all: it comes from
+/// [`GitHub::required_by`], which refuses a host that will not say.
+fn check_run(
     entry: &serde_json::Value,
     cr: &ChangeRequest,
     required: &BTreeSet<String>,
-    head: Option<&Sha>,
 ) -> Result<Check> {
     let field = |name: &str| -> Result<&str> {
         entry
@@ -2723,17 +2748,18 @@ fn check(
             .filter(|value| !value.is_empty())
             .ok_or_else(|| {
                 invalid(format!(
-                    "gh pr view returned a check on {} with no {name}: {entry}",
+                    "GitHub returned a check run on {} with no {name}: {entry}",
                     cr.url
                 ))
             })
     };
-    if entry.get("__typename").and_then(|value| value.as_str()) == Some("StatusContext") {
-        return status_context(entry, cr, required, head);
-    }
-    let name = field("name").or_else(|_| field("context"))?.to_owned();
-    let blocks = required.contains(&name);
+    let name = field("name")?.to_owned();
+    // The commit the run's own record names, or none where it names none: what the host
+    // says the run is about is the host's answer, and a build that stamped its question
+    // onto it could not tell a host that disagreed — nor one that would not say.
+    let about = reported_sha(entry, "head_sha")?;
     Ok(Check {
+        required: required.contains(&name),
         name,
         status: field("status")?.to_ascii_lowercase(),
         // Genuinely absent while a check is still running, which is the one thing
@@ -2743,26 +2769,23 @@ fn check(
             .and_then(|value| value.as_str())
             .filter(|value| !value.is_empty())
             .map(str::to_ascii_lowercase),
-        required: blocks,
-        head: head.cloned(),
-        // A check run's own address; a commit status spells its own `targetUrl`, and
-        // is read by `status_context`.
-        url: reported_url(entry, "detailsUrl"),
-        started_at: reported_time(entry, "startedAt"),
-        completed_at: reported_time(entry, "completedAt"),
+        head: about,
+        url: reported_url(entry, "details_url").or_else(|| reported_url(entry, "html_url")),
+        started_at: reported_time(entry, "started_at"),
+        completed_at: reported_time(entry, "completed_at"),
     })
 }
 
-/// One commit status in the host's rollup, read as the check it stands for.
+/// One commit status on the head, read as the check it stands for.
 ///
 /// A commit status has one `state` where a check run has a status and a conclusion:
-/// `PENDING` (and `EXPECTED`, a required context nothing has posted yet) is a check
-/// still running, and `SUCCESS`, `FAILURE` and `ERROR` are a completed one concluding
-/// that way — so an `ERROR` is red, as every conclusion `Check::state` does not name
-/// is. A state none of those five is refused rather than guessed at: reading an
-/// unknown one as either would wave a merge through or hold one for ever. It is named
-/// by its `context`, which is what branch protection requires it by, and its start is
-/// when the integration posted it — a status posted again after a lift is a new one.
+/// `pending` is a check still running, and `success`, `failure` and `error` are a
+/// completed one concluding that way — so an `error` is red, as every conclusion
+/// `Check::state` does not name is. A state none of those four is refused rather than
+/// guessed at: reading an unknown one as either would wave a merge through or hold one
+/// for ever. It is named by its `context`, which is what branch protection requires it
+/// by, and its start is when the integration posted it — a status posted again after a
+/// lift is a new one.
 fn status_context(
     entry: &serde_json::Value,
     cr: &ChangeRequest,
@@ -2776,22 +2799,22 @@ fn status_context(
             .filter(|value| !value.is_empty())
             .ok_or_else(|| {
                 invalid(format!(
-                    "gh pr view returned a commit status on {} with no {name}: {entry}",
+                    "GitHub returned a commit status on {} with no {name}: {entry}",
                     cr.url
                 ))
             })
     };
     let name = named("context")?.to_owned();
     let state = named("state")?;
-    let (status, conclusion) = match state.to_ascii_uppercase().as_str() {
-        "PENDING" | "EXPECTED" => ("pending", None),
-        "SUCCESS" => ("completed", Some("success")),
-        "FAILURE" => ("completed", Some("failure")),
-        "ERROR" => ("completed", Some("error")),
+    let (status, conclusion) = match state.to_ascii_lowercase().as_str() {
+        "pending" => ("pending", None),
+        "success" => ("completed", Some("success")),
+        "failure" => ("completed", Some("failure")),
+        "error" => ("completed", Some("error")),
         _ => {
             return Err(invalid(format!(
-                "gh pr view reports commit status {name:?} on {} as {state:?}, which is none of \
-                 PENDING, EXPECTED, SUCCESS, FAILURE or ERROR, so where it stands cannot be read",
+                "GitHub reports commit status {name:?} on {} as {state:?}, which is none of \
+                 pending, success, failure or error, so where it stands cannot be read",
                 cr.url
             )))
         }
@@ -2802,8 +2825,8 @@ fn status_context(
         status: status.to_owned(),
         conclusion: conclusion.map(str::to_owned),
         head: head.cloned(),
-        url: reported_url(entry, "targetUrl"),
-        started_at: reported_time(entry, "startedAt"),
+        url: reported_url(entry, "target_url"),
+        started_at: reported_time(entry, "created_at"),
         completed_at: None,
     })
 }
@@ -2832,12 +2855,6 @@ const MERGE_FIELDS: &str = "state,mergeCommit,closingIssuesReferences";
 /// What [`GitHub`]'s `merged_head` reads: [`MERGE_FIELDS`] and the head it merged.
 const MERGED_HEAD_FIELDS: &str = "state,mergeCommit,headRefOid,closingIssuesReferences";
 
-/// What [`GitHub`]'s `merge_time` reads.
-const MERGE_TIME_FIELDS: &str = "mergedAt";
-
-/// What [`GitHub`]'s `mergeability` reads.
-const MERGEABILITY_FIELDS: &str = "mergeable,mergeStateStatus";
-
 /// The commit a merged change request landed as, or `None` while it is still open.
 ///
 /// A host reporting `MERGED` without naming the commit is answering wrongly rather
@@ -2863,6 +2880,27 @@ fn merged_sha(view: &serde_json::Value, cr: &ChangeRequest) -> Result<Option<Sha
                 cr.url
             ))
         })
+}
+
+/// The commit a change request is at, as GitHub's REST API reports a pull request:
+/// `head.sha`, held to the shape of a commit like every other one read off this host.
+fn pull_head(pull: &serde_json::Value) -> Result<Sha> {
+    let sha = pull
+        .get("head")
+        .and_then(|head| head.get("sha"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|sha| !sha.is_empty())
+        .ok_or_else(|| {
+            invalid(format!(
+                "GitHub returned a change request with no head: {pull}"
+            ))
+        })?;
+    if !is_commit_hash(sha) {
+        return Err(invalid(format!(
+            "GitHub reports a change request's head as {sha:?}, which is not a commit"
+        )));
+    }
+    Ok(Sha(sha.to_owned()))
 }
 
 /// The commit a change request's checks are reported against.

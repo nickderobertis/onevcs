@@ -898,7 +898,7 @@ fn a_resumed_publication_whose_head_moved_after_its_checks_settled_is_not_merged
         .world
         .host_calls()
         .iter()
-        .filter(|call| call.contains("statusCheckRollup"))
+        .filter(|call| call.contains("/check-runs?per_page"))
         .count();
     let elsewhere = hosted.world.path("elsewhere");
     // The resumption's settlement is the next reading; its re-verification the one after.

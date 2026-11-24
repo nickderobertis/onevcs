@@ -391,26 +391,19 @@ struct Reads {
 
 fn reads_since(hosted: &Hosted, from: usize) -> Reads {
     let calls: Vec<String> = hosted.world.host_calls().into_iter().skip(from).collect();
-    let fields = |call: &str| {
-        call.split_whitespace()
-            .skip_while(|word| *word != "--json")
-            .nth(1)
-            .unwrap_or_default()
-            .to_owned()
-    };
     Reads {
         lists: calls
             .iter()
-            .filter(|call| call.starts_with("pr list"))
+            .filter(|call| call.contains("/pulls?head="))
             .count(),
-        views: calls
-            .iter()
-            .filter(|call| call.starts_with("pr view"))
-            .filter(|call| {
-                let asked = fields(call);
-                asked
-                    .split(',')
-                    .any(|field| matches!(field, "isDraft" | "title" | "body"))
+        // A change request read by its number for its draft state or description: every
+        // such read that is not the first half of a reading of its checks.
+        views: (0..calls.len())
+            .filter(|&at| {
+                calls[at].contains("/pulls/")
+                    && !calls
+                        .get(at + 1)
+                        .is_some_and(|next| next.contains("/check-runs?per_page"))
             })
             .count(),
         probes: calls
@@ -708,6 +701,9 @@ impl onevcs::RemoteHost for SharedGitHub {
     fn visibility(&self) -> onevcs::Result<onevcs::Visibility> {
         self.0.visibility()
     }
+    fn required_checks_on(&self, base: &str) -> onevcs::Result<onevcs::RequiredChecks> {
+        self.0.required_checks_on(base)
+    }
 }
 
 #[test]
@@ -796,6 +792,112 @@ fn one_github_reused_across_operations_never_answers_one_from_anothers_listing()
         .expect("the change is open");
     assert!(read.draft);
     assert_eq!(read.body, "rewritten by a person");
+}
+
+#[test]
+fn a_change_request_with_no_body_reads_as_an_empty_description_whichever_read_answers() {
+    // GitHub answers a pull request with no body as `null`. That is a body with nothing
+    // in it, read the same by the listing that finds the change request and by a read
+    // of the change request on its own — never a description the host would not give.
+    let hosted = Hosted::new(OPEN);
+    let token = hosted.change("feature/bodiless", "feat: add the bodiless thing");
+    hosted
+        .world
+        .onevcs()
+        .args(["publish", &token, "--draft"])
+        .assert()
+        .success();
+    crate::honesty::inhabit(&hosted.world);
+    let providers = onevcs::Providers::real();
+    let listed = onevcs::session_change(&providers, &onevcs::SessionToken(token.clone()))
+        .expect("the host answers")
+        .expect("the change is open");
+    assert_eq!(listed.body, "", "{listed:?}");
+
+    use onevcs::RemoteHost;
+    let github = onevcs::GitHub::new("acme-corp/hosted").expect("a repository");
+    let read = github
+        .change_description(&onevcs::ChangeRequest {
+            id: onevcs::ChangeId("1".to_owned()),
+            url: onevcs::Url::parse("https://github.com/acme-corp/hosted/pull/1").expect("a URL"),
+            head_sha: onevcs::Sha(String::new()),
+            base: "main".to_owned(),
+        })
+        .expect("a description");
+    assert_eq!(read.body, "");
+    assert_eq!(read.title, "feat: add the bodiless thing");
+    assert!(
+        hosted
+            .world
+            .host_calls()
+            .last()
+            .is_some_and(|call| call.contains("/pulls/1 ")),
+        "the change request was read on its own: {:?}",
+        hosted.world.host_calls()
+    );
+}
+
+#[test]
+fn what_blocks_a_merge_is_read_once_an_operation_and_afresh_in_the_next() {
+    // A publication reads what blocks a merge into its base once — for its watch's
+    // declaration and for every reading of its checks alike — and a host kept for the
+    // whole process does not answer a later read from it after the requirement moves.
+    let hosted = Hosted::new(OPEN);
+    // Running at the first reading and green from the second, so it is read twice.
+    hosted.world.host_checks(&[crate::world::Check {
+        name: "gate",
+        status: "in_progress",
+        conclusion: None,
+        required: true,
+    }]);
+    hosted.world.host_checks_after(
+        1,
+        &[crate::world::Check {
+            name: "gate",
+            status: "completed",
+            conclusion: Some("success"),
+            required: true,
+        }],
+    );
+    hosted.world.host_requires_on("main", &["gate"]);
+    let token = hosted.change("feature/required", "feat: add the required thing");
+    crate::honesty::inhabit(&hosted.world);
+    let github =
+        std::sync::Arc::new(onevcs::GitHub::new("acme-corp/hosted").expect("a repository"));
+    let hosting = OneGitHub(std::sync::Arc::clone(&github));
+    let providers = onevcs::Providers {
+        vcs: onevcs::Providers::real().vcs,
+        hosting: &hosting,
+    };
+    onevcs::publish(
+        &providers,
+        &onevcs::SessionToken(token.clone()),
+        &onevcs::PublishRequest::default(),
+    )
+    .expect("the publication runs");
+    let calls = hosted.world.host_calls();
+    let readings = calls
+        .iter()
+        .filter(|call| call.contains("/check-runs?per_page"))
+        .count();
+    let rules = calls
+        .iter()
+        .filter(|call| call.contains("/rules/branches/main"))
+        .count();
+    assert!(
+        readings >= 2,
+        "the checks were read more than once: {calls:?}"
+    );
+    assert_eq!(rules, 1, "and what blocks the merge once: {calls:?}");
+
+    hosted.world.host_requires_on("main", &["gate", "lint"]);
+    use onevcs::RemoteHost;
+    let required = github.required_checks_on("main").expect("the host answers");
+    assert_eq!(
+        required.checks.into_iter().collect::<Vec<_>>(),
+        ["gate", "lint"],
+        "the next read is the host's, not the finished publication's"
+    );
 }
 
 /// A held draft whose push runs a `pre-push` hook that does `move` to change request 1

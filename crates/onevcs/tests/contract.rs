@@ -367,6 +367,7 @@ fn all_event_kinds() -> Vec<EventKind> {
         EventKind::BaseMerge,
         EventKind::MergeArmed,
         EventKind::PublicationResumed,
+        EventKind::HostWait,
         EventKind::WorktreeProvisioned,
         EventKind::WorktreeProvisionFailed,
     ];
@@ -410,6 +411,7 @@ fn all_event_kinds() -> Vec<EventKind> {
             | EventKind::BaseArrived
             | EventKind::MergeArmed
             | EventKind::PublicationResumed
+            | EventKind::HostWait
             | EventKind::WorktreeProvisioned
             | EventKind::WorktreeProvisionFailed => {}
         }

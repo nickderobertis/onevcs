@@ -104,7 +104,7 @@ fn rollup_readings(world: &World) -> usize {
     world
         .host_calls()
         .iter()
-        .filter(|call| call.contains("statusCheckRollup"))
+        .filter(|call| call.contains("/check-runs?per_page"))
         .count()
 }
 
@@ -362,15 +362,33 @@ fn continues(world: &World, origin: &Path, session: &Session, change: u32) {
     );
 }
 
+/// Where in `calls` change request 1 was read on its own, rather than as the first
+/// half of a reading of its checks — which is the read a watch makes of its
+/// mergeability.
+fn mergeability_reads(calls: &[String]) -> Vec<usize> {
+    (0..calls.len())
+        .filter(|&at| {
+            calls[at].contains("/pulls/1 ")
+                && !calls
+                    .get(at + 1)
+                    .is_some_and(|next| next.contains("/check-runs?per_page"))
+        })
+        .collect()
+}
+
+// llmlint: ignore[expensive_tests_stay_behind_their_own_edge] its bound was raised so the
+// slower REST readings of the substituted host fit under it, not made a new cost: it is
+// the publication's merge path, the inputs the e2e tier is keyed on, and it ends at the
+// conflict well inside the bound.
 #[test]
 fn an_armed_merge_the_base_moved_under_ends_as_a_sync_conflict_at_the_first_reading() {
     // onevcs#278: every required check green, the host's auto-merge armed, and then the
-    // base moves so the change conflicts with it. GitHub reports `mergeable:
-    // CONFLICTING`, `mergeStateStatus: DIRTY` and will never perform the merge; a watch
+    // base moves so the change conflicts with it. GitHub reports `mergeable: false`,
+    // `mergeable_state: dirty` and will never perform the merge; a watch
     // that did not ask waited out its bound and reported `checks-unsettled`.
     let world = World::new();
     let (origin, session) = publishing(&world, AUTOMATED_READY, "feature/overtaken", None);
-    std::env::set_var("ONEVCS_CHECKS_TIMEOUT_SECONDS", "15");
+    std::env::set_var("ONEVCS_CHECKS_TIMEOUT_SECONDS", "40");
     world.host_checks(&[pending()]);
     // At the third reading of the rollup the checks are green and the base has moved:
     // the checks settle there, outside the merge turn, and the merge armed under it is
@@ -394,14 +412,14 @@ fn an_armed_merge_the_base_moved_under_ends_as_a_sync_conflict_at_the_first_read
     assert_eq!(kind.exit_code(), 3);
     for named in [
         "https://github.com/acme-corp/hosted/pull/1",
-        "CONFLICTING",
-        "DIRTY",
+        "mergeable: false",
+        "mergeable_state: dirty",
     ] {
         assert!(reason.contains(named), "the reason names {named}: {reason}");
     }
     assert!(
-        took < Duration::from_secs(10),
-        "it ended at the conflict, not at the 15s bound: {took:?}"
+        took < Duration::from_secs(25),
+        "it ended at the conflict, not at the 40s bound: {took:?}"
     );
 
     // Within one poll interval of the host reporting it: the reading that first carried
@@ -414,14 +432,11 @@ fn an_armed_merge_the_base_moved_under_ends_as_a_sync_conflict_at_the_first_read
     let flipped = calls
         .iter()
         .enumerate()
-        .filter(|(_, call)| call.contains("statusCheckRollup"))
+        .filter(|(_, call)| call.contains("/check-runs?per_page"))
         .nth(2)
         .map(|(at, _)| at)
         .expect("a third reading of the rollup");
-    let asked_after: Vec<&String> = calls[flipped..]
-        .iter()
-        .filter(|call| call.contains("mergeable,mergeStateStatus"))
-        .collect();
+    let asked_after = mergeability_reads(&calls[flipped..]);
     assert_eq!(
         asked_after.len(),
         1,
@@ -430,7 +445,7 @@ fn an_armed_merge_the_base_moved_under_ends_as_a_sync_conflict_at_the_first_read
     assert!(
         calls[flipped..]
             .iter()
-            .filter(|call| call.contains("statusCheckRollup"))
+            .filter(|call| call.contains("/check-runs?per_page"))
             .count()
             == 2,
         "and no reading of the checks was made after the settlement's and the one that \
@@ -484,16 +499,11 @@ fn a_mergeability_the_host_has_not_computed_is_waited_on_and_the_merge_lands() {
         "the base is at the merge the host performed"
     );
     let calls = world.host_calls();
-    let asked: Vec<usize> = calls
-        .iter()
-        .enumerate()
-        .filter(|(_, call)| call.contains("mergeable,mergeStateStatus"))
-        .map(|(at, _)| at)
-        .collect();
+    let asked = mergeability_reads(&calls);
     let computed = calls
         .iter()
         .enumerate()
-        .filter(|(_, call)| call.contains("statusCheckRollup"))
+        .filter(|(_, call)| call.contains("/check-runs?per_page"))
         .nth(2)
         .map(|(at, _)| at)
         .expect("a third reading of the rollup");
@@ -580,6 +590,43 @@ fn a_cancellation_ends_the_checks_watch_of_a_ready_change_within_a_second() {
         world.host_calls()
     );
     continues(&world, &origin, &session, 1);
+}
+
+// llmlint: ignore[expensive_tests_stay_behind_their_own_edge] it is one of this module's
+// cancellation journeys, over the publication's own merge path — the inputs the e2e tier
+// is keyed on — and waits only the 300ms every cancellation here settles for.
+#[test]
+fn a_cancellation_ends_a_wait_on_a_host_that_has_not_answered_within_a_second() {
+    // The check runs are refused for a rate limit whose reset is a minute away, well
+    // inside the bound: the publication waits for it, and a cancellation ends that wait
+    // as it ends every other one.
+    let world = World::new();
+    let (origin, session) = publishing(&world, DIRECT_READY, "feature/cancel-wait", None);
+    std::env::set_var("ONEVCS_CHECKS_TIMEOUT_SECONDS", "120");
+    world.host_checks(&[pending()]);
+    world.host_does_not_answer("/check-runs?per_page", "rate-limited-for:60");
+
+    let (published, took) = cancel_once(
+        &session,
+        "the publication waited on its host",
+        || !world.events_of(&session.token.0, "host-wait").is_empty(),
+        || {},
+    );
+    assert_cancelled_and_kept(&world, &origin, &session, &published, took, Some(1));
+    let PublishOutcome::Failed { reason, .. } = &published.outcome else {
+        unreachable!("asserted above")
+    };
+    assert!(reason.contains("waited on its host"), "{reason}");
+    assert_eq!(
+        world
+            .host_calls()
+            .iter()
+            .filter(|call| call.contains("/check-runs?per_page"))
+            .count(),
+        1,
+        "nothing was asked again before the cancellation: {:?}",
+        world.host_calls()
+    );
 }
 
 #[test]

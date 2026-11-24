@@ -191,6 +191,15 @@ mod honesty;
 mod hook_environment;
 #[cfg(unix)]
 mod host;
+// Unix only for the reason `host` is: the program standing in for `gh` is POSIX shell.
+// Its own header carries the reason GitHub is the boundary doubled.
+#[cfg(unix)]
+// llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
+// llmlint: ignore[expensive_tests_stay_behind_their_own_edge] what it exercises is the
+// publication's merge path (`publish.rs`, `patience.rs`, `host.rs`, `gh.rs`, the `gh`
+// double) — the inputs this tier is keyed on — so an edge of its own reruns on the same
+// changes; its waits are the two-second resets it is about. Its header says so in full.
+mod host_waits;
 // Unix only: the program that replays GitHub's recorded GraphQL responses as `gh` is
 // POSIX shell. Its own header carries the reason GitHub is the boundary doubled.
 #[cfg(unix)]
