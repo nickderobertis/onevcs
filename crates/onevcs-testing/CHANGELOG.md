@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.10](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.21.9...onevcs-testing-v0.21.10) - 2026-11-24
+
+### Performance
+
+- *(session)* answer a repository holder read from one shared proof pass ([#707](https://github.com/nickderobertis/onevcs/pull/707))
+
 ## [0.21.6](https://github.com/nickderobertis/onevcs/compare/onevcs-testing-v0.21.5...onevcs-testing-v0.21.6) - 2026-11-15
 
 ### Performance

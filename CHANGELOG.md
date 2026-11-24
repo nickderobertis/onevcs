@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.69.0](https://github.com/nickderobertis/onevcs/compare/v0.68.0...v0.69.0) - 2026-11-24
+
+### Fixed
+
+- *(publish)* wait out a host rate limit on the merge-path read and name the landing verb the branch takes ([#708](https://github.com/nickderobertis/onevcs/pull/708))
+
+### Performance
+
+- *(session)* answer a repository holder read from one shared proof pass ([#707](https://github.com/nickderobertis/onevcs/pull/707))
+
 ## [0.68.0](https://github.com/nickderobertis/onevcs/compare/v0.67.3...v0.68.0) - 2026-11-19
 
 ### Added
