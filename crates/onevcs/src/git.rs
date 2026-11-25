@@ -31,7 +31,9 @@ use crate::error::{self, Error, Result};
 use crate::host::Sha;
 use crate::{ids, lock};
 
+mod kept;
 mod lfs;
+mod local_fetch;
 
 /// Resolve Git once, preserving the first executable on PATH (including caller
 /// shims). On failure keep the original command so `unstarted` reports the same
@@ -336,6 +338,15 @@ fn run_fed(
         // store. They still read this checkout and must keep its turn throughout.
         || (args.first() == Some(&"merge-tree")
             && env.iter().any(|(key, _)| key == "GIT_OBJECT_DIRECTORY"));
+    // A fetch from a path that would move nothing is answered before the memo sees a
+    // write: nothing was written.
+    if let Some(answered) = input
+        .is_none()
+        .then(|| local_fetch::answer(args, cwd, env))
+        .flatten()
+    {
+        return Ok(answered);
+    }
     let _checkout = if reading {
         cwd.map(crate::checkout_reads::checkout)
             .transpose()?
@@ -349,6 +360,13 @@ fn run_fed(
         .flatten()
     {
         return Ok(recalled);
+    }
+    if let Some(kept) = (input.is_none() && !reads::bypassed())
+        .then(|| kept::recall(args, cwd, env))
+        .flatten()
+    {
+        reads::remember(args, cwd, env, &kept);
+        return Ok(kept);
     }
     // Native answers need no process or disk proof. Their immutable bytes may be
     // retained in memory after checking this call's context and named objects;
@@ -395,6 +413,10 @@ fn run_fed(
         Some(cwd) if hooked => HookShims::cut(cwd)?,
         _ => None,
     };
+    let stamped = input
+        .is_none()
+        .then(|| kept::before(args, cwd, env))
+        .flatten();
     let outside = from_outside(args, cwd);
     let mut command = Command::new(git_program());
     match &outside {
@@ -451,6 +473,9 @@ fn run_fed(
     }
     if input.is_none() {
         reads::remember(args, cwd, env, &output);
+    }
+    if let Some(stamped) = stamped {
+        kept::keep(args, cwd, env, stamped, &output);
     }
     Ok(output)
 }
@@ -648,6 +673,11 @@ mod reads {
         let answered = read();
         BYPASSED.with(|bypassed| bypassed.set(before));
         answered
+    }
+
+    /// Whether this read is one that must ask git now, past every kept answer.
+    pub(super) fn bypassed() -> bool {
+        BYPASSED.with(Cell::get)
     }
 
     fn active() -> bool {
