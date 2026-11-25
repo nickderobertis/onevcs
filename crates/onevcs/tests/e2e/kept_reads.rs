@@ -1815,6 +1815,37 @@ fn configuration_or_a_store_this_cannot_read_as_git_does_leaves_the_fetch_to_git
     if moved {
         std::fs::rename(&aside, &fan_out).expect("the directory comes back");
     }
+
+    // A ref naming an object its store does not hold: in the carry's destination alone,
+    // and then in its source too, under the name the carry maps it to, at the same id.
+    // A source does not advertise such a ref, and a destination's fetch finds the object
+    // missing when it checks that what it holds is whole, so either carry is git's.
+    let missing = "e".repeat(40);
+    let held = clone.join(".git/refs/heads/dangling");
+    let advertised = fixture.checkout.join(".git/refs/remotes/origin/dangling");
+    for (n, (side, refs)) in [
+        ("the destination", vec![held.clone()]),
+        ("the source and the destination", vec![held, advertised]),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        for dangling in &refs {
+            std::fs::create_dir_all(dangling.parent().expect("a ref directory"))
+                .expect("a ref directory");
+            std::fs::write(dangling, format!("{missing}\n")).expect("a dangling ref");
+        }
+        assert_eq!(
+            carried_as_git(world, &counting, &clone, &format!("feature/dangling-{n}")),
+            1,
+            "a ref in {side} naming an object it does not hold"
+        );
+        // Git's own carry may have let a dangling ref go already.
+        for dangling in &refs {
+            let _ = std::fs::remove_file(dangling);
+            assert!(!dangling.exists(), "the dangling ref goes");
+        }
+    }
     assert_eq!(carried_as_git(world, &counting, &clone, "feature/again"), 0);
 }
 

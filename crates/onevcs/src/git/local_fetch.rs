@@ -407,15 +407,23 @@ impl Repository {
 
     /// Every ref, by full name and in name order, at the object it resolves to — a
     /// symbolic ref at the one its target holds, as a fetch advertises it — and whether
-    /// it is symbolic.
+    /// it is symbolic. `None` where any ref names an object its store does not hold: a
+    /// source does not advertise such a ref, and a destination's fetch finds the object
+    /// missing when it checks what it holds is whole, and fetches it again; either way
+    /// what the fetch does is git's.
     fn refs(&self) -> Option<Vec<(String, git2::Oid, bool)>> {
+        let store = self.handle.odb().ok()?;
         let mut refs = Vec::new();
         for reference in self.handle.references().ok()? {
             let reference = reference.ok()?;
             let name = reference.name().ok()?.to_owned();
             let resolved = reference.resolve().ok()?;
             let symbolic = reference.kind() == Some(git2::ReferenceType::Symbolic);
-            refs.push((name, resolved.target()?, symbolic));
+            let target = resolved.target()?;
+            if !store.exists(target) {
+                return None;
+            }
+            refs.push((name, target, symbolic));
         }
         refs.sort_by(|a, b| a.0.cmp(&b.0));
         Some(refs)
