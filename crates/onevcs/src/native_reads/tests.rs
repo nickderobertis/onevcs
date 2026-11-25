@@ -1738,6 +1738,13 @@ fn a_fetch_answered_in_process_names_its_remote_in_fetch_head_as_git_does_and_mo
     let other = lab.git(&source, &["rev-parse", "other"]);
     let dest = lab.path().join("dest");
     lab.git(lab.path(), &["init", "-q", &path_arg(&dest)]);
+    // Automatic maintenance off, as every e2e world has it: from 2.54 git's unconfigured
+    // maintenance is the geometric strategy, whose writes after a fetch are git's to make,
+    // so on such a git an unconfigured destination's fetch is git's whatever it moves —
+    // `kept_reads::a_fetch_is_answered_here_only_on_a_git_whose_…` drives that half.
+    // And on an older git, telling which it is asks `git --version`, a start of its own.
+    // Off, the fetch below is answered here on every git, and starts nothing.
+    lab.git(&dest, &["config", "maintenance.auto", "false"]);
     let fetch_head = dest.join(".git").join("FETCH_HEAD");
     let read = ["rev-parse", "--verify", "--quiet", "FETCH_HEAD"];
     let spelled = path_arg(&source);
