@@ -76,11 +76,12 @@ fn fetches_from_a_path(calls: &[Call]) -> Vec<&Call> {
         .collect()
 }
 
-/// The calls among `calls` whose arguments begin with `prefix`.
-fn asked<'a>(calls: &'a [Call], prefix: &str) -> Vec<&'a Call> {
+/// The calls among `calls` whose arguments hold `command`, wherever they begin: a read
+/// made from outside its checkout is preceded by the `--git-dir` it names.
+fn asked<'a>(calls: &'a [Call], command: &str) -> Vec<&'a Call> {
     calls
         .iter()
-        .filter(|call| call.args.starts_with(prefix))
+        .filter(|call| call.args.contains(command))
         .collect()
 }
 
@@ -370,4 +371,170 @@ fn a_repeated_status_read_asks_no_immutable_or_layout_read_again_and_reports_the
         "no",
         "the base moving is reported: {moved}"
     );
+}
+
+fn proposed(name: &str) -> Session {
+    let mut request = request(name);
+    request.branch = None;
+    request.branch_name = Some(name.to_owned());
+    Git.open_session(request)
+        .unwrap_or_else(|failure| panic!("{name}: the session opens: {failure}"))
+}
+
+#[test]
+fn a_proposed_name_is_searched_in_one_listing_of_the_lender_and_a_name_taken_since_is_passed_over()
+{
+    let fixture = Fixture::local(&local_direct());
+    let world = &fixture.world;
+    let counting = Counting::installed(world);
+    inhabit(world);
+    counting.inhabit();
+    // Taken on origin only, and locally only: the search must see both.
+    pushed_by_someone_else(&fixture, "work");
+    world.git(&fixture.checkout, &["fetch", "-q", "origin"]);
+    world.git(&fixture.checkout, &["branch", "work-2", "main"]);
+
+    let mut first = None;
+    let calls = started(&counting, || first = Some(proposed("work")));
+    let first = first.expect("the session opened");
+    assert_eq!(
+        first.branch, "work-3",
+        "origin's `work` and the lender's `work-2` are taken"
+    );
+    let listings: Vec<&Call> = asked(&calls, "for-each-ref")
+        .into_iter()
+        .filter(|call| call.cwd == fixture.checkout && call.args.contains("refs/heads"))
+        .collect();
+    assert_eq!(
+        listings.len(),
+        1,
+        "the lender's branches and its view of origin's come from one listing: {calls:#?}"
+    );
+    assert_eq!(
+        listings[0].args,
+        "for-each-ref --format=%(refname)%00%(refname:short)%00%(refname:lstrip=3) refs/heads \
+         refs/remotes/origin"
+    );
+    closed(&first);
+
+    // Origin gains the next name between two opens: the next search reads it.
+    pushed_by_someone_else(&fixture, "work-4");
+    let second = proposed("work");
+    assert_eq!(
+        second.branch, "work-5",
+        "a name origin took since is passed over"
+    );
+    closed(&second);
+}
+
+#[test]
+fn a_close_counts_its_clones_other_branches_at_once_and_one_by_one_only_where_one_holds_work() {
+    let fixture = Fixture::local(&local_direct());
+    let world = &fixture.world;
+    let counting = Counting::installed(world);
+    inhabit(world);
+    counting.inhabit();
+    // A branch counted on its own: `unpublished_ahead`'s count, against origin.
+    let counted_alone = |calls: &[Call]| {
+        asked(calls, "rev-list --count ")
+            .iter()
+            .filter(|call| !call.args.contains("--stdin") && call.args.contains("--remotes=origin"))
+            .count()
+    };
+
+    // Two branches beside the session's own in its clone, each at the base.
+    let session = opened("feature/tidy");
+    let clone = clone_of(world, &session.token);
+    world.git(&clone, &["branch", "side/one", "main"]);
+    let calls = started(&counting, || closed(&session));
+    let together = asked(&calls, "rev-list --count --stdin --not --remotes=origin");
+    assert_eq!(
+        together.len(),
+        1,
+        "the clone's other branches are counted at once: {calls:#?}"
+    );
+    assert_eq!(
+        counted_alone(&calls),
+        0,
+        "and none alone, since none holds work: {calls:#?}"
+    );
+
+    // One of them holds work origin lacks: each is then asked alone, and the work is
+    // carried back to the lender rather than lost with the clone.
+    let session = opened("feature/stray");
+    let clone = clone_of(world, &session.token);
+    world.git(&clone, &["branch", "side/empty", "main"]);
+    world.git(&session.worktree, &["checkout", "-q", "-b", "side/work"]);
+    world.commit_file(
+        &session.worktree,
+        "stray.txt",
+        "s\n",
+        "feat: work on a side branch",
+    );
+    let stray = at(world, &session.worktree, "HEAD");
+    world.git(&session.worktree, &["checkout", "-q", "feature/stray"]);
+    let calls = started(&counting, || {
+        let _ = onevcs::close_session(&Providers::real(), &session.token);
+    });
+    assert_eq!(
+        asked(&calls, "rev-list --count --stdin --not --remotes=origin").len(),
+        1,
+        "{calls:#?}"
+    );
+    assert_eq!(
+        counted_alone(&calls),
+        3,
+        "each branch is then counted alone: {calls:#?}"
+    );
+    assert_eq!(
+        at(world, &fixture.checkout, "refs/heads/side/work"),
+        stray,
+        "the side branch's work reached the lender"
+    );
+}
+
+/// The reads of the branch's history a local-direct publication makes on this build: the
+/// late-merge landing read's own, one before the push it decides on — whether there is
+/// anything to publish, and its subject — and one after the fetch and sync that
+/// precede the landing, since that fetch is a write. Before the in-call memo of those
+/// steps it read it 7 times: once more each for the subject, the trailers and the
+/// closing references, on both sides of the fetch.
+const PUBLICATION_HISTORY_READS: usize = 3;
+
+#[test]
+fn a_publication_composes_its_message_from_one_reading_of_the_branch_on_each_side_of_its_fetch() {
+    let fixture = Fixture::local(&local_direct());
+    let world = &fixture.world;
+    let (token, worktree) = fixture.open(&["--branch", "feature/told"]);
+    world.commit_file(
+        &worktree,
+        "told.txt",
+        "t\n",
+        "feat: work worth telling\n\nCloses #12",
+    );
+    let counting = Counting::installed(world);
+    let assert = counting
+        .onevcs(world)
+        .args(["publish", &token])
+        .assert()
+        .success();
+    let calls = counting.calls();
+    let history: Vec<&Call> = calls
+        .iter()
+        .filter(|call| {
+            call.args
+                .contains("log --reverse --format=%H%x00%B%x00%x1e")
+                && call.args.contains("..feature/told")
+        })
+        .collect();
+    eprintln!("{} reads of the history: {history:#?}", history.len());
+    assert_eq!(history.len(), PUBLICATION_HISTORY_READS, "{history:#?}");
+    // What landed is what git says the branch held: its subject and its closing line.
+    let landed = world.git(&fixture.origin, &["log", "-1", "--format=%B", "main"]);
+    assert!(landed.starts_with("feat: work worth telling"), "{landed}");
+    assert!(
+        landed.contains("#12"),
+        "the closing reference is carried: {landed}"
+    );
+    drop(assert);
 }

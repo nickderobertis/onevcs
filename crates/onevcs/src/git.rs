@@ -3183,6 +3183,96 @@ pub fn remote_branches(cwd: &Path, remote: &str) -> Result<Vec<String>> {
     .collect())
 }
 
+/// [`branches`] and [`remote_branches`] of one checkout, from one listing.
+///
+/// Searching for a free branch name asks both of the execution checkout, one after
+/// the other, and nothing writes between them. A listing that git refuses is asked
+/// again as the two reads, so each keeps the answer it gives alone.
+pub fn branches_beside_remote(
+    cwd: &Path,
+    remote: &str,
+) -> (Result<Vec<String>>, Result<Vec<String>>) {
+    if let (Some(heads), Some(remote_heads)) = (
+        crate::native_refs::heads(cwd),
+        crate::native_refs::remote_heads(cwd, remote),
+    ) {
+        return (
+            Ok(heads.into_iter().map(|(branch, _)| branch).collect()),
+            Ok(remote_heads.into_keys().collect()),
+        );
+    }
+    let tracking = format!("refs/remotes/{remote}");
+    let listed = run(
+        &[
+            "for-each-ref",
+            "--format=%(refname)%00%(refname:short)%00%(refname:lstrip=3)",
+            "refs/heads",
+            &tracking,
+        ],
+        Some(cwd),
+    );
+    let Some(listed) = listed.ok().filter(Output::ok) else {
+        return (branches(cwd), remote_branches(cwd, remote));
+    };
+    let (mut local, mut tracked) = (Vec::new(), Vec::new());
+    for line in listed.stdout.lines() {
+        let mut fields = line.split('\0');
+        let (Some(name), Some(short), Some(stripped)) =
+            (fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        if name.starts_with("refs/heads/") {
+            if !short.is_empty() {
+                local.push(short.to_owned());
+            }
+        } else if !stripped.is_empty() && stripped != "HEAD" {
+            tracked.push(stripped.to_owned());
+        }
+    }
+    (Ok(local), Ok(tracked))
+}
+
+/// Whether any of `references` holds a commit [`unpublished_ahead`] would count: one
+/// count over all of them, which is zero exactly where each one's own count is.
+///
+/// A clone being closed is asked this of every branch it holds, and nearly always
+/// holds nothing origin lacks. The references go over standard input, so the list
+/// can be any length; the ones carried beside origin stay on the command line, where
+/// [`unpublished_ahead`] names them too. `None` where git could not count them all
+/// at once — a reference gone since it was listed — which is the caller's cue to ask
+/// each one alone.
+pub(crate) fn unpublished_ahead_of_any(
+    cwd: &Path,
+    references: &[&str],
+    carried: &[&str],
+) -> Option<bool> {
+    let held: Vec<&str> = carried
+        .iter()
+        .copied()
+        .filter(|name| tip(cwd, name).is_some())
+        .collect();
+    let mut args = vec![
+        "rev-list",
+        "--count",
+        "--stdin",
+        "--not",
+        "--remotes=origin",
+    ];
+    args.extend_from_slice(&held);
+    args.push("--");
+    let mut input = String::new();
+    for reference in references {
+        input.push_str(reference);
+        input.push('\n');
+    }
+    let counted = run_given(cwd, &args, input.as_bytes()).ok()?;
+    if !counted.ok() {
+        return None;
+    }
+    counted.trimmed().parse::<u64>().ok().map(|count| count > 0)
+}
+
 /// Local branches holding commits no `origin` remote-tracking ref has.
 pub fn unpublished_branches(cwd: &Path) -> Result<Vec<String>> {
     Ok(

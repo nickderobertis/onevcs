@@ -1065,6 +1065,11 @@ pub(crate) fn root_is_known_to_carry_the_stack(
     root: &Ref,
     tip: &str,
 ) -> Result<bool> {
+    // Its comparisons ask the same commits more than once, and write nothing.
+    git::memoized(|| carries_the_stack(repo, branch, root, tip))
+}
+
+fn carries_the_stack(repo: &Path, branch: &str, root: &Ref, tip: &str) -> Result<bool> {
     let root = vcs::base_ref(repo, root);
     if !git::ref_exists(repo, &format!("refs/remotes/{root}")) && !git::branch_exists(repo, &root) {
         return Ok(false);
@@ -1350,9 +1355,21 @@ fn publish_resolving(
 
     sync(context, stream, &compared, replay.as_deref())?;
 
-    if nothing_to_publish(context, &compared)? {
+    // Whether there is anything to publish, and what its subject is, from one reading
+    // of the branch: nothing between the two writes.
+    let described = git::memoized(|| -> Result<Option<String>> {
+        if nothing_to_publish(context, &compared)? {
+            return Ok(None);
+        }
+        // The trailers are the publication *commit*'s, so only the local path takes
+        // them here — and it re-describes the branch after the queue anyway. Asking now
+        // is still what refuses a branch with no usable subject before anything is
+        // pushed.
+        Ok(Some(describe(context, &compared)?.0))
+    })?;
+    let Some(subject) = described else {
         return Ok((PublishOutcome::NothingToPublish, target));
-    }
+    };
 
     let push = match (&replay, &last_seen) {
         (Some(_), Some(replaced)) => Push::Replacing {
@@ -1363,10 +1380,6 @@ fn publish_resolving(
         // same.
         _ => context.push.clone(),
     };
-    // The trailers are the publication *commit*'s, so only the local path takes them
-    // here — and it re-describes the branch after the queue anyway. Asking now is
-    // still what refuses a branch with no usable subject before anything is pushed.
-    let (subject, _) = describe(context, &compared)?;
     // The last thing before the first write to the remote: everything this
     // publication would put there — its commits against every parent, their
     // messages, the branch, the title and the body — is held to the public boundary.
@@ -1557,6 +1570,12 @@ fn nothing_to_publish(context: &Context<'_>, compared: &str) -> Result<bool> {
 
 /// The subject one publication commit carries, and what it must carry forward.
 fn describe(context: &Context<'_>, compared: &str) -> Result<(String, Vec<String>)> {
+    // The subject and the trailers read the same history of the branch; one
+    // description is made of one reading of it.
+    git::memoized(|| described(context, compared))
+}
+
+fn described(context: &Context<'_>, compared: &str) -> Result<(String, Vec<String>)> {
     let subject = subject_for(
         &context.repo,
         compared,
@@ -1839,8 +1858,12 @@ fn publish_locally(
         if git::tip(&context.repo, compared) != synced {
             sync(context, stream, compared, None)?;
         }
-        let (subject, trailers) = describe(context, compared)?;
-        let closing = closing_references(context, compared)?;
+        // The message, its trailers and the issues it closes, from one reading of the
+        // branch's history: nothing writes between them.
+        let (subject, trailers, closing) = git::memoized(|| -> Result<_> {
+            let (subject, trailers) = describe(context, compared)?;
+            Ok((subject, trailers, closing_references(context, compared)?))
+        })?;
         let message = compose_squash(&subject, &closing, &trailers);
 
         let scratch_parent = context.run_root.join(format!("publish-{}", ids::unique()));
@@ -5469,11 +5492,14 @@ fn take_up_a_late_merge(context: &Context<'_>, stream: &Stream) {
     let Ok(registry) = store::load() else {
         return;
     };
-    let _ = crate::status::landing_of_within_observed(
-        &registry,
-        &context.branch,
-        Some(&context.resolution.key),
-        Some(context.hosting),
-        stream.in_operation().then_some(stream),
-    );
+    // One landing read, remembered within itself as `status`'s own is.
+    let _ = git::memoized(|| {
+        crate::status::landing_of_within_observed(
+            &registry,
+            &context.branch,
+            Some(&context.resolution.key),
+            Some(context.hosting),
+            stream.in_operation().then_some(stream),
+        )
+    });
 }
