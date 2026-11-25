@@ -338,15 +338,6 @@ fn run_fed(
         // store. They still read this checkout and must keep its turn throughout.
         || (args.first() == Some(&"merge-tree")
             && env.iter().any(|(key, _)| key == "GIT_OBJECT_DIRECTORY"));
-    // A fetch from a path that would move nothing is answered before the memo sees a
-    // write: nothing was written.
-    if let Some(answered) = input
-        .is_none()
-        .then(|| local_fetch::answer(args, cwd, env))
-        .flatten()
-    {
-        return Ok(answered);
-    }
     let _checkout = if reading {
         cwd.map(crate::checkout_reads::checkout)
             .transpose()?
@@ -360,6 +351,16 @@ fn run_fed(
         .flatten()
     {
         return Ok(recalled);
+    }
+    // A fetch from a path that would move no ref is answered here, after the memo has
+    // let go of everything for it as for any write — it still writes `FETCH_HEAD` — and
+    // inside the checkout's turn for writing, which git's own run would have taken.
+    if input.is_none() && args.first() == Some(&"fetch") {
+        if let Some(answered) =
+            crate::checkout_reads::mutating(|| Ok(local_fetch::answer(args, cwd, env)))?
+        {
+            return Ok(answered);
+        }
     }
     if let Some(kept) = (input.is_none() && !reads::bypassed())
         .then(|| kept::recall(args, cwd, env))

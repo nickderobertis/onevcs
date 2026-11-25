@@ -1719,3 +1719,82 @@ fn a_commit_held_in_a_borrowed_store_until_it_is_pruned_there_is_answered_absent
         "repacked without it: asked of git again, which answers it absent"
     );
 }
+
+#[test]
+fn a_fetch_answered_in_process_names_its_remote_in_fetch_head_as_git_does_and_moves_the_memo() {
+    let lab = Lab::new();
+    // A work tree whose directory ends in `.git`, which is how git's naming of the
+    // remote drops a suffix it does not drop from the path.
+    let source = lab.path().join("source.git");
+    lab.git(
+        lab.path(),
+        &["init", "-q", "-b", "main", &path_arg(&source)],
+    );
+    lab.git(&source, &["commit", "-q", "--allow-empty", "-m", "main"]);
+    lab.git(&source, &["checkout", "-q", "-b", "other"]);
+    lab.git(&source, &["commit", "-q", "--allow-empty", "-m", "other"]);
+    lab.git(&source, &["checkout", "-q", "main"]);
+    let main = lab.git(&source, &["rev-parse", "main"]);
+    let other = lab.git(&source, &["rev-parse", "other"]);
+    let dest = lab.path().join("dest");
+    lab.git(lab.path(), &["init", "-q", &path_arg(&dest)]);
+    let fetch_head = dest.join(".git").join("FETCH_HEAD");
+    let read = ["rev-parse", "--verify", "--quiet", "FETCH_HEAD"];
+    let spelled = path_arg(&source);
+    for spelling in [
+        spelled.clone(),
+        format!("{spelled}/"),
+        format!("{spelled}//"),
+    ] {
+        let fetch = [
+            "fetch",
+            "--no-tags",
+            spelling.as_str(),
+            "+refs/heads/*:refs/remotes/source/*",
+        ];
+        // Brought up to date by git, or already so; either way the next one is not.
+        crate::git::run_with_env(&fetch, Some(&dest), &[]).expect("the fetch runs");
+        std::fs::write(
+            &fetch_head,
+            format!("{other}\t\tbranch 'other' of elsewhere\n"),
+        )
+        .expect("a FETCH_HEAD naming the other branch first");
+
+        let (seen, fetched, after) = crate::git::memoized(|| {
+            let seen = crate::git::run_with_env(&read, Some(&dest), &[]).expect("a read");
+            let before = lab.starts();
+            let fetched = crate::git::run_with_env(&fetch, Some(&dest), &[]).expect("the fetch");
+            let started = lab.starts() - before;
+            let after = crate::git::run_with_env(&read, Some(&dest), &[]).expect("a read");
+            ((seen, started), fetched, after)
+        });
+        assert_eq!(
+            seen.0.trimmed(),
+            other,
+            "{spelling}: the seeded FETCH_HEAD, read"
+        );
+        assert_eq!(
+            seen.1, 0,
+            "{spelling}: the fetch moved nothing, so started no git"
+        );
+        assert!(fetched.ok() && fetched.stdout.is_empty() && fetched.stderr.is_empty());
+        assert_eq!(
+            after.trimmed(),
+            main,
+            "{spelling}: the read after the fetch is of the FETCH_HEAD it wrote, not the memo's"
+        );
+
+        let ours = std::fs::read_to_string(&fetch_head).expect("FETCH_HEAD");
+        let git = lab.truth(&dest, &fetch, &[]);
+        assert_eq!(
+            git,
+            (0, String::new(), String::new()),
+            "{spelling}: git's answer is ours"
+        );
+        assert_eq!(
+            ours,
+            std::fs::read_to_string(&fetch_head).expect("git's FETCH_HEAD"),
+            "{spelling}: the FETCH_HEAD git writes for the same fetch"
+        );
+    }
+}
