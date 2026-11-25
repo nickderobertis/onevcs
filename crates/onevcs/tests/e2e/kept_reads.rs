@@ -1269,3 +1269,86 @@ fn a_fetch_answered_in_process_leaves_fetch_head_as_git_leaves_it() {
         &left,
     );
 }
+
+#[test]
+fn a_fetch_head_this_cannot_write_as_git_would_is_left_to_git() {
+    let fixture = crate::pool::pooled("version: 1\ndefault: {pool: 1}\n");
+    let world = &fixture.world;
+    let counting = Counting::installed(world);
+    inhabit(world);
+    counting.inhabit();
+    let first = opened("feature/first");
+    let clone = clone_of(world, &first.token);
+    closed(&first);
+    let fetch_head = clone.join(".git/FETCH_HEAD");
+
+    // A FETCH_HEAD nothing can write over: git is asked, and its refusal is the open's.
+    std::fs::remove_file(&fetch_head).expect("FETCH_HEAD goes");
+    std::fs::create_dir(&fetch_head).expect("a directory where FETCH_HEAD goes");
+    let mut refused = None;
+    let calls = started(&counting, || {
+        refused = Some(Git.open_session(request("feature/unwritable")));
+    });
+    assert_eq!(
+        fetches_from_a_path(&calls).len(),
+        1,
+        "an unwritable FETCH_HEAD: {calls:#?}"
+    );
+    let refused = refused
+        .expect("the open answered")
+        .expect_err("git refused the fetch");
+    assert!(
+        refused.to_string().contains("FETCH_HEAD"),
+        "git's own refusal: {refused}"
+    );
+
+    // Mended, the next open answers the fetch in process again.
+    std::fs::remove_dir(&fetch_head).expect("the directory goes");
+    let mut session = None;
+    let calls = started(&counting, || session = Some(opened("feature/mended")));
+    assert!(fetches_from_a_path(&calls).is_empty(), "{calls:#?}");
+    closed(&session.expect("the session opened")); // Configured about writing one: whether and how that is honoured is git's (2.43
+                                                   // writes it regardless), so git fetches, and what it leaves is what git leaves.
+    world.git(&clone, &["config", "fetch.writeFetchHead", "false"]);
+    std::fs::write(&fetch_head, SEEDED).expect("a seeded FETCH_HEAD");
+    let mut session = None;
+    let calls = started(&counting, || session = Some(opened("feature/unwritten")));
+    let session = session.expect("the session opened");
+    assert_eq!(
+        fetches_from_a_path(&calls).len(),
+        1,
+        "fetch.writeFetchHead: {calls:#?}"
+    );
+    let left = std::fs::read_to_string(&fetch_head).expect("FETCH_HEAD");
+    let lender = recorded(world, &session.token.0, "execution_checkout");
+    let git = world.git_raw_env(
+        &clone,
+        &[],
+        &[
+            "fetch",
+            "--no-tags",
+            &lender,
+            "+refs/remotes/origin/*:refs/remotes/origin/*",
+        ],
+    );
+    assert!(git.status.success(), "{git:?}");
+    assert_eq!(
+        left,
+        std::fs::read_to_string(&fetch_head).expect("git's FETCH_HEAD"),
+        "the FETCH_HEAD the fetch left is the one git leaves"
+    );
+    closed(&session);
+    world.git(&clone, &["config", "--unset", "fetch.writeFetchHead"]);
+
+    // Told to prune tags: that is git's to decide on every fetch.
+    world.git(&clone, &["config", "fetch.pruneTags", "true"]);
+    let mut session = None;
+    let calls = started(&counting, || session = Some(opened("feature/pruning")));
+    assert_eq!(
+        fetches_from_a_path(&calls).len(),
+        1,
+        "fetch.pruneTags: {calls:#?}"
+    );
+    closed(&session.expect("the session opened"));
+    world.git(&clone, &["config", "--unset", "fetch.pruneTags"]);
+}

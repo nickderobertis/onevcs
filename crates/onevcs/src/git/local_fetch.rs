@@ -232,12 +232,14 @@ impl Repository {
     /// left unset, so the fetch is git's.
     fn sets_any(&self, keys: &[&str]) -> Option<bool> {
         let config = self.handle.config().ok()?.snapshot().ok()?;
-        for key in keys {
-            let mut entries = config.entries(Some(key)).ok()?;
-            match entries.next() {
-                Some(Ok(_)) => return Some(true),
-                Some(Err(_)) => return None,
-                None => {}
+        // Every entry, matched by its whole name: libgit2 reads a name it is handed as a
+        // pattern, under which `fetch.prune` would also name `fetch.prunetags`.
+        let mut entries = config.entries(None).ok()?;
+        while let Some(entry) = entries.next() {
+            let entry = entry.ok()?;
+            let name = entry.name().ok()?.to_ascii_lowercase();
+            if keys.iter().any(|key| *key == name) {
+                return Some(true);
             }
         }
         Some(false)
