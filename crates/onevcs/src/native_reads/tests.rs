@@ -1662,6 +1662,79 @@ fn a_repository_replaced_at_its_path_is_never_answered_from_what_the_one_before_
     );
 }
 
+/// Reads the process keeps between calls: four of the checkout's layout and two named by
+/// object ids alone.
+fn kept_reads(w: &World) -> Vec<Vec<String>> {
+    queries(&[
+        "rev-parse --git-path hooks".into(),
+        "config --get core.hooksPath".into(),
+        "remote get-url origin".into(),
+        "rev-parse --git-common-dir".into(),
+        format!("merge-base --is-ancestor {} {}", w.first, w.second),
+        format!("cat-file -e {}^{{commit}}", w.second),
+    ])
+}
+
+/// Every file a kept answer is held to, moved one at a time between two askings of the
+/// same reads — on every host this suite runs on, Windows included, which no journey
+/// over `tests/e2e/world.rs` reaches. Each move is followed by the reads git's answer
+/// moved with it, held to git's answer by `agree`, and then by the same reads kept again.
+#[test]
+fn every_file_a_kept_answer_is_held_to_moves_it_when_it_moves() {
+    let w = world();
+    let reads = kept_reads(&w);
+    // The layout reads go to git and are kept; the two named by ids are answered in
+    // process until a graft hands them to git, which is where they are kept too.
+    let layout = [1, 1, 1, 1, 0, 0];
+    let kept = [0; 6];
+    let asked = |what: &str, expected: [usize; 6]| {
+        assert_eq!(w.lab.agree(&w.clone, &reads, &[]), expected, "{what}");
+    };
+    asked("asked of git the first time", layout);
+    asked("kept while nothing moved", kept);
+
+    // As `git config` writes: a lock file renamed over the configuration.
+    w.lab
+        .git(&w.clone, &["config", "core.hooksPath", "hooks-a"]);
+    asked("the configuration replaced", layout);
+    asked("kept once more", kept);
+
+    // Written in place at the same length, as an editor might.
+    let config = w.clone.join(".git").join("config");
+    let text = std::fs::read_to_string(&config).expect("the configuration");
+    std::fs::write(&config, text.replace("hooks-a", "hooks-b")).expect("written in place");
+    asked("the configuration written in place", layout);
+    asked("kept once more", kept);
+
+    // The global file this process names.
+    let global = std::env::var_os("GIT_CONFIG_GLOBAL").expect("the lab names a global file");
+    let mut text = std::fs::read_to_string(&global).expect("the global configuration");
+    text.push_str("[remote \"origin\"]\n\tpushurl = elsewhere\n");
+    std::fs::write(&global, text).expect("the global configuration edited");
+    asked("the global configuration edited", layout);
+    asked("kept once more", kept);
+
+    w.lab
+        .git(&w.clone, &["remote", "set-url", "origin", "elsewhere"]);
+    asked("the remote moved", layout);
+    asked("kept once more", kept);
+
+    let grafts = w.clone.join(".git/info/grafts");
+    std::fs::write(&grafts, format!("{}\n", w.second)).expect("a graft cutting a parent");
+    asked(
+        "history grafted: the id reads are git's",
+        [0, 0, 0, 0, 1, 1],
+    );
+    asked("kept while the graft stands", kept);
+    std::fs::write(&grafts, format!("{} {}\n", w.second, w.first))
+        .expect("the graft rewritten to give the parent back");
+    asked(
+        "the graft rewritten: the kept id reads asked again",
+        [0, 0, 0, 0, 1, 1],
+    );
+    asked("kept once more", kept);
+}
+
 /// With no `HOME`, Git for Windows reads its global configuration from `HOMEDRIVE` and
 /// `HOMEPATH`, so a kept answer is held to that file too: a write there moves it.
 #[cfg(windows)]
