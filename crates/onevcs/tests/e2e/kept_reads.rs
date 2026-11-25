@@ -1518,10 +1518,10 @@ fn a_fetch_git_would_end_with_a_commit_graph_or_maintenance_is_git_s_to_make() {
     // `gc.auto` at 0, as this crate pins every lender: no gc is ever due, however many
     // loose objects there are, and git's own fetch asks for none either.
     let pinned = loose_in_17(&clone, 28);
-    let unpinned = carried(&counting, "feature/pinned", || {
+    let pinned_fetches = carried(&counting, "feature/pinned", || {
         world.git(&clone, &["config", "gc.auto", "0"]);
     });
-    assert_eq!(unpinned, 0, "gc.auto 0, 28 loose objects");
+    assert_eq!(pinned_fetches, 0, "gc.auto 0, 28 loose objects");
     let git = world.git_raw_env(&clone, &[], &carry);
     assert!(git.status.success(), "{git:?}");
     assert!(!gc_asked(), "git's fetch asks for no gc under gc.auto 0");
