@@ -1363,13 +1363,35 @@ fn carried(counting: &Counting, branch: &str, prepare: impl FnOnce()) -> usize {
     fetches_from_a_path(&calls).len()
 }
 
-/// Whether `repo` carries a commit graph, whole or split.
+/// Wait for the automatic maintenance a fetch into `repo` left running to end. From
+/// 2.47 git's fetch runs `git maintenance run --auto --detach`, which takes the store's
+/// `maintenance.lock` before it detaches and holds it until its tasks — and the
+/// `pre-auto-gc` hook a gc asks — are done, so what that maintenance did is only there to
+/// observe once the lock is gone. An older git's maintenance ends before its fetch does,
+/// and holds no lock to wait for.
+fn settled(repo: &Path) {
+    let lock = repo.join(".git/objects/maintenance.lock");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while lock.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "git's detached maintenance still holds {} after a minute",
+            lock.display()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// Whether `repo` carries a commit graph, whole or split, once the maintenance a fetch
+/// left running has ended.
 fn graphed(repo: &Path) -> bool {
+    settled(repo);
     let info = repo.join(".git/objects/info");
     info.join("commit-graph").exists() || info.join("commit-graphs/commit-graph-chain").exists()
 }
 
 fn ungraphed(repo: &Path) {
+    settled(repo);
     let info = repo.join(".git/objects/info");
     let _ = std::fs::remove_file(info.join("commit-graph"));
     let _ = std::fs::remove_dir_all(info.join("commit-graphs"));
@@ -1427,11 +1449,14 @@ fn a_fetch_git_would_end_with_a_commit_graph_or_maintenance_is_git_s_to_make() {
 
     // The world turns automatic maintenance off, as git reads `maintenance.auto`; turned
     // back on, a git whose unconfigured maintenance is `gc --auto` alone, with nothing
-    // due, writes nothing after the fetch either.
+    // due, writes nothing after the fetch either. From 2.54 that maintenance is the
+    // geometric strategy's, so every carry made while it is on is git's: `on` is how
+    // many fetches from a path a carry with nothing else due starts on this host's git.
+    let on = usize::from(host_git(world) > (2, 53));
     world.git(&clone, &["config", "maintenance.auto", "true"]);
     assert_eq!(
         carried(&counting, "feature/on", || {}),
-        0,
+        on,
         "maintenance on, nothing due"
     );
 
@@ -1465,9 +1490,21 @@ fn a_fetch_git_would_end_with_a_commit_graph_or_maintenance_is_git_s_to_make() {
         &format!("echo asked >> '{}'\nexit 1", asked.display()),
     );
     let gc_asked = || {
+        settled(&clone);
         let was = asked.exists();
         let _ = std::fs::remove_file(&asked);
         was
+    };
+    // While maintenance is on, whether git's fetch asks for a gc is `gc --auto`'s
+    // threshold only on a git whose maintenance is `gc --auto` alone; from 2.54 it is the
+    // geometric strategy's to decide, and that git's carries were all git's (`on`) rather
+    // than decided here from the threshold. So there the hook is read to clear it, and
+    // held to an answer only where the threshold is what git asks by.
+    let gc_by_threshold = |expected: bool, what: &str| {
+        let was = gc_asked();
+        if on == 0 {
+            assert_eq!(was, expected, "{what}");
+        }
     };
     let lender = fixture.checkout.to_string_lossy().into_owned();
     let carry = [
@@ -1478,17 +1515,18 @@ fn a_fetch_git_would_end_with_a_commit_graph_or_maintenance_is_git_s_to_make() {
     ];
 
     // One loose object short of the default threshold: no gc is due, so the carry is
-    // answered here — and git's own fetch would not have asked for one either.
+    // answered here wherever maintenance alone would not make it git's — and git's own
+    // fetch would not have asked for one either.
     let mut loose = loose_in_17(&clone, 27);
     assert_eq!(
         carried(&counting, "feature/short", || {}),
-        0,
+        on,
         "27 loose objects"
     );
-    assert!(!gc_asked(), "nothing asked for a gc");
+    gc_by_threshold(false, "nothing asked for a gc");
     let git = world.git_raw_env(&clone, &[], &carry);
     assert!(git.status.success(), "{git:?}");
-    assert!(!gc_asked(), "git's fetch asks for no gc at 27 either");
+    gc_by_threshold(false, "git's fetch asks for no gc at 27 either");
 
     // Past the threshold, git's fetch asks for a gc.
     loose.extend(
@@ -1502,7 +1540,7 @@ fn a_fetch_git_would_end_with_a_commit_graph_or_maintenance_is_git_s_to_make() {
         1,
         "28 loose objects"
     );
-    assert!(gc_asked(), "git's fetch asked for a gc");
+    gc_by_threshold(true, "git's fetch asked for a gc");
     for path in loose.split_off(2) {
         std::fs::remove_file(path).expect("a loose object goes");
     }
@@ -1512,19 +1550,20 @@ fn a_fetch_git_would_end_with_a_commit_graph_or_maintenance_is_git_s_to_make() {
         world.git(&clone, &["config", "gc.auto", "1"]);
     });
     assert_eq!(lowered, 1, "gc.auto");
-    assert!(gc_asked(), "git's fetch asked for a gc under gc.auto");
+    gc_by_threshold(true, "git's fetch asked for a gc under gc.auto");
     world.git(&clone, &["config", "--unset", "gc.auto"]);
 
     // `gc.auto` at 0, as this crate pins every lender: no gc is ever due, however many
-    // loose objects there are, and git's own fetch asks for none either.
+    // loose objects there are, and a git whose maintenance is `gc --auto` alone asks for
+    // none either.
     let pinned = loose_in_17(&clone, 28);
     let pinned_fetches = carried(&counting, "feature/pinned", || {
         world.git(&clone, &["config", "gc.auto", "0"]);
     });
-    assert_eq!(pinned_fetches, 0, "gc.auto 0, 28 loose objects");
+    assert_eq!(pinned_fetches, on, "gc.auto 0, 28 loose objects");
     let git = world.git_raw_env(&clone, &[], &carry);
     assert!(git.status.success(), "{git:?}");
-    assert!(!gc_asked(), "git's fetch asks for no gc under gc.auto 0");
+    gc_by_threshold(false, "git's fetch asks for no gc under gc.auto 0");
     world.git(&clone, &["config", "--unset", "gc.auto"]);
     for path in pinned.into_iter().skip(2) {
         std::fs::remove_file(path).expect("a loose object goes");
@@ -1534,10 +1573,10 @@ fn a_fetch_git_would_end_with_a_commit_graph_or_maintenance_is_git_s_to_make() {
     // their own. The two loose objects left are far short of the loose threshold.
     assert_eq!(
         carried(&counting, "feature/few", || {}),
-        0,
+        on,
         "two loose objects"
     );
-    assert!(!gc_asked(), "nothing asked for a gc");
+    gc_by_threshold(false, "nothing asked for a gc");
     let packs = clone.join(".git/objects/pack");
     let store = git2::Repository::open(&clone).expect("the clone opens");
     let mut builder = store.packbuilder().expect("a pack builder");
@@ -1575,7 +1614,7 @@ fn a_fetch_git_would_end_with_a_commit_graph_or_maintenance_is_git_s_to_make() {
         })
         .collect();
     assert_eq!(carried(&counting, "feature/packed", || {}), 1, "51 packs");
-    assert!(gc_asked(), "git's fetch asked for a gc over 51 packs");
+    gc_by_threshold(true, "git's fetch asked for a gc over 51 packs");
 
     // A pack limit configured off, or above the packs there are: no gc is due, and
     // git's own fetch asks for none either.
@@ -1583,14 +1622,14 @@ fn a_fetch_git_would_end_with_a_commit_graph_or_maintenance_is_git_s_to_make() {
         world.git(&clone, &["config", "gc.autoPackLimit", limit]);
         assert_eq!(
             carried(&counting, &format!("feature/limit-{limit}"), || {}),
-            0,
+            on,
             "gc.autoPackLimit {limit} over 51 packs"
         );
         let git = world.git_raw_env(&clone, &[], &carry);
         assert!(git.status.success(), "{git:?}");
-        assert!(
-            !gc_asked(),
-            "git asks for no gc under gc.autoPackLimit {limit}"
+        gc_by_threshold(
+            false,
+            &format!("git asks for no gc under gc.autoPackLimit {limit}"),
         );
     }
 
@@ -1605,17 +1644,17 @@ fn a_fetch_git_would_end_with_a_commit_graph_or_maintenance_is_git_s_to_make() {
         1,
         "gc.autoPackLimit 2"
     );
-    assert!(gc_asked(), "git's fetch asked for a gc over 3 packs");
+    gc_by_threshold(true, "git's fetch asked for a gc over 3 packs");
     world.git(&clone, &["config", "--unset", "gc.autoPackLimit"]);
     for copy in copies {
         std::fs::remove_file(copy).expect("a copy goes");
     }
     assert_eq!(
         carried(&counting, "feature/again", || {}),
-        0,
+        on,
         "nothing due again"
     );
-    assert!(!gc_asked(), "nothing asked for a gc");
+    gc_by_threshold(false, "nothing asked for a gc");
 
     // With maintenance off, a git older than `maintenance.auto` still runs `gc --auto`
     // after a fetch, so a store past its threshold is git's whatever that key says.
