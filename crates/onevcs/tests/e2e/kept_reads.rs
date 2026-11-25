@@ -213,10 +213,11 @@ fn an_open_carries_an_unmoved_lenders_view_of_origin_without_fetching_and_a_move
 }
 
 /// The git processes closing an unmoved continuation starts on this build: the tree's
-/// status, the clone's branches, what the branch holds beyond origin, and the worktree's
-/// removal. 0.69.0 also started the hand-back's `fetch` into the lender, with the
-/// `git-upload-pack` under it, and asked the lender's `--git-common-dir` again: 7.
-const UNMOVED_CLOSE: usize = 4;
+/// status, the clone's branches, and the worktree's removal. 0.69.0 also counted what
+/// the clone's base holds beyond origin, where it stands at origin's own commit, and
+/// started the hand-back's `fetch` into the lender, with the `git-upload-pack` under
+/// it, and asked the lender's `--git-common-dir` again: 7.
+const UNMOVED_CLOSE: usize = 3;
 
 #[test]
 fn a_hand_back_the_lender_already_holds_starts_no_fetch_and_one_it_does_not_hold_lands_there() {
@@ -442,6 +443,15 @@ fn a_close_counts_its_clones_other_branches_at_once_and_one_by_one_only_where_on
             .count()
     };
 
+    // Only the base beside the session's own branch, standing where origin's does: it
+    // holds nothing origin lacks by definition, so git is not asked to count it.
+    let session = opened("feature/plain");
+    let calls = started(&counting, || closed(&session));
+    assert!(
+        asked(&calls, "rev-list --count").is_empty(),
+        "a branch at origin's own commit is not counted: {calls:#?}"
+    );
+
     // Two branches beside the session's own in its clone, each at the base.
     let session = opened("feature/tidy");
     let clone = clone_of(world, &session.token);
@@ -483,8 +493,9 @@ fn a_close_counts_its_clones_other_branches_at_once_and_one_by_one_only_where_on
     );
     assert_eq!(
         counted_alone(&calls),
-        3,
-        "each branch is then counted alone: {calls:#?}"
+        1,
+        "each branch is then counted alone, but for those standing where origin's do: \
+         {calls:#?}"
     );
     assert_eq!(
         at(world, &fixture.checkout, "refs/heads/side/work"),
@@ -537,4 +548,75 @@ fn a_publication_composes_its_message_from_one_reading_of_the_branch_on_each_sid
         "the closing reference is carried: {landed}"
     );
     drop(assert);
+}
+
+#[test]
+fn a_layout_answer_outlives_a_fetch_and_follows_the_global_configuration_file_it_was_read_under() {
+    let fixture = Fixture::local(&local_direct());
+    let world = &fixture.world;
+    let counting = Counting::installed(world);
+    inhabit(world);
+    counting.inhabit();
+    // A global configuration named by `GIT_CONFIG_GLOBAL`, as an embedding harness
+    // points git at one: the file is what a kept answer is held to.
+    let global = world.path("global.gitconfig");
+    let identity = std::fs::read_to_string(world.path(".gitconfig")).expect("the world's config");
+    std::fs::write(&global, &identity).expect("a global configuration");
+    std::env::set_var("GIT_CONFIG_GLOBAL", &global);
+    for warm in ["feature/first", "feature/warm"] {
+        let session = opened(warm);
+        closed(&session);
+    }
+
+    let mut session = None;
+    let calls = started(&counting, || session = Some(opened("feature/kept-layout")));
+    let lender: Vec<&Call> = calls
+        .iter()
+        .filter(|call| call.cwd == fixture.checkout)
+        .collect();
+    assert!(
+        lender
+            .iter()
+            .any(|call| call.args == "fetch origin --prune"),
+        "the open fetched origin into the lender, writing in its git directory: {lender:#?}"
+    );
+    assert!(
+        !lender
+            .iter()
+            .any(|call| call.args == "rev-parse --git-common-dir"
+                || call.args == "remote get-url origin"),
+        "the lender's layout and remote were read before, and its fetch since moved neither: \
+         {lender:#?}"
+    );
+    closed(&session.expect("the session opened"));
+
+    // The global file moves: origin's address is now rewritten through it, and the next
+    // open reads the lender's remote again and cuts its clone at the rewritten one.
+    let origin = fixture.origin.to_string_lossy().into_owned();
+    std::fs::write(
+        &global,
+        format!("{identity}[url \"file://{origin}\"]\n\tinsteadOf = {origin}\n"),
+    )
+    .expect("the global configuration moves");
+    let mut moved = None;
+    let calls = started(&counting, || moved = Some(opened("feature/moved-layout")));
+    let moved = moved.expect("the session opened");
+    assert_eq!(
+        asked(&calls, "remote get-url origin")
+            .iter()
+            .filter(|call| call.cwd == fixture.checkout)
+            .count(),
+        1,
+        "the lender's remote is read again: {calls:#?}"
+    );
+    let clone = clone_of(world, &moved.token);
+    assert_eq!(
+        world
+            .git(&clone, &["config", "--get", "remote.origin.url"])
+            .trim(),
+        format!("file://{origin}"),
+        "the clone is cut at the address git now gives"
+    );
+    closed(&moved);
+    std::env::remove_var("GIT_CONFIG_GLOBAL");
 }

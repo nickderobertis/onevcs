@@ -1022,8 +1022,9 @@ const MIX: &[(&str, usize)] = &[
 ];
 
 /// The git processes the sequence starts on this build: every one of its 365 reads
-/// started one on the commit before the in-process reader.
-const MIX_STARTS: usize = 134;
+/// started one on the commit before the in-process reader, and 134 on 0.69.0, before
+/// the process kept what a repeated immutable or layout read answered.
+const MIX_STARTS: usize = 33;
 
 /// [`MIX`] in a fixed order: one of each shape in turn, largest first, until each
 /// has been asked its count.

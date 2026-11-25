@@ -3233,6 +3233,59 @@ pub fn branches_beside_remote(
     (Ok(local), Ok(tracked))
 }
 
+/// Whether `reference` is a local branch standing exactly where one of `origin`'s
+/// remote-tracking refs does, read in process — where [`unpublished_ahead`]'s count is
+/// zero by definition, since a commit reaches itself.
+///
+/// A clone being closed is asked about its own copy of the base, which nearly always
+/// stands at `origin/<base>`. Only a name git could resolve no other way is answered:
+/// a branch with no pseudo-ref, ref or tag of the same name ahead of it in git's order,
+/// whose commit the repository holds, in an environment that leaves git reading this
+/// repository's own refs. Anything else is git's to count.
+fn standing_on_origin(cwd: &Path, reference: &str) -> bool {
+    if !plainly_a_ref_name(reference) || !kept::environment_admits() || kept::layout(cwd).is_none()
+    {
+        return false;
+    }
+    let Ok(repository) =
+        git2::Repository::open_ext(cwd, git2::RepositoryOpenFlags::NO_SEARCH, [cwd])
+    else {
+        return false;
+    };
+    let shadowed = [
+        reference.to_owned(),
+        format!("refs/{reference}"),
+        format!("refs/tags/{reference}"),
+    ]
+    .iter()
+    .any(|name| repository.find_reference(name).is_ok() || repository.path().join(name).exists());
+    if shadowed {
+        return false;
+    }
+    let Some(tip) = repository
+        .find_reference(&format!("refs/heads/{reference}"))
+        .ok()
+        .and_then(|branch| branch.resolve().ok())
+        .and_then(|branch| branch.target())
+    else {
+        return false;
+    };
+    if !repository.odb().is_ok_and(|objects| objects.exists(tip)) {
+        return false;
+    }
+    repository
+        .references_glob("refs/remotes/origin/*")
+        .is_ok_and(|mut tracking| {
+            tracking.any(|found| {
+                found
+                    .ok()
+                    .and_then(|found| found.resolve().ok())
+                    .and_then(|found| found.target())
+                    == Some(tip)
+            })
+        })
+}
+
 /// Whether any of `references` holds a commit [`unpublished_ahead`] would count: one
 /// count over all of them, which is zero exactly where each one's own count is.
 ///
@@ -3568,6 +3621,9 @@ pub fn unpublished_heads(cwd: &Path) -> Result<BTreeSet<String>> {
 // are revisions git named and git resolves, and every other function in this module
 // spells one the same way.
 pub fn unpublished_ahead(cwd: &Path, reference: &str, carried: &[&str]) -> Result<u64> {
+    if standing_on_origin(cwd, reference) {
+        return Ok(0);
+    }
     let held: Vec<&str> = carried
         .iter()
         .copied()

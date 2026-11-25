@@ -53,8 +53,7 @@ enum Kind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Stamp(Vec<(PathBuf, Option<Meta>)>);
 
-/// One path as it stands: absent, or its size, times and identity, and — for the few
-/// small files whose bytes *name* another location — those bytes too.
+/// One path as it stands: absent, or what about it moves the answer — see [`Watch`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Meta {
     len: u64,
@@ -63,31 +62,54 @@ struct Meta {
     content: Option<Vec<u8>>,
 }
 
-fn meta(path: &Path, with_content: bool) -> Option<Meta> {
+/// How much of one path a stamp holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Watch {
+    /// Which file or directory it is, and nothing else: a `.git` directory decides a
+    /// layout by being that directory, and git adds and renames files in it on every
+    /// fetch without moving any layout answer.
+    Identity,
+    /// Its size, times and identity: a configuration file, an overlay, a store.
+    Change,
+    /// All of that and its bytes, for the few small files whose bytes *name* another
+    /// location — a `.git` file, `commondir`, alternates.
+    Content,
+}
+
+fn meta(path: &Path, watch: Watch) -> Option<Meta> {
     let found = std::fs::symlink_metadata(path).ok()?;
     #[cfg(unix)]
-    let identity = {
+    let (device, inode, changed, changed_nanos) = {
         use std::os::unix::fs::MetadataExt;
         (found.dev(), found.ino(), found.ctime(), found.ctime_nsec())
     };
     #[cfg(not(unix))]
-    let identity = (0, 0, 0, 0);
-    let content = (with_content && found.is_file())
+    let (device, inode, changed, changed_nanos) = (0, 0, 0, 0);
+    if watch == Watch::Identity {
+        return Some(Meta {
+            len: u64::from(found.is_dir()),
+            modified: None,
+            identity: (device, inode, 0, 0),
+            content: None,
+        });
+    }
+    let content = (watch == Watch::Content && found.is_file())
         .then(|| std::fs::read(path).ok())
         .flatten();
     Some(Meta {
         len: found.len(),
         modified: found.modified().ok(),
-        identity,
+        identity: (device, inode, changed, changed_nanos),
         content,
     })
 }
 
 /// Which process environment leaves git reading only the repository and the
 /// configuration files a stamp covers. Every `GIT_*` variable is refused but the ones
-/// that name who is committing, how to prompt or transport, or where a trace file is
-/// written: anything else (`GIT_DIR`, `GIT_CONFIG_*`, `GIT_NAMESPACE`, a trace sent to
-/// standard error) moves where git reads or what it prints.
+/// that name who is committing, how to prompt or transport, where a trace file is
+/// written, or which configuration file stands in for the global or system one — which
+/// the stamp then covers. Anything else (`GIT_DIR`, `GIT_CONFIG_COUNT`, `GIT_NAMESPACE`,
+/// a trace sent to standard error) moves where git reads or what it prints.
 pub(super) fn environment_admits() -> bool {
     std::env::vars_os().all(|(name, value)| {
         let name = name.to_string_lossy();
@@ -106,16 +128,24 @@ pub(super) fn environment_admits() -> bool {
                     | "GIT_OPTIONAL_LOCKS"
                     | "GIT_TERMINAL_PROMPT"
                     | "GIT_ASKPASS"
+                    | "GIT_TRACE2_ENV_VARS"
+                    | "GIT_TRACE2_BRIEF"
                     // Reads one configuration file fewer than a stamp covers.
                     | "GIT_CONFIG_NOSYSTEM"
-                    | "GIT_TRACE2_ENV_VARS"
+                    // Only stops a search upwards, and a stamp is only taken of a
+                    // directory git need not search from.
+                    | "GIT_CEILING_DIRECTORIES"
             );
+        let path = Path::new(&value).is_absolute();
         // A trace git writes to a named file prints nothing to the read's own streams;
         // any other value of one (`1`, `2`, `true`) writes it to standard error.
-        let traced_to_a_file =
-            (name == "GIT_TRACE2" || name == "GIT_TRACE2_EVENT" || name == "GIT_TRACE2_PERF")
-                && Path::new(&value).is_absolute();
-        harmless || traced_to_a_file
+        let traced_to_a_file = (name == "GIT_TRACE"
+            || name.starts_with("GIT_TRACE_")
+            || name.starts_with("GIT_TRACE2"))
+            && (path || matches!(value.to_str(), Some("" | "0" | "false")));
+        let stamped_configuration =
+            matches!(name.as_ref(), "GIT_CONFIG_GLOBAL" | "GIT_CONFIG_SYSTEM") && path;
+        harmless || traced_to_a_file || stamped_configuration
     })
 }
 
@@ -162,10 +192,15 @@ pub(super) fn layout(cwd: &Path) -> Option<(PathBuf, PathBuf, Vec<PathBuf>)> {
 }
 
 /// The configuration files git reads besides the repository's own, in every place it
-/// looks for them. The system file's place is fixed when git is built, so each place a
+/// looks for them — the files `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM` name among
+/// them, beside the places they stand in for, so the set is never narrower than git's. The system file's place is fixed when git is built, so each place a
 /// build puts it is stamped: git's own prefix, `/etc`, and on Windows `ProgramData`.
 fn configuration_beyond_the_repository() -> Vec<PathBuf> {
-    let mut files = Vec::new();
+    let mut files: Vec<PathBuf> = ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"]
+        .into_iter()
+        .filter_map(std::env::var_os)
+        .map(PathBuf::from)
+        .collect();
     for home in ["HOME", "USERPROFILE"] {
         if let Some(home) = std::env::var_os(home) {
             files.push(Path::new(&home).join(".gitconfig"));
@@ -324,7 +359,17 @@ fn stamp(args: &[&str], cwd: &Path, env: &[(String, String)]) -> Option<Stamp> {
         return None;
     }
     let (git_dir, common, decided) = layout(cwd)?;
-    let mut held: Vec<(PathBuf, bool)> = decided.into_iter().map(|path| (path, true)).collect();
+    let mut held: Vec<(PathBuf, Watch)> = decided
+        .into_iter()
+        .map(|path| {
+            let watch = if path.is_dir() {
+                Watch::Identity
+            } else {
+                Watch::Content
+            };
+            (path, watch)
+        })
+        .collect();
     let mut configuration = vec![common.join("config"), git_dir.join("config.worktree")];
     configuration.extend(configuration_beyond_the_repository());
     for file in &configuration {
@@ -335,8 +380,10 @@ fn stamp(args: &[&str], cwd: &Path, env: &[(String, String)]) -> Option<Stamp> {
             }
         }
     }
-    held.extend(configuration.into_iter().map(|file| (file, false)));
+    held.extend(configuration.into_iter().map(|file| (file, Watch::Change)));
     if let Kind::Immutable { holds } = &kind {
+        // A replace ref is looked for afresh at every stamp, loose or packed, rather
+        // than held: `packed-refs` is rewritten whenever a packed branch is deleted.
         // A submodule's configuration in the work tree decides what a listing of
         // changed paths reports about it, and no stamp here covers the work tree.
         if replaced(&common) || cwd.join(".gitmodules").exists() {
@@ -346,25 +393,27 @@ fn stamp(args: &[&str], cwd: &Path, env: &[(String, String)]) -> Option<Stamp> {
             common.join("info/grafts"),
             common.join("shallow"),
             git_dir.join("shallow"),
-            common.join("refs/replace"),
-            common.join("packed-refs"),
         ] {
-            held.push((overlay, false));
+            held.push((overlay, Watch::Change));
         }
-        if let Some(commit) = holds {
-            let mut stores = vec![common.join("objects")];
-            stores.extend(borrowed);
-            for store in held_stores(stores) {
-                held.push((store.join("info/alternates"), true));
-                held.push((store.join("pack"), false));
-                held.push((store.join(&commit[..2]), false));
+        // Every immutable answer is read through the stores the alternates chain
+        // reaches, so it is held to that chain: a store git stops reaching turns its
+        // answer into a refusal. Whether a commit is *held* is also held to each
+        // store's packs and to the commit's own loose-object directory.
+        let mut stores = vec![common.join("objects")];
+        stores.extend(borrowed);
+        for store in held_stores(stores)? {
+            held.push((store.join("info/alternates"), Watch::Content));
+            if let Some(commit) = holds {
+                held.push((store.join("pack"), Watch::Change));
+                held.push((store.join(&commit[..2]), Watch::Change));
             }
         }
     }
     Some(Stamp(
         held.into_iter()
-            .map(|(path, with_content)| {
-                let found = meta(&path, with_content);
+            .map(|(path, watch)| {
+                let found = meta(&path, watch);
                 (path, found)
             })
             .collect(),
@@ -372,10 +421,11 @@ fn stamp(args: &[&str], cwd: &Path, env: &[(String, String)]) -> Option<Stamp> {
 }
 
 /// Every object store a read through `stores` can reach, following alternates as far
-/// as git does.
-fn held_stores(mut stores: Vec<PathBuf>) -> Vec<PathBuf> {
+/// as git does. `None` past [`STORES`], a chain this does not stamp: git stops
+/// following one a few levels deep, and what it then reaches is its own to say.
+fn held_stores(mut stores: Vec<PathBuf>) -> Option<Vec<PathBuf>> {
     let mut at = 0;
-    while at < stores.len() && stores.len() < 8 {
+    while at < stores.len() {
         if let Ok(listed) = std::fs::read_to_string(stores[at].join("info/alternates")) {
             for line in listed.lines().map(str::trim) {
                 if line.is_empty() || line.starts_with('#') {
@@ -392,10 +442,17 @@ fn held_stores(mut stores: Vec<PathBuf>) -> Vec<PathBuf> {
                 }
             }
         }
+        if stores.len() > STORES {
+            return None;
+        }
         at += 1;
     }
-    stores
+    Some(stores)
 }
+
+/// The most object stores one stamp follows: a checkout, the store it borrows and the
+/// lender's own, with room to spare.
+const STORES: usize = 4;
 
 /// Whether any replace ref stands in `common`, loose or packed.
 fn replaced(common: &Path) -> bool {
