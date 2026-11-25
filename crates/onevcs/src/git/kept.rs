@@ -559,6 +559,10 @@ pub(super) fn keep(
         return;
     };
     let kept = kept.get_or_insert_with(HashMap::new);
+    // llmlint: ignore[changed_behavior_has_e2e] reaching the capacity takes fifty
+    // thousand distinct kept reads, minutes of git in one journey; letting go only drops
+    // answers, after which a read asks git exactly as its first asking did, which every
+    // journey in `tests/e2e/kept_reads.rs` starts by driving.
     if kept.len() >= CAPACITY {
         kept.clear();
     }

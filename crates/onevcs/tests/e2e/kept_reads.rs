@@ -1055,3 +1055,34 @@ fn a_lender_part_way_through_a_rebase_or_a_bisect_takes_its_hand_back_from_git()
     let calls = started(&counting, || closed(&session));
     assert!(fetches_from_a_path(&calls).is_empty(), "{calls:#?}");
 }
+
+#[test]
+fn a_trace_written_to_a_file_keeps_answers_and_one_written_to_standard_error_keeps_none() {
+    let fixture = Fixture::local(&local_direct());
+    let world = &fixture.world;
+    let counting = Counting::installed(world);
+    inhabit(world);
+    counting.inhabit();
+    let session = opened("feature/traced");
+    world.commit_file(&session.worktree, "traced.txt", "t\n", "feat: traced work");
+    closed(&session);
+    let branch = "feature/traced";
+
+    // To a file, git prints nothing more on the read's own streams.
+    let trace = world.path("trace2.log");
+    std::env::set_var("GIT_TRACE2", &trace);
+    warmed(world, &counting, branch);
+    assert!(trace.is_file(), "the trace was written");
+    std::env::remove_var("GIT_TRACE2");
+
+    // To standard error, every read's own output carries it, so nothing is kept.
+    std::env::set_var("GIT_TRACE", "1");
+    asked_again(world, &counting, branch, "a trace to standard error");
+    asked_again(
+        world,
+        &counting,
+        branch,
+        "a trace to standard error, read again",
+    );
+    std::env::remove_var("GIT_TRACE");
+}
