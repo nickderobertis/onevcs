@@ -1661,3 +1661,61 @@ fn a_repository_replaced_at_its_path_is_never_answered_from_what_the_one_before_
         "the replacement's layout is git's to answer, and git answered `hooks-b`"
     );
 }
+
+#[test]
+fn a_commit_held_in_a_borrowed_store_until_it_is_pruned_there_is_answered_absent_once_it_is_gone() {
+    let lab = Lab::new();
+    // A repository asked about a commit only the store it borrows holds — the way a
+    // landing read asks a clone about a base its lender fetched — which is the read the
+    // in-process reader leaves to git and the process keeps.
+    let lender = lab.path().join("lender");
+    let borrower = lab.path().join("borrower");
+    for repo in [&lender, &borrower] {
+        lab.git(lab.path(), &["init", "-q", &path_arg(repo)]);
+        lab.git(repo, &["commit", "-q", "--allow-empty", "-m", "its own"]);
+    }
+    let store = path_arg(&lender.join(".git/objects"));
+    let env = [("GIT_ALTERNATE_OBJECT_DIRECTORIES".to_owned(), store)];
+    let tree = lab.git(&lender, &["rev-parse", "HEAD^{tree}"]);
+    let held = |commit: &str| queries(&[format!("cat-file -e {commit}^{{commit}}")]);
+    // Off Unix the process keeps nothing, so a repeat is asked of git too.
+    let kept = if cfg!(unix) { 0 } else { 1 };
+
+    // Loose in the lender, and reached by nothing: kept, then pruned away there.
+    let loose = lab.git(&lender, &["commit-tree", &tree, "-m", "unreached"]);
+    assert_eq!(
+        lab.agree(&borrower, &held(&loose), &env),
+        [1],
+        "asked of git the first time"
+    );
+    assert_eq!(
+        lab.agree(&borrower, &held(&loose), &env),
+        [kept],
+        "kept while it is held"
+    );
+    lab.git(&lender, &["prune", "--expire=now"]);
+    assert_eq!(
+        lab.agree(&borrower, &held(&loose), &env),
+        [1],
+        "pruned: asked of git again, which answers it absent"
+    );
+
+    // Packed in the lender, then its last ref deleted and the pack rewritten without it.
+    let packed = lab.git(&lender, &["commit-tree", &tree, "-m", "packed"]);
+    lab.git(&lender, &["tag", "holding", &packed]);
+    lab.git(&lender, &["repack", "-a", "-d", "-q"]);
+    assert_eq!(lab.agree(&borrower, &held(&packed), &env), [1]);
+    assert_eq!(
+        lab.agree(&borrower, &held(&packed), &env),
+        [kept],
+        "kept while it is held"
+    );
+    lab.git(&lender, &["tag", "-d", "holding"]);
+    lab.git(&lender, &["reflog", "expire", "--expire=now", "--all"]);
+    lab.git(&lender, &["gc", "-q", "--prune=now"]);
+    assert_eq!(
+        lab.agree(&borrower, &held(&packed), &env),
+        [1],
+        "repacked without it: asked of git again, which answers it absent"
+    );
+}
