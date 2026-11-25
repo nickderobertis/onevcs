@@ -139,8 +139,8 @@ fn clone_of(world: &World, token: &SessionToken) -> PathBuf {
 
 /// The git processes an open of an unmoved lender starts on this build: its fetch of
 /// origin, its search of the lender's branches, the clone and its remote, the clone's
-/// own layout, and the worktree. 0.69.0 also started a `fetch` from the lender with the
-/// `git-upload-pack` under it, and asked the lender's `--git-common-dir` again: 12.
+/// own layout, and the worktree — and no fetch from the lender, which already holds
+/// everything the clone would be given.
 const UNMOVED_OPEN: usize = 9;
 
 #[test]
@@ -213,10 +213,8 @@ fn an_open_carries_an_unmoved_lenders_view_of_origin_without_fetching_and_a_move
 }
 
 /// The git processes closing an unmoved continuation starts on this build: the tree's
-/// status, the clone's branches, and the worktree's removal. 0.69.0 also counted what
-/// the clone's base holds beyond origin, where it stands at origin's own commit, and
-/// started the hand-back's `fetch` into the lender, with the `git-upload-pack` under
-/// it, and asked the lender's `--git-common-dir` again: 7.
+/// status, the clone's branches, and the worktree's removal — nothing to count of a base
+/// at origin's commit, and nothing to hand back that the lender does not hold.
 const UNMOVED_CLOSE: usize = 3;
 
 #[test]
@@ -304,7 +302,6 @@ fn landed_state(report: &Value) -> &str {
 
 /// What the second status read below starts on this build: the reads that name the
 /// branch, whose answer moves with it, asked of the lender and of the session's clone.
-/// 0.69.0 started every one of the first read's immutable and layout reads again.
 const REPEATED_STATUS: usize = 8;
 
 #[test]
@@ -507,9 +504,8 @@ fn a_close_counts_its_clones_other_branches_at_once_and_one_by_one_only_where_on
 /// The reads of the branch's history a local-direct publication makes on this build: the
 /// late-merge landing read's own, one before the push it decides on — whether there is
 /// anything to publish, and its subject — and one after the fetch and sync that
-/// precede the landing, since that fetch is a write. Before the in-call memo of those
-/// steps it read it 7 times: once more each for the subject, the trailers and the
-/// closing references, on both sides of the fetch.
+/// precede the landing, since that fetch is a write. The subject, the trailers and the
+/// closing references on each side are composed from that side's one reading.
 const PUBLICATION_HISTORY_READS: usize = 3;
 
 #[test]
@@ -619,4 +615,253 @@ fn a_layout_answer_outlives_a_fetch_and_follows_the_global_configuration_file_it
     );
     closed(&moved);
     std::env::remove_var("GIT_CONFIG_GLOBAL");
+}
+
+/// The immutable reads a status read keeps, among `calls`.
+fn immutable_reads(calls: &[Call]) -> usize {
+    asked(calls, "cat-file -e").len() + asked(calls, "merge-base --is-ancestor").len()
+}
+
+/// A status read of `branch` that asks no immutable read again, and agrees with a fresh
+/// process: the warm state each move below starts from.
+fn warmed(world: &World, counting: &Counting, branch: &str) -> Value {
+    reported(branch);
+    let mut again = None;
+    let calls = started(counting, || again = Some(reported(branch)));
+    assert_eq!(immutable_reads(&calls), 0, "warm: {calls:#?}");
+    let again = again.expect("the warm status read");
+    assert_eq!(
+        again,
+        reported_afresh(world, branch),
+        "warm: as a fresh process answers"
+    );
+    again
+}
+
+/// A read after a move: every kept immutable answer the move could change is asked of
+/// git again, and the report is what a fresh process says.
+fn asked_again(world: &World, counting: &Counting, branch: &str, moved: &str) {
+    let mut report = None;
+    let calls = started(counting, || report = Some(reported(branch)));
+    assert!(
+        immutable_reads(&calls) > 0,
+        "{moved}: the kept immutable answers are asked again: {calls:#?}"
+    );
+    assert_eq!(
+        report.expect("the status read"),
+        reported_afresh(world, branch),
+        "{moved}: the library answers as a fresh process does"
+    );
+}
+
+#[test]
+fn a_graph_overlay_or_a_moved_alternate_retires_every_kept_immutable_answer() {
+    let fixture = Fixture::local(&local_direct());
+    let world = &fixture.world;
+    let counting = Counting::installed(world);
+    inhabit(world);
+    counting.inhabit();
+    let session = opened("feature/overlaid");
+    world.commit_file(
+        &session.worktree,
+        "overlaid.txt",
+        "o\n",
+        "feat: overlaid work",
+    );
+    let clone = clone_of(world, &session.token);
+    closed(&session);
+    let branch = "feature/overlaid";
+    let repositories = [fixture.checkout.join(".git"), clone.join(".git")];
+    let root = world
+        .git(&fixture.checkout, &["rev-list", "--max-parents=0", "main"])
+        .trim()
+        .to_owned();
+    let tree = world
+        .git(&fixture.checkout, &["rev-parse", "main^{tree}"])
+        .trim()
+        .to_owned();
+    let unrelated = |repo: &Path, message: &str| {
+        world
+            .git(repo, &["commit-tree", &tree, "-m", message])
+            .trim()
+            .to_owned()
+    };
+
+    // A replace ref, of two commits nothing reaches.
+    warmed(world, &counting, branch);
+    let mut replaced = Vec::new();
+    for repo in [&fixture.checkout, &clone] {
+        let (one, two) = (unrelated(repo, "one"), unrelated(repo, "two"));
+        world.git(repo, &["replace", &one, &two]);
+        replaced.push((repo, one));
+    }
+    asked_again(world, &counting, branch, "a replace ref");
+    for (repo, one) in replaced {
+        world.git(repo, &["replace", "-d", &one]);
+    }
+
+    // Grafts, and a shallow boundary at the root, each harmless to the answer.
+    for (overlay, contents) in [
+        ("info/grafts", format!("{root}\n")),
+        ("shallow", format!("{root}\n")),
+    ] {
+        warmed(world, &counting, branch);
+        for common in &repositories {
+            std::fs::create_dir_all(common.join("info")).expect("an info directory");
+            std::fs::write(common.join(overlay), &contents).expect("the overlay");
+        }
+        asked_again(world, &counting, branch, overlay);
+        for common in &repositories {
+            std::fs::remove_file(common.join(overlay)).expect("the overlay goes");
+        }
+    }
+
+    // The clone's own link to its lender's store, then the lender's link beyond it.
+    warmed(world, &counting, branch);
+    let link = clone.join(".git/objects/info/alternates");
+    let linked = std::fs::read_to_string(&link).expect("the clone borrows its lender's store");
+    std::fs::write(&link, format!("# relinked\n{linked}")).expect("the link moves");
+    asked_again(world, &counting, branch, "the clone's alternate");
+    warmed(world, &counting, branch);
+    std::fs::write(
+        fixture.checkout.join(".git/objects/info/alternates"),
+        "# beyond\n",
+    )
+    .expect("the lender links on");
+    asked_again(
+        world,
+        &counting,
+        branch,
+        "the lender's alternate, read through the clone's",
+    );
+}
+
+/// Open one session with `prepare` done first, and say how many fetches from a path it
+/// started; the clone must see origin as the lender does either way.
+fn fetched_from_the_lender(
+    fixture: &Fixture,
+    counting: &Counting,
+    branch: &str,
+    prepare: impl FnOnce(),
+) -> usize {
+    prepare();
+    let mut session = None;
+    let calls = started(counting, || session = Some(opened(branch)));
+    let session = session.expect("the session opened");
+    let world = &fixture.world;
+    assert_eq!(
+        at(
+            world,
+            &clone_of(world, &session.token),
+            "refs/remotes/origin/main"
+        ),
+        at(world, &fixture.checkout, "refs/remotes/origin/main"),
+        "{branch}: the clone's view of origin is the lender's"
+    );
+    closed(&session);
+    fetches_from_a_path(&calls).len()
+}
+
+#[test]
+fn a_fetch_from_the_lender_that_could_move_more_than_its_refs_is_git_s_to_make() {
+    let fixture = Fixture::local(&local_direct());
+    let world = &fixture.world;
+    let counting = Counting::installed(world);
+    inhabit(world);
+    counting.inhabit();
+    let lender = &fixture.checkout;
+    assert_eq!(
+        fetched_from_the_lender(&fixture, &counting, "feature/warm", || {}),
+        0
+    );
+
+    // A ref the lender hides from a fetch is one only git knows it would not see.
+    let hidden = fetched_from_the_lender(&fixture, &counting, "feature/hidden", || {
+        world.git(
+            lender,
+            &["config", "transfer.hideRefs", "refs/remotes/origin/hidden"],
+        );
+    });
+    assert_eq!(hidden, 1, "a lender hiding refs");
+    world.git(lender, &["config", "--unset", "transfer.hideRefs"]);
+
+    // A configured prune would delete what the lender no longer has.
+    let gitconfig = world.path(".gitconfig");
+    let before = std::fs::read_to_string(&gitconfig).expect("the world's config");
+    let pruned = fetched_from_the_lender(&fixture, &counting, "feature/pruned", || {
+        std::fs::write(&gitconfig, format!("{before}[fetch]\n\tprune = true\n"))
+            .expect("a configured prune");
+    });
+    assert_eq!(pruned, 1, "a clone that prunes on every fetch");
+    std::fs::write(&gitconfig, &before).expect("the prune goes");
+
+    // A shallow boundary is what a fetch can move with no ref moving.
+    let root = world
+        .git(lender, &["rev-list", "--max-parents=0", "main"])
+        .trim()
+        .to_owned();
+    let shallow = fetched_from_the_lender(&fixture, &counting, "feature/shallow", || {
+        std::fs::write(lender.join(".git/shallow"), format!("{root}\n")).expect("a boundary");
+    });
+    assert_eq!(shallow, 1, "a shallow lender");
+    std::fs::remove_file(lender.join(".git/shallow")).expect("the boundary goes");
+
+    assert_eq!(
+        fetched_from_the_lender(&fixture, &counting, "feature/again", || {}),
+        0
+    );
+}
+
+#[test]
+fn a_hand_back_also_brings_the_tags_into_the_work_and_is_skipped_only_once_the_lender_has_them() {
+    let fixture = Fixture::local(&local_direct());
+    let world = &fixture.world;
+    let counting = Counting::installed(world);
+    inhabit(world);
+    counting.inhabit();
+    let session = opened("feature/tagged");
+    world.commit_file(
+        &session.worktree,
+        "tagged.txt",
+        "t\n",
+        "feat: work worth a tag",
+    );
+    closed(&session);
+
+    // Nothing new on the branch, but a tag on it the lender does not have: a hand-back
+    // without `--no-tags` brings it, so it is fetched.
+    let session = opened("feature/tagged");
+    world.git(&session.worktree, &["tag", "v-tagged"]);
+    let tagged = at(world, &session.worktree, "refs/tags/v-tagged");
+    let calls = started(&counting, || closed(&session));
+    assert_eq!(fetches_from_a_path(&calls).len(), 1, "{calls:#?}");
+    assert_eq!(
+        at(world, &fixture.checkout, "refs/tags/v-tagged"),
+        tagged,
+        "the tag came with the hand-back"
+    );
+
+    // Once the lender has it, there is nothing left to bring.
+    let session = opened("feature/tagged");
+    let calls = started(&counting, || closed(&session));
+    assert!(fetches_from_a_path(&calls).is_empty(), "{calls:#?}");
+}
+
+#[test]
+fn a_base_whose_name_a_tag_shadows_is_counted_by_git_under_the_name_git_gives_it() {
+    let fixture = Fixture::local(&local_direct());
+    let world = &fixture.world;
+    let counting = Counting::installed(world);
+    inhabit(world);
+    counting.inhabit();
+    let session = opened("feature/shadowed");
+    // `main` now names the tag before the branch, in git's order, so git lists the
+    // branch as `heads/main`: a name no branch of that spelling answers in process.
+    world.git(&session.worktree, &["tag", "main", "origin/main"]);
+    let calls = started(&counting, || closed(&session));
+    assert_eq!(
+        asked(&calls, "rev-list --count heads/main --not --remotes=origin").len(),
+        1,
+        "a name git might read as something else is counted by git: {calls:#?}"
+    );
 }

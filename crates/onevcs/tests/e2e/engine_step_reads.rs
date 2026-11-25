@@ -24,9 +24,8 @@ const STEPS: usize = 3;
 
 /// The `git` processes the steps and the close start on this build. On the commit
 /// before the in-process reader they started 11: these library reads already answer
-/// most of what they ask from an in-process snapshot of the repository. 0.69.0 started
-/// 7: the close also counted what the clone's base holds beyond origin, where that base
-/// stands at origin's own commit.
+/// most of what they ask from an in-process snapshot of the repository, and the close
+/// asks git nothing about a base that stands at origin's own commit.
 const GIT_STARTS: usize = 6;
 
 fn state(landed: &Landed) -> String {

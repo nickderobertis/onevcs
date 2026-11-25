@@ -167,37 +167,37 @@ impl Repository {
         })
     }
 
-    fn configured(&self, key: &str) -> bool {
-        self.handle
-            .config()
-            .ok()
-            .and_then(|mut config| config.snapshot().ok())
-            .is_some_and(|config| {
-                config
-                    .entries(Some(key))
-                    .is_ok_and(|mut entries| entries.next().is_some())
-            })
+    /// Whether any of `keys` is set for this repository, as git reads its configuration.
+    /// `None` where the configuration could not be read whole — which is not a key
+    /// left unset, so the fetch is git's.
+    fn sets_any(&self, keys: &[&str]) -> Option<bool> {
+        let config = self.handle.config().ok()?.snapshot().ok()?;
+        for key in keys {
+            let mut entries = config.entries(Some(key)).ok()?;
+            match entries.next() {
+                Some(Ok(_)) => return Some(true),
+                Some(Err(_)) => return None,
+                None => {}
+            }
+        }
+        Some(false)
     }
 
     /// Whether a fetch from this repository is offered every ref it has: a hidden ref
-    /// is one git would not see, and an object format or ref store this cannot read is
-    /// one whose refs it would not read as git does.
+    /// is one git would not see, and a ref store this cannot read is one whose refs it
+    /// would not read as git does.
     fn serves_every_ref(&self) -> bool {
-        ![
+        self.sets_any(&[
             "uploadpack.hiderefs",
             "transfer.hiderefs",
             "extensions.refstorage",
-        ]
-        .into_iter()
-        .any(|key| self.configured(key))
+        ]) == Some(false)
     }
 
     /// Whether a fetch into this repository changes nothing but the refs its refspecs
     /// name: a configured prune deletes refs the source no longer has.
     fn takes_updates_without_pruning(&self) -> bool {
-        !["fetch.prune", "fetch.prunetags", "extensions.refstorage"]
-            .into_iter()
-            .any(|key| self.configured(key))
+        self.sets_any(&["fetch.prune", "fetch.prunetags", "extensions.refstorage"]) == Some(false)
     }
 
     /// Every ref, by full name, at the object it resolves to — a symbolic ref at the

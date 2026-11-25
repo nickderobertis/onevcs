@@ -431,6 +431,11 @@ fn held_stores(mut stores: Vec<PathBuf>) -> Option<Vec<PathBuf>> {
                 if line.is_empty() || line.starts_with('#') {
                     continue;
                 }
+                // git unquotes a quoted line by its own rules; a stamp of the quoted
+                // text would hold the answer to a path git never reads.
+                if line.starts_with('"') {
+                    return None;
+                }
                 let path = Path::new(line);
                 let path = if path.is_absolute() {
                     path.to_path_buf()
@@ -504,6 +509,10 @@ pub(super) fn keep(
     let Some(cwd) = cwd else {
         return;
     };
+    // llmlint: ignore[changed_behavior_has_e2e] a file moving while git runs is a race
+    // with another writer no journey can arrange without holding git mid-read; refusing
+    // to keep is the same comparison every reuse makes, which the journeys in
+    // `tests/e2e/kept_reads.rs` drive by moving each file between two reads.
     if !matches!(output.ended, super::Ended::Code(_))
         || !output.read_failures.is_empty()
         || !settled(args, output.status)

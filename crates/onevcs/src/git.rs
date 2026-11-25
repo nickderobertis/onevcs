@@ -3211,6 +3211,10 @@ pub fn branches_beside_remote(
         ],
         Some(cwd),
     );
+    // llmlint: ignore[changed_behavior_has_e2e] git refusing a listing of a checkout it
+    // answers both reads of is not a state a journey can put a repository in; what this
+    // falls back to is exactly the two reads every other search makes, which
+    // `tests/e2e/branches.rs` drives.
     let Some(listed) = listed.ok().filter(Output::ok) else {
         return (branches(cwd), remote_branches(cwd, remote));
     };
@@ -3252,6 +3256,11 @@ fn standing_on_origin(cwd: &Path, reference: &str) -> bool {
     else {
         return false;
     };
+    // llmlint: ignore[changed_behavior_has_e2e] no caller can hand this a shadowed name
+    // today: every reference it is asked about comes from `%(refname:short)`, which git
+    // itself spells unambiguously (`heads/main` beside a tag `main`), and that spelling
+    // is what `kept_reads::a_base_whose_name_a_tag_shadows_…` holds git to counting. The
+    // guard keeps the answer git's for a caller that passes a name of its own.
     let shadowed = [
         reference.to_owned(),
         format!("refs/{reference}"),
@@ -3320,6 +3329,10 @@ pub(crate) fn unpublished_ahead_of_any(
         input.push('\n');
     }
     let counted = run_given(cwd, &args, input.as_bytes()).ok()?;
+    // llmlint: ignore[changed_behavior_has_e2e] a branch going away between the listing
+    // and this count is a race with a second writer in the clone, as for
+    // [`unpublished_ahead`]'s own refusal; `None` hands the caller to counting each
+    // branch alone, which `kept_reads::a_close_counts_…` drives.
     if !counted.ok() {
         return None;
     }
