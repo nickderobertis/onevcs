@@ -51,7 +51,23 @@ enum Kind {
 
 /// The state of every file one answer depends on, as git would have found them.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct Stamp(Vec<(PathBuf, Option<Meta>)>);
+pub(super) struct Stamp {
+    files: Vec<(PathBuf, Option<Meta>, Option<Meta>)>,
+    /// The variables that say which configuration files git reads, as they stood.
+    locating: Vec<Option<std::ffi::OsString>>,
+}
+
+/// The process variables that decide where git looks for configuration: a reuse under
+/// any other value of one is a reuse of answers read from other files.
+const LOCATING: [&str; 7] = [
+    "GIT_CONFIG_NOSYSTEM",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_SYSTEM",
+    "HOME",
+    "USERPROFILE",
+    "XDG_CONFIG_HOME",
+    "PROGRAMDATA",
+];
 
 /// One path as it stands: absent, or what about it moves the answer — see [`Watch`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,8 +92,25 @@ enum Watch {
     Content,
 }
 
-fn meta(path: &Path, watch: Watch) -> Option<Meta> {
-    let found = std::fs::symlink_metadata(path).ok()?;
+/// `path` as it stands, and — where it is a symbolic link — what it links to, so that a
+/// configuration file kept as a link moves its answers when its target is written.
+fn stamped(path: &Path, watch: Watch) -> (Option<Meta>, Option<Meta>) {
+    let link = meta(path, watch, |at| std::fs::symlink_metadata(at));
+    let followed = link
+        .as_ref()
+        .filter(|_| {
+            std::fs::symlink_metadata(path).is_ok_and(|found| found.file_type().is_symlink())
+        })
+        .and_then(|_| meta(path, watch, |at| std::fs::metadata(at)));
+    (link, followed)
+}
+
+fn meta(
+    path: &Path,
+    watch: Watch,
+    read: impl Fn(&Path) -> std::io::Result<std::fs::Metadata>,
+) -> Option<Meta> {
+    let found = read(path).ok()?;
     #[cfg(unix)]
     let (device, inode, changed, changed_nanos) = {
         use std::os::unix::fs::MetadataExt;
@@ -410,14 +443,16 @@ fn stamp(args: &[&str], cwd: &Path, env: &[(String, String)]) -> Option<Stamp> {
             }
         }
     }
-    Some(Stamp(
-        held.into_iter()
+    Some(Stamp {
+        files: held
+            .into_iter()
             .map(|(path, watch)| {
-                let found = meta(&path, watch);
-                (path, found)
+                let (link, followed) = stamped(&path, watch);
+                (path, link, followed)
             })
             .collect(),
-    ))
+        locating: LOCATING.into_iter().map(std::env::var_os).collect(),
+    })
 }
 
 /// Every object store a read through `stores` can reach, following alternates as far

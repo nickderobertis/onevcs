@@ -19,6 +19,14 @@ use std::path::{Path, PathBuf};
 use super::{Ended, Output};
 
 /// What git answers for a fetch that found every ref up to date.
+///
+/// git would also have rewritten `FETCH_HEAD`, and nothing here does. Nothing reads it
+/// after these fetches: no read in this crate names it but the guidance printed for a
+/// person, whose own `git fetch` writes the one it uses; and a fetch from a path into
+/// a clone or a lender is never what a caller's own `FETCH_HEAD` is about. Writing it
+/// in process would be a second spelling of git's format for every refspec and flag,
+/// kept in step with git's by nothing; `grep -rn FETCH_HEAD crates/onevcs/src` is the
+/// proof that nothing depends on it.
 fn up_to_date() -> Output {
     Output {
         status: 0,

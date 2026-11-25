@@ -865,3 +865,86 @@ fn a_base_whose_name_a_tag_shadows_is_counted_by_git_under_the_name_git_gives_it
         "a name git might read as something else is counted by git: {calls:#?}"
     );
 }
+
+/// Open one session, and say whether it read the lender's remote again and which
+/// address its clone was cut at.
+fn remote_read_and_cut(fixture: &Fixture, counting: &Counting, branch: &str) -> (bool, String) {
+    let world = &fixture.world;
+    let mut session = None;
+    let calls = started(counting, || session = Some(opened(branch)));
+    let session = session.expect("the session opened");
+    let read_again = asked(&calls, "remote get-url origin")
+        .iter()
+        .any(|call| call.cwd == fixture.checkout);
+    let cut = world
+        .git(
+            &clone_of(world, &session.token),
+            &["config", "--get", "remote.origin.url"],
+        )
+        .trim()
+        .to_owned();
+    closed(&session);
+    (read_again, cut)
+}
+
+#[test]
+fn a_layout_answer_follows_a_linked_configurations_target_and_the_variables_that_choose_files() {
+    let fixture = Fixture::local(&local_direct());
+    let world = &fixture.world;
+    let counting = Counting::installed(world);
+    inhabit(world);
+    counting.inhabit();
+    let origin = fixture.origin.to_string_lossy().into_owned();
+    let rewritten = format!("file://{origin}");
+    let identity = std::fs::read_to_string(world.path(".gitconfig")).expect("the world's config");
+
+    // A global configuration kept as a link, as dotfiles often are.
+    let target = world.path("dotfiles/gitconfig");
+    std::fs::create_dir_all(world.path("dotfiles")).expect("a dotfiles directory");
+    std::fs::write(&target, &identity).expect("the linked configuration");
+    let link = world.path("linked.gitconfig");
+    std::os::unix::fs::symlink(&target, &link).expect("a link to it");
+    std::env::set_var("GIT_CONFIG_GLOBAL", &link);
+    for warm in ["feature/first", "feature/warm"] {
+        remote_read_and_cut(&fixture, &counting, warm);
+    }
+    assert_eq!(
+        remote_read_and_cut(&fixture, &counting, "feature/kept"),
+        (false, origin.clone()),
+        "nothing moved, so the lender's remote is not read again"
+    );
+    std::fs::write(
+        &target,
+        format!("{identity}[url \"{rewritten}\"]\n\tinsteadOf = {origin}\n"),
+    )
+    .expect("the link's target is written");
+    assert_eq!(
+        remote_read_and_cut(&fixture, &counting, "feature/through-the-link"),
+        (true, rewritten.clone()),
+        "the target moved through the link"
+    );
+    std::env::remove_var("GIT_CONFIG_GLOBAL");
+
+    // A system configuration, then the variable that tells git to read none.
+    let system = world.path("system.gitconfig");
+    std::fs::write(
+        &system,
+        format!("[url \"{rewritten}\"]\n\tinsteadOf = {origin}\n"),
+    )
+    .expect("a system configuration");
+    std::env::set_var("GIT_CONFIG_SYSTEM", &system);
+    remote_read_and_cut(&fixture, &counting, "feature/system-warm");
+    assert_eq!(
+        remote_read_and_cut(&fixture, &counting, "feature/system"),
+        (false, rewritten.clone()),
+        "the system file's address, kept"
+    );
+    std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
+    assert_eq!(
+        remote_read_and_cut(&fixture, &counting, "feature/no-system"),
+        (true, origin.clone()),
+        "with no system file read, the address is the repository's own"
+    );
+    std::env::remove_var("GIT_CONFIG_NOSYSTEM");
+    std::env::remove_var("GIT_CONFIG_SYSTEM");
+}
