@@ -1576,6 +1576,37 @@ fn a_fetch_git_would_end_with_a_commit_graph_or_maintenance_is_git_s_to_make() {
         .collect();
     assert_eq!(carried(&counting, "feature/packed", || {}), 1, "51 packs");
     assert!(gc_asked(), "git's fetch asked for a gc over 51 packs");
+
+    // A pack limit configured off, or above the packs there are: no gc is due, and
+    // git's own fetch asks for none either.
+    for limit in ["0", "60"] {
+        world.git(&clone, &["config", "gc.autoPackLimit", limit]);
+        assert_eq!(
+            carried(&counting, &format!("feature/limit-{limit}"), || {}),
+            0,
+            "gc.autoPackLimit {limit} over 51 packs"
+        );
+        let git = world.git_raw_env(&clone, &[], &carry);
+        assert!(git.status.success(), "{git:?}");
+        assert!(
+            !gc_asked(),
+            "git asks for no gc under gc.autoPackLimit {limit}"
+        );
+    }
+
+    // …and one below them, over the few packs left.
+    let mut copies = copies.into_iter();
+    for copy in copies.by_ref().take(2 * (51 - existing - 3)) {
+        std::fs::remove_file(copy).expect("a copy goes");
+    }
+    world.git(&clone, &["config", "gc.autoPackLimit", "2"]);
+    assert_eq!(
+        carried(&counting, "feature/limit-2", || {}),
+        1,
+        "gc.autoPackLimit 2"
+    );
+    assert!(gc_asked(), "git's fetch asked for a gc over 3 packs");
+    world.git(&clone, &["config", "--unset", "gc.autoPackLimit"]);
     for copy in copies {
         std::fs::remove_file(copy).expect("a copy goes");
     }
