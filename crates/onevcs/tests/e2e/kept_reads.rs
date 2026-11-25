@@ -1071,6 +1071,58 @@ fn a_lender_part_way_through_a_rebase_or_a_bisect_takes_its_hand_back_from_git()
     world.git(lender, &["rebase", "--abort"]);
     world.git(lender, &["checkout", "-q", "main"]);
 
+    // A linked worktree of the lender whose `HEAD` cannot be read, and then a lender
+    // whose linked worktrees cannot be listed at all: what either has checked out is
+    // unknown here, so the hand-back is git's, and ends as git's ends.
+    let linked = world.path("lender-linked");
+    world.git(
+        lender,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "lender/linked",
+            &linked.to_string_lossy(),
+        ],
+    );
+    let worktrees = lender.join(".git/worktrees");
+    let administrative = std::fs::read_dir(&worktrees)
+        .expect("the lender's linked worktrees are listed")
+        .flatten()
+        .map(|entry| entry.path())
+        .next()
+        .expect("the linked worktree's administrative directory");
+    let unreadable = |path: &Path, mode: u32| {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+            .expect("the mode is set");
+    };
+    for (what, path, closed_mode, open_mode) in [
+        (
+            "a linked worktree's HEAD",
+            administrative.join("HEAD"),
+            0o000,
+            0o644,
+        ),
+        ("the linked worktrees", worktrees.clone(), 0o300, 0o755),
+    ] {
+        let session = opened("feature/settled");
+        unreadable(&path, closed_mode);
+        let calls = started(&counting, || closed(&session));
+        unreadable(&path, open_mode);
+        assert_eq!(
+            fetches_from_a_path(&calls).len(),
+            1,
+            "{what} unreadable: {calls:#?}"
+        );
+    }
+    world.git(
+        lender,
+        &["worktree", "remove", "--force", &linked.to_string_lossy()],
+    );
+    world.git(lender, &["branch", "-D", "lender/linked"]);
+
     // And settled again, nothing is fetched.
     let session = opened("feature/settled");
     let calls = started(&counting, || closed(&session));

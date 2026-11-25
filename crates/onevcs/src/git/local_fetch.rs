@@ -158,7 +158,7 @@ pub(super) fn answer(
                 .find(|(held, _, _)| *held == destination)
                 .map(|(_, at, _)| at)
                 != Some(commit)
-                || into.checked_out(&destination)
+                || into.checked_out(&destination)?
             {
                 return None;
             }
@@ -422,22 +422,35 @@ impl Repository {
     }
 
     /// Whether git would refuse to fetch into `reference` because a worktree of this
-    /// repository has it checked out, or is part way through rebasing or bisecting.
-    fn checked_out(&self, reference: &str) -> bool {
+    /// repository has it checked out, or is part way through rebasing or bisecting;
+    /// `None` where a worktree's administrative directory or its `HEAD` cannot be read,
+    /// since what it has checked out is then git's to find.
+    fn checked_out(&self, reference: &str) -> Option<bool> {
         if !reference.starts_with("refs/heads/") {
-            return false;
+            return Some(false);
         }
         let mut administrative = vec![self.git_dir.clone(), self.common.clone()];
-        if let Ok(entries) = std::fs::read_dir(self.common.join("worktrees")) {
-            administrative.extend(entries.flatten().map(|entry| entry.path()));
+        match std::fs::read_dir(self.common.join("worktrees")) {
+            Ok(entries) => {
+                for entry in entries {
+                    administrative.push(entry.ok()?.path());
+                }
+            }
+            // No linked worktree has ever been added.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return None,
         }
-        administrative.iter().any(|dir| {
-            std::fs::read_to_string(dir.join("HEAD"))
-                .is_ok_and(|head| head.trim_end() == format!("ref: {reference}"))
+        for dir in &administrative {
+            let head = std::fs::read_to_string(dir.join("HEAD")).ok()?;
+            if head.trim_end() == format!("ref: {reference}")
                 || ["rebase-merge", "rebase-apply", "BISECT_LOG"]
                     .into_iter()
                     .any(|state| dir.join(state).exists())
-        })
+            {
+                return Some(true);
+            }
+        }
+        Some(false)
     }
 }
 
