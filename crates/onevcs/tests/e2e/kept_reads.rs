@@ -948,3 +948,110 @@ fn a_layout_answer_follows_a_linked_configurations_target_and_the_variables_that
     std::env::remove_var("GIT_CONFIG_NOSYSTEM");
     std::env::remove_var("GIT_CONFIG_SYSTEM");
 }
+
+#[test]
+fn configuration_that_reshapes_an_immutable_read_and_a_submodule_listing_are_never_kept() {
+    let fixture = Fixture::local(&local_direct());
+    let world = &fixture.world;
+    let counting = Counting::installed(world);
+    inhabit(world);
+    counting.inhabit();
+    let session = opened("feature/reshaped");
+    world.commit_file(
+        &session.worktree,
+        "reshaped.txt",
+        "r\n",
+        "feat: reshaped work",
+    );
+    let clone = clone_of(world, &session.token);
+    closed(&session);
+    let branch = "feature/reshaped";
+    let included = world.path("included.gitconfig");
+    std::fs::write(&included, "").expect("an empty included file");
+    let included = included.to_string_lossy().into_owned();
+    // Each a harmless value of a key that could reshape what an immutable read prints,
+    // or name a file no stamp covers.
+    for (key, value) in [
+        ("include.path", included.as_str()),
+        ("log.showSignature", "false"),
+        ("i18n.logOutputEncoding", "UTF-8"),
+        ("diff.relative", "false"),
+        ("core.useReplaceRefs", "true"),
+        ("submodule.recurse", "false"),
+    ] {
+        warmed(world, &counting, branch);
+        for repo in [&fixture.checkout, &clone] {
+            world.git(repo, &["config", key, value]);
+        }
+        asked_again(world, &counting, branch, key);
+        asked_again(world, &counting, branch, &format!("{key}, read again"));
+        for repo in [&fixture.checkout, &clone] {
+            world.git(repo, &["config", "--unset", key]);
+        }
+    }
+    // A submodule's own configuration lives in the work tree, which no stamp covers.
+    warmed(world, &counting, branch);
+    for repo in [&fixture.checkout, &clone] {
+        std::fs::write(repo.join(".gitmodules"), "").expect("a .gitmodules");
+    }
+    asked_again(world, &counting, branch, ".gitmodules");
+    asked_again(world, &counting, branch, ".gitmodules, read again");
+}
+
+#[test]
+fn a_lender_part_way_through_a_rebase_or_a_bisect_takes_its_hand_back_from_git() {
+    let fixture = Fixture::local(&local_direct());
+    let world = &fixture.world;
+    let counting = Counting::installed(world);
+    inhabit(world);
+    counting.inhabit();
+    let lender = &fixture.checkout;
+    let session = opened("feature/settled");
+    world.commit_file(
+        &session.worktree,
+        "settled.txt",
+        "s\n",
+        "feat: settled work",
+    );
+    closed(&session);
+
+    // A bisect under way in the lender.
+    let session = opened("feature/settled");
+    world.git(lender, &["bisect", "start"]);
+    let calls = started(&counting, || closed(&session));
+    assert_eq!(
+        fetches_from_a_path(&calls).len(),
+        1,
+        "a bisect under way: {calls:#?}"
+    );
+    world.git(lender, &["bisect", "reset"]);
+
+    // A rebase stopped part way in the lender, on a branch of its own.
+    let session = opened("feature/settled");
+    world.git(lender, &["checkout", "-q", "-b", "lender/rebasing", "main"]);
+    world.commit_file(lender, "one.txt", "1\n", "feat: one");
+    world.commit_file(lender, "two.txt", "2\n", "feat: two");
+    let stopped = world.git_raw_env(
+        lender,
+        &[("GIT_SEQUENCE_EDITOR", "sed -i -e 's/^pick/edit/'")],
+        &["rebase", "-i", "HEAD~1"],
+    );
+    assert!(stopped.status.success(), "{stopped:?}");
+    assert!(
+        lender.join(".git/rebase-merge").is_dir(),
+        "the rebase stopped part way"
+    );
+    let calls = started(&counting, || closed(&session));
+    assert_eq!(
+        fetches_from_a_path(&calls).len(),
+        1,
+        "a rebase under way: {calls:#?}"
+    );
+    world.git(lender, &["rebase", "--abort"]);
+    world.git(lender, &["checkout", "-q", "main"]);
+
+    // And settled again, nothing is fetched.
+    let session = opened("feature/settled");
+    let calls = started(&counting, || closed(&session));
+    assert!(fetches_from_a_path(&calls).is_empty(), "{calls:#?}");
+}

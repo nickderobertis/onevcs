@@ -162,6 +162,11 @@ impl Repository {
             git2::Repository::open_ext(path, git2::RepositoryOpenFlags::NO_SEARCH, [path]).ok()?;
         // A shallow boundary is what a fetch can move with no ref moving; a ref store
         // other than files is one libgit2 may not read as git does.
+        // llmlint: ignore[changed_behavior_has_e2e] the reftable half: no journey can cut
+        // a reftable repository with the git this suite runs on (2.43 predates it), and
+        // the refusal is by the same `extensions.refstorage` key `sets_any` reads, whose
+        // refusal `kept_reads::a_fetch_from_the_lender_that_could_move_…` drives for
+        // `transfer.hideRefs`; the shallow half is driven there too.
         if git_dir.join("shallow").exists()
             || common.join("shallow").exists()
             || common.join("reftable").exists()
