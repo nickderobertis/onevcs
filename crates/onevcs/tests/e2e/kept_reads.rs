@@ -1605,3 +1605,192 @@ fn a_fetch_git_would_end_with_a_commit_graph_or_maintenance_is_git_s_to_make() {
         "off, nothing due"
     );
 }
+
+/// Open one session into the pool's warm slot, then run the carry the open would have
+/// run with real git, and hold the two to one outcome; say how many fetches from a path
+/// the open started.
+fn carried_as_git(world: &World, counting: &Counting, clone: &Path, branch: &str) -> usize {
+    let mut outcome = None;
+    let calls = started(counting, || {
+        outcome = Some(Git.open_session(request(branch)));
+    });
+    let outcome = outcome.expect("the open answered");
+    let lender = recorded_lender(world);
+    let git = world.git_raw_env(
+        clone,
+        &[],
+        &[
+            "fetch",
+            "--no-tags",
+            &lender,
+            "+refs/remotes/origin/*:refs/remotes/origin/*",
+        ],
+    );
+    assert_eq!(
+        outcome.is_ok(),
+        git.status.success(),
+        "{branch}: the open's outcome is git's carry's: {git:?}"
+    );
+    if let Ok(session) = outcome {
+        closed(&session);
+    }
+    fetches_from_a_path(&calls).len()
+}
+
+/// The lender every session of this world borrows from.
+fn recorded_lender(world: &World) -> String {
+    world.path("project").to_string_lossy().into_owned()
+}
+
+#[test]
+fn configuration_or_a_store_this_cannot_read_as_git_does_leaves_the_fetch_to_git() {
+    let fixture = crate::pool::pooled("version: 1\ndefault: {pool: 1}\n");
+    let world = &fixture.world;
+    assert_eq!(PathBuf::from(recorded_lender(world)), fixture.checkout);
+    let counting = Counting::installed(world);
+    inhabit(world);
+    counting.inhabit();
+    let first = opened("feature/first");
+    let clone = clone_of(world, &first.token);
+    closed(&first);
+    assert_eq!(carried_as_git(world, &counting, &clone, "feature/warm"), 0);
+
+    // Each a key this reads as git does or not at all: one that has asked a fetch for a
+    // commit graph, and values git would not read as the boolean or the int it wants.
+    for (n, (key, value)) in [
+        ("feature.experimental", "true"),
+        ("gc.auto", "lots"),
+        ("gc.autoPackLimit", "99999999999"),
+        ("maintenance.auto", "sometimes"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        world.git(&clone, &["config", key, value]);
+        assert_eq!(
+            carried_as_git(world, &counting, &clone, &format!("feature/key-{n}")),
+            1,
+            "{key} = {value}"
+        );
+        world.git(&clone, &["config", "--unset", key]);
+    }
+
+    // A fan-out directory that is not one: git cannot count it, and neither does this.
+    let fan_out = clone.join(".git/objects/17");
+    let aside = clone.join(".git/objects/17-aside");
+    let moved = fan_out.exists();
+    if moved {
+        std::fs::rename(&fan_out, &aside).expect("the directory set aside");
+    }
+    std::fs::write(&fan_out, "not a directory\n").expect("a file where 17 was");
+    assert_eq!(
+        carried_as_git(world, &counting, &clone, "feature/unlisted"),
+        1,
+        "an unreadable fan-out directory"
+    );
+    std::fs::remove_file(&fan_out).expect("the file goes");
+    if moved {
+        std::fs::rename(&aside, &fan_out).expect("the directory comes back");
+    }
+    assert_eq!(carried_as_git(world, &counting, &clone, "feature/again"), 0);
+}
+
+/// Every file under `repo`'s object store, by path.
+fn store_files(repo: &Path) -> Vec<PathBuf> {
+    fn walk(directory: &Path, into: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(directory).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, into);
+            } else {
+                into.push(path);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(&repo.join(".git/objects"), &mut files);
+    files.sort();
+    files
+}
+
+/// The major and minor version of the git on this host, as it names itself.
+fn host_git(world: &World) -> (u32, u32) {
+    let named = world.git(&world.path(""), &["--version"]);
+    let mut parts = named
+        .trim()
+        .strip_prefix("git version ")
+        .expect("git names its version")
+        .split('.');
+    let mut next = || {
+        parts
+            .next()
+            .and_then(|part| part.parse().ok())
+            .expect("a version number")
+    };
+    (next(), next())
+}
+
+#[test]
+fn a_fetch_is_answered_here_only_on_a_git_whose_unconfigured_maintenance_writes_nothing() {
+    let fixture = crate::pool::pooled("version: 1\ndefault: {pool: 1}\n");
+    let world = &fixture.world;
+    let counting = Counting::installed(world);
+    inhabit(world);
+    counting.inhabit();
+    let first = opened("feature/first");
+    let clone = clone_of(world, &first.token);
+    closed(&first);
+
+    // Maintenance on and nothing configured for it, over a store with more loose objects
+    // and ungraphed commits than any task of the geometric strategy waits for — none of
+    // them in the fan-out directory `gc --auto` counts, so no gc is due.
+    world.git(&clone, &["config", "maintenance.auto", "true"]);
+    ungraphed(&clone);
+    let store = git2::Repository::open(&clone).expect("the clone opens");
+    let mut written = 0;
+    for n in 0.. {
+        if written == 150 {
+            break;
+        }
+        let content = format!("unpacked {n}\n");
+        let id = git2::Oid::hash_object(git2::ObjectType::Blob, content.as_bytes())
+            .expect("an id")
+            .to_string();
+        if !id.starts_with("17") {
+            store.blob(content.as_bytes()).expect("written");
+            written += 1;
+        }
+    }
+    let mut session = None;
+    let calls = started(&counting, || session = Some(opened("feature/geometric")));
+    closed(&session.expect("the session opened"));
+    let answered_here = fetches_from_a_path(&calls).is_empty();
+
+    // What this host's git does with the same carry, watched for any write to the store.
+    let before = store_files(&clone);
+    let git = world.git_raw_env(
+        &clone,
+        &[],
+        &[
+            "fetch",
+            "--no-tags",
+            &recorded_lender(world),
+            "+refs/remotes/origin/*:refs/remotes/origin/*",
+        ],
+    );
+    assert!(git.status.success(), "{git:?}");
+    let git_wrote = store_files(&clone) != before;
+    assert!(
+        !(git_wrote && answered_here),
+        "git's fetch wrote to the store, so the carry was git's to make: {calls:#?}"
+    );
+    // Through 2.53 that maintenance is `gc --auto`, which is not due, so this host's git
+    // writes nothing and the carry is answered here; from 2.54 it is the geometric
+    // strategy's, and every carry is git's.
+    let gc_alone = host_git(world) <= (2, 53);
+    assert_eq!(answered_here, gc_alone, "{calls:#?}");
+    assert!(
+        !gc_alone || !git_wrote,
+        "this git's maintenance wrote nothing"
+    );
+}

@@ -218,7 +218,9 @@ enum Maintenance {
 
 /// The newest git whose `maintenance run --auto` runs nothing but `gc --auto` where no
 /// `maintenance.*` key says otherwise: 2.54 made the geometric strategy the default, whose
-/// commit-graph, repack and loose-object tasks each judge a threshold of their own.
+/// commit-graph, repack and loose-object tasks each judge a threshold of their own. Held
+/// to the host's git by `kept_reads::a_fetch_is_answered_here_only_on_a_git_whose_…`,
+/// which watches that git's own fetch for a write past every geometric threshold.
 const LAST_GC_ALONE: (u32, u32) = (2, 53);
 
 /// Whether this host's git is one whose unconfigured maintenance is `gc --auto` alone,
@@ -257,6 +259,10 @@ fn entries(directory: &Path, counted: impl Fn(&str) -> bool) -> Option<usize> {
         Err(_) => return None,
     };
     let mut count = 0;
+    // llmlint: ignore[changed_behavior_has_e2e] an entry failing part way through a
+    // listing that opened is an I/O fault no journey can arrange on a local filesystem;
+    // it answers `None` exactly as a listing that would not open does, which
+    // `kept_reads::configuration_or_a_store_this_cannot_read_as_git_does_…` drives.
     for entry in listing {
         if counted(&entry.ok()?.file_name().to_string_lossy()) {
             count += 1;
