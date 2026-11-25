@@ -638,6 +638,14 @@ fn warmed(world: &World, counting: &Counting, branch: &str) -> Value {
     again
 }
 
+/// `pack` the replace refs standing, then hold the next two reads to asking again: the
+/// first would ask git anyway, and the second is the one a kept answer would serve.
+fn warmed_past(world: &World, counting: &Counting, branch: &str, moved: &str, pack: impl FnOnce()) {
+    pack();
+    asked_again(world, counting, branch, moved);
+    asked_again(world, counting, branch, &format!("{moved}, read again"));
+}
+
 /// A read after a move: every kept immutable answer the move could change is asked of
 /// git again, and the report is what a fresh process says.
 fn asked_again(world: &World, counting: &Counting, branch: &str, moved: &str) {
@@ -696,6 +704,19 @@ fn a_graph_overlay_or_a_moved_alternate_retires_every_kept_immutable_answer() {
         replaced.push((repo, one));
     }
     asked_again(world, &counting, branch, "a replace ref");
+    // The same replace refs, packed: a replace ref only `packed-refs` names.
+    warmed_past(world, &counting, branch, "packing the replace refs", || {
+        for repo in [&fixture.checkout, &clone] {
+            world.git(repo, &["pack-refs", "--all"]);
+            assert!(
+                !repo
+                    .join(".git/refs/replace")
+                    .read_dir()
+                    .is_ok_and(|mut entries| entries.next().is_some()),
+                "the replace refs are packed, not loose"
+            );
+        }
+    });
     for (repo, one) in replaced {
         world.git(repo, &["replace", "-d", &one]);
     }
@@ -1085,4 +1106,50 @@ fn a_trace_written_to_a_file_keeps_answers_and_one_written_to_standard_error_kee
         "a trace to standard error, read again",
     );
     std::env::remove_var("GIT_TRACE");
+}
+
+#[test]
+fn a_layout_answer_follows_a_checkout_whose_git_directory_moved_under_the_same_path() {
+    let fixture = Fixture::local(&local_direct());
+    let world = &fixture.world;
+    let counting = Counting::installed(world);
+    inhabit(world);
+    counting.inhabit();
+    let lender = &fixture.checkout;
+    let common_dir_asked = |calls: &[Call]| {
+        calls
+            .iter()
+            .any(|call| call.cwd == *lender && call.args == "rev-parse --git-common-dir")
+    };
+    for warm in ["feature/first", "feature/warm"] {
+        let session = opened(warm);
+        closed(&session);
+    }
+    let mut kept = None;
+    let calls = started(&counting, || kept = Some(opened("feature/kept-layout")));
+    assert!(!common_dir_asked(&calls), "kept: {calls:#?}");
+    closed(&kept.expect("the session opened"));
+
+    // The lender's git directory moves out of its work tree, and `.git` becomes the
+    // file naming it — as `git init --separate-git-dir` leaves one. The path is the
+    // same; the directory every lock and fetch is keyed by is not.
+    let moved = world.path("moved.git");
+    std::fs::rename(lender.join(".git"), &moved).expect("the git directory moves");
+    std::fs::write(
+        lender.join(".git"),
+        format!("gitdir: {}\n", moved.display()),
+    )
+    .expect("the checkout names it");
+    let _ = std::fs::remove_file(moved.join("onevcs-fetch.lock"));
+    let mut after = None;
+    let calls = started(&counting, || after = Some(opened("feature/moved-git-dir")));
+    assert!(
+        common_dir_asked(&calls),
+        "the moved layout is asked again: {calls:#?}"
+    );
+    assert!(
+        moved.join("onevcs-fetch.lock").is_file(),
+        "the open's fetch took its turn in the directory git now names"
+    );
+    closed(&after.expect("the session opened"));
 }
