@@ -4,29 +4,23 @@
 //! Opening a session copies the lender's view of origin into the clone it cuts, and
 //! handing a branch back copies it into the checkout it came from — each a `git fetch`
 //! from a path, which starts git and then `git-upload-pack` and more beneath it. Most of
-//! them find every ref already where the source has it. Git then writes no ref and
-//! prints nothing, so where the refs of both repositories say so, the fetch is answered
-//! as git would have answered it: success, no output.
+//! them find every ref already where the source has it. Git then moves no ref, prints
+//! nothing, and writes `FETCH_HEAD` naming what it fetched; so where the refs of both
+//! repositories say so, the fetch is answered as git would have answered it — success,
+//! no output — and `FETCH_HEAD` is written as git writes it.
 //!
 //! Only a path is judged here, never a named remote: `origin` is a network remote in
 //! production, whose state can only be learned by asking it, so every fetch from a
 //! remote by name still runs. And only the fetches whose whole effect is the refs they
-//! name — anything that could also prune, follow a tag, or deepen a history, and any
-//! repository whose refs this cannot read the way git would, is left to git.
+//! name and that one file — anything that could also prune, follow a tag, deepen a
+//! history, or write `FETCH_HEAD` some other way, and any repository whose refs this
+//! cannot read the way git would, is left to git.
 
 use std::path::{Path, PathBuf};
 
 use super::{Ended, Output};
 
 /// What git answers for a fetch that found every ref up to date.
-///
-/// git would also have rewritten `FETCH_HEAD`, and nothing here does. Nothing reads it
-/// after these fetches: no read in this crate names it but the guidance printed for a
-/// person, whose own `git fetch` writes the one it uses; and a fetch from a path into
-/// a clone or a lender is never what a caller's own `FETCH_HEAD` is about. Writing it
-/// in process would be a second spelling of git's format for every refspec and flag,
-/// kept in step with git's by nothing; `grep -rn FETCH_HEAD crates/onevcs/src` is the
-/// proof that nothing depends on it.
 fn up_to_date() -> Output {
     Output {
         status: 0,
@@ -35,6 +29,37 @@ fn up_to_date() -> Output {
         stderr: String::new(),
         read_failures: Vec::new(),
     }
+}
+
+/// The remote as `FETCH_HEAD` names it: git drops trailing slashes from the address it
+/// was handed, and then a trailing `.git`.
+fn named_remote(source: &str) -> &str {
+    let trimmed = source.trim_end_matches('/');
+    trimmed.strip_suffix(".git").unwrap_or(trimmed)
+}
+
+/// How `FETCH_HEAD` describes one fetched ref, by the kind of ref git read it as.
+fn described(name: &str) -> String {
+    if let Some(branch) = name.strip_prefix("refs/heads/") {
+        format!("branch '{branch}'")
+    } else if let Some(tag) = name.strip_prefix("refs/tags/") {
+        format!("tag '{tag}'")
+    } else if let Some(tracking) = name.strip_prefix("refs/remotes/") {
+        format!("remote-tracking branch '{tracking}'")
+    } else {
+        format!("'{name}'")
+    }
+}
+
+/// `FETCH_HEAD` for these fetched refs, each `<object>\t\t<description> of <remote>`:
+/// every ref a refspec on the command line names is one git marks for merge, which is
+/// an empty field.
+fn fetch_head(fetched: &[(&str, git2::Oid)], source: &str) -> String {
+    let remote = named_remote(source);
+    fetched
+        .iter()
+        .map(|(name, object)| format!("{object}\t\t{} of {remote}\n", described(name)))
+        .collect()
 }
 
 /// One `src:dst` mapping of a fetch's refspec, `+` dropped: an update that is no update
@@ -107,23 +132,28 @@ pub(super) fn answer(
     }
     let advertised = from.refs()?;
     let held = into.refs()?;
-    let mut named = 0;
+    // What git fetched, in the order it writes it down: refspec by refspec, and within
+    // a glob in the order the source advertises, which is by name. A glob passes over a
+    // symbolic ref, which git does not expand one to; one named outright is fetched.
+    let mut fetched: Vec<(&str, git2::Oid)> = Vec::new();
     for mapping in &mappings {
         let mut matched = false;
-        for (name, commit) in &advertised {
+        for (name, commit, symbolic) in &advertised {
             let Some(destination) = mapping.mapped(name) else {
                 continue;
             };
             matched = true;
-            named += 1;
             if held
                 .iter()
-                .find(|(held, _)| *held == destination)
-                .map(|(_, at)| at)
+                .find(|(held, _, _)| *held == destination)
+                .map(|(_, at, _)| at)
                 != Some(commit)
                 || into.checked_out(&destination)
             {
                 return None;
+            }
+            if !(*symbolic && mapping.source.contains('*')) {
+                fetched.push((name, *commit));
             }
         }
         // A ref the source does not have is git's refusal to give, and a glob that
@@ -135,16 +165,33 @@ pub(super) fn answer(
     // Without `--no-tags`, git also brings every tag pointing into what it fetched.
     // Up to date means every tag the source has is already here, at the same object.
     if !no_tags {
-        for (name, object) in advertised
+        for (name, object, _) in advertised
             .iter()
-            .filter(|(name, _)| name.starts_with("refs/tags/"))
+            .filter(|(name, _, _)| name.starts_with("refs/tags/"))
         {
-            if held.iter().find(|(held, _)| held == name).map(|(_, at)| at) != Some(object) {
+            if held
+                .iter()
+                .find(|(held, _, _)| held == name)
+                .map(|(_, at, _)| at)
+                != Some(object)
+            {
                 return None;
             }
         }
     }
-    (named > 0).then(up_to_date)
+    if fetched.is_empty() {
+        return None;
+    }
+    // Written where git writes it, the destination's own git directory, and only as
+    // git writes it: where nothing is configured to decide otherwise. A file that could
+    // not be written is git's to write, or to refuse over.
+    let source = source.to_str()?;
+    std::fs::write(
+        into.git_dir.join("FETCH_HEAD"),
+        fetch_head(&fetched, source),
+    )
+    .ok()?;
+    Some(up_to_date())
 }
 
 /// A repository opened only to read its refs and configuration, the way git reads
@@ -208,21 +255,31 @@ impl Repository {
     }
 
     /// Whether a fetch into this repository changes nothing but the refs its refspecs
-    /// name: a configured prune deletes refs the source no longer has.
+    /// name and `FETCH_HEAD`, written as an unconfigured git writes it: a configured
+    /// prune deletes refs the source no longer has, and `fetch.writeFetchHead` decides
+    /// whether that file is written at all.
     fn takes_updates_without_pruning(&self) -> bool {
-        self.sets_any(&["fetch.prune", "fetch.prunetags", "extensions.refstorage"]) == Some(false)
+        self.sets_any(&[
+            "fetch.prune",
+            "fetch.prunetags",
+            "fetch.writefetchhead",
+            "extensions.refstorage",
+        ]) == Some(false)
     }
 
-    /// Every ref, by full name, at the object it resolves to — a symbolic ref at the
-    /// one its target holds, as a fetch advertises it.
-    fn refs(&self) -> Option<Vec<(String, git2::Oid)>> {
+    /// Every ref, by full name and in name order, at the object it resolves to — a
+    /// symbolic ref at the one its target holds, as a fetch advertises it — and whether
+    /// it is symbolic.
+    fn refs(&self) -> Option<Vec<(String, git2::Oid, bool)>> {
         let mut refs = Vec::new();
         for reference in self.handle.references().ok()? {
             let reference = reference.ok()?;
             let name = reference.name().ok()?.to_owned();
             let resolved = reference.resolve().ok()?;
-            refs.push((name, resolved.target()?));
+            let symbolic = reference.kind() == Some(git2::ReferenceType::Symbolic);
+            refs.push((name, resolved.target()?, symbolic));
         }
+        refs.sort_by(|a, b| a.0.cmp(&b.0));
         Some(refs)
     }
 

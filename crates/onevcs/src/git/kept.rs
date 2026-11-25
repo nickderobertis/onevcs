@@ -116,6 +116,8 @@ fn meta(
         use std::os::unix::fs::MetadataExt;
         (found.dev(), found.ino(), found.ctime(), found.ctime_nsec())
     };
+    // Never stamped off Unix — `stamp` keeps nothing there — and spelled only so the
+    // reader compiles on every target.
     #[cfg(not(unix))]
     let (device, inode, changed, changed_nanos) = (0, 0, 0, 0);
     if watch == Watch::Identity {
@@ -375,6 +377,13 @@ const MOVING_WORDS: [&str; 6] = [
 
 /// The stamp an answer to `args` in `cwd` is held to, where it may be kept at all.
 fn stamp(args: &[&str], cwd: &Path, env: &[(String, String)]) -> Option<Stamp> {
+    // Only a Unix filesystem tells this process which file a path names: its device and
+    // inode, and a change time nothing can set back. Elsewhere a stamp would be a size
+    // and a modification time, which a repository replaced at the same path can match
+    // exactly, so nothing is kept there and every read asks git.
+    if !cfg!(unix) {
+        return None;
+    }
     let kind = kind(args)?;
     let borrowed = match env {
         [] => None,

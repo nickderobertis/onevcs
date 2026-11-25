@@ -1629,3 +1629,35 @@ fn a_pack_that_does_not_match_its_index_is_left_to_git() {
     put_back();
     w.lab.answered_in_process(&w.clone, &pack_reads(&w));
 }
+
+#[test]
+fn a_repository_replaced_at_its_path_is_never_answered_from_what_the_one_before_it_said() {
+    let lab = Lab::new();
+    let at = lab.path().join("replaced");
+    let cut = |hooks: &str| {
+        let _ = std::fs::remove_dir_all(&at);
+        lab.git(lab.path(), &["init", "-q", &path_arg(&at)]);
+        lab.git(&at, &["config", "core.hooksPath", hooks]);
+    };
+    let read = queries(&["rev-parse --git-path hooks".into()]);
+    cut("hooks-a");
+    lab.agree(&at, &read, &[]);
+    let config = at.join(".git/config");
+    let then = std::fs::metadata(&config)
+        .and_then(|found| found.modified())
+        .expect("the configuration's time");
+
+    // Another repository at the same path, whose configuration has the same length and,
+    // set back, the same modification time: all a size-and-time stamp could hold of it.
+    cut("hooks-b");
+    std::fs::File::options()
+        .write(true)
+        .open(&config)
+        .and_then(|file| file.set_modified(then))
+        .expect("the time is set back");
+    assert_eq!(
+        lab.agree(&at, &read, &[]),
+        [1],
+        "the replacement's layout is git's to answer, and git answered `hooks-b`"
+    );
+}

@@ -1153,3 +1153,119 @@ fn a_layout_answer_follows_a_checkout_whose_git_directory_moved_under_the_same_p
     );
     closed(&after.expect("the session opened"));
 }
+
+/// What a session's record names, read as the library wrote it.
+fn recorded(world: &World, token: &str, field: &str) -> String {
+    let record: Value = serde_json::from_str(
+        &std::fs::read_to_string(world.home().join("sessions").join(format!("{token}.json")))
+            .expect("a session record"),
+    )
+    .expect("the record is JSON");
+    record[field]
+        .as_str()
+        .unwrap_or_else(|| panic!("the record names its {field}"))
+        .to_owned()
+}
+
+const SEEDED: &str = "a FETCH_HEAD from some earlier fetch\n";
+
+/// Run `fetch` with real git in `repo`, after the library's own skipped run of it, and
+/// hold the two to one answer: the same outcome, and the same `FETCH_HEAD` left behind.
+fn same_as_git(world: &World, repo: &Path, fetch: &[&str], left: &str) {
+    assert_ne!(
+        left, SEEDED,
+        "the skipped fetch rewrote FETCH_HEAD, as git's does"
+    );
+    let git = world.git_raw_env(repo, &[], fetch);
+    assert!(git.status.success(), "{git:?}");
+    assert!(
+        git.stdout.is_empty() && git.stderr.is_empty(),
+        "git's answer is the one the library gave: nothing printed: {git:?}"
+    );
+    let written = std::fs::read_to_string(repo.join(".git/FETCH_HEAD")).expect("git's FETCH_HEAD");
+    assert_eq!(
+        left,
+        written,
+        "the FETCH_HEAD git writes for `git {}`",
+        fetch.join(" ")
+    );
+}
+
+#[test]
+fn a_fetch_answered_in_process_leaves_fetch_head_as_git_leaves_it() {
+    let fixture = crate::pool::pooled("version: 1\ndefault: {pool: 1}\n");
+    let world = &fixture.world;
+    let counting = Counting::installed(world);
+    inhabit(world);
+    counting.inhabit();
+
+    // An open into a slot whose clone already holds the lender's view of origin: the
+    // carry is skipped, and the clone's FETCH_HEAD is what git's carry would leave.
+    let first = opened("feature/first");
+    let clone = clone_of(world, &first.token);
+    closed(&first);
+    std::fs::write(clone.join(".git/FETCH_HEAD"), SEEDED).expect("a seeded FETCH_HEAD");
+    let mut second = None;
+    let calls = started(&counting, || second = Some(opened("feature/second")));
+    let second = second.expect("the session opened");
+    assert_eq!(
+        clone_of(world, &second.token),
+        clone,
+        "the slot's clone is reused"
+    );
+    assert!(
+        fetches_from_a_path(&calls).is_empty(),
+        "the carry is answered in process: {calls:#?}"
+    );
+    let left = std::fs::read_to_string(clone.join(".git/FETCH_HEAD")).expect("FETCH_HEAD");
+    let lender = recorded(world, &second.token.0, "execution_checkout");
+    same_as_git(
+        world,
+        &clone,
+        &[
+            "fetch",
+            "--no-tags",
+            &lender,
+            "+refs/remotes/origin/*:refs/remotes/origin/*",
+        ],
+        &left,
+    );
+    closed(&second);
+
+    // A close handing back a branch the lender already holds: the hand-back is skipped,
+    // and the lender's FETCH_HEAD is what git's hand-back would leave. A tag on it the
+    // lender also holds, so the hand-back's tag-following finds nothing to bring.
+    let worked = opened("feature/copied");
+    world.commit_file(&worked.worktree, "copied.txt", "c\n", "feat: handed back");
+    world.git(&worked.worktree, &["tag", "v-copied"]);
+    let tip = at(world, &worked.worktree, "HEAD");
+    closed(&worked);
+    let continued = opened("feature/copied");
+    assert_eq!(
+        clone_of(world, &continued.token),
+        clone,
+        "the slot's clone is reused"
+    );
+    std::fs::write(fixture.checkout.join(".git/FETCH_HEAD"), SEEDED).expect("a seeded FETCH_HEAD");
+    let calls = started(&counting, || closed(&continued));
+    assert!(
+        fetches_from_a_path(&calls).is_empty(),
+        "the hand-back is answered in process: {calls:#?}"
+    );
+    let left =
+        std::fs::read_to_string(fixture.checkout.join(".git/FETCH_HEAD")).expect("FETCH_HEAD");
+    // The slot lets go of a branch its hand-back copied; put it back where it stood, so
+    // git reads the very source the library read.
+    world.git(&clone, &["update-ref", "refs/heads/feature/copied", &tip]);
+    let source = recorded(world, &continued.token.0, "clone");
+    same_as_git(
+        world,
+        &fixture.checkout,
+        &[
+            "fetch",
+            &source,
+            "refs/heads/feature/copied:refs/heads/feature/copied",
+        ],
+        &left,
+    );
+}
