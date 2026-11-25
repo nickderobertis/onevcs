@@ -85,9 +85,12 @@ dunce = { workspace = true }
 # stopped publishing push takes its hook's descendants down with it: Windows has no
 # process group to signal, and a job is the tree it offers instead. git is launched
 # suspended into it, and `Win32_System_Diagnostics_ToolHelp` finds the thread to resume.
+# `Win32_Storage_FileSystem` reads which file a path names — its volume, file id and
+# change time — which is what a kept read is held to (`src/git/kept.rs`).
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
     "Win32_Security",
+    "Win32_Storage_FileSystem",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_JobObjects",
     "Win32_System_Pipes",

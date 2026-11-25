@@ -24,8 +24,9 @@ const STEPS: usize = 3;
 
 /// The `git` processes the steps and the close start on this build. On the commit
 /// before the in-process reader they started 11: these library reads already answer
-/// most of what they ask from an in-process snapshot of the repository.
-const GIT_STARTS: usize = 7;
+/// most of what they ask from an in-process snapshot of the repository, and the close
+/// asks git nothing about a base that stands at origin's own commit.
+const GIT_STARTS: usize = 6;
 
 fn state(landed: &Landed) -> String {
     serde_json::to_value(landed).expect("a landing serializes")["state"]

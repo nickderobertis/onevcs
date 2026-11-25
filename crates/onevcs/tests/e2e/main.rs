@@ -153,6 +153,14 @@ mod edges;
 #[cfg(target_os = "linux")]
 // llmlint: ignore[e2e_not_mocked] see the note above this module's declaration.
 mod engine_step_reads;
+// Linux only for the same reason as `engine_step_reads`.
+#[cfg(target_os = "linux")]
+// llmlint: ignore[e2e_not_mocked,expensive_tests_stay_behind_their_own_edge] the counting
+// `git` execs the real one, as the module's header says; and what these journeys count is
+// the git a session's open, close, status read and publication start, which every source
+// file of the crate can move, so an edge narrower than the crate's own would let a change
+// that starts more git skip them — the edge `engine_step_reads` and `git_starts` share.
+mod kept_reads;
 // Linux only: it lets a held fetch go once the kernel's lock table shows the second
 // fetch queued behind it, and `/proc/locks` is the only place an outside process can
 // read that. Its own header carries the reason in full.

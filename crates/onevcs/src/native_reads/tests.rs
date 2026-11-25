@@ -1022,8 +1022,9 @@ const MIX: &[(&str, usize)] = &[
 ];
 
 /// The git processes the sequence starts on this build: every one of its 365 reads
-/// started one on the commit before the in-process reader.
-const MIX_STARTS: usize = 134;
+/// started one on the commit before the in-process reader. A read the sequence repeats
+/// by object ids or of the checkout's layout is answered from what the process kept.
+const MIX_STARTS: usize = 33;
 
 /// [`MIX`] in a fixed order: one of each shape in turn, largest first, until each
 /// has been asked its count.
@@ -1627,4 +1628,292 @@ fn a_pack_that_does_not_match_its_index_is_left_to_git() {
     w.lab.left_to_git(&w.clone, &pack_reads(&w), &[]);
     put_back();
     w.lab.answered_in_process(&w.clone, &pack_reads(&w));
+}
+
+#[test]
+fn a_repository_replaced_at_its_path_is_never_answered_from_what_the_one_before_it_said() {
+    let lab = Lab::new();
+    let at = lab.path().join("replaced");
+    let cut = |hooks: &str| {
+        let _ = std::fs::remove_dir_all(&at);
+        lab.git(lab.path(), &["init", "-q", &path_arg(&at)]);
+        lab.git(&at, &["config", "core.hooksPath", hooks]);
+    };
+    let read = queries(&["rev-parse --git-path hooks".into()]);
+    cut("hooks-a");
+    lab.agree(&at, &read, &[]);
+    let config = at.join(".git/config");
+    let then = std::fs::metadata(&config)
+        .and_then(|found| found.modified())
+        .expect("the configuration's time");
+
+    // Another repository at the same path, whose configuration has the same length and,
+    // set back, the same modification time: all a size-and-time stamp could hold of it.
+    cut("hooks-b");
+    std::fs::File::options()
+        .write(true)
+        .open(&config)
+        .and_then(|file| file.set_modified(then))
+        .expect("the time is set back");
+    assert_eq!(
+        lab.agree(&at, &read, &[]),
+        [1],
+        "the replacement's layout is git's to answer, and git answered `hooks-b`"
+    );
+}
+
+/// Reads the process keeps between calls: four of the checkout's layout and two named by
+/// object ids alone.
+fn kept_reads(w: &World) -> Vec<Vec<String>> {
+    queries(&[
+        "rev-parse --git-path hooks".into(),
+        "config --get core.hooksPath".into(),
+        "remote get-url origin".into(),
+        "rev-parse --git-common-dir".into(),
+        format!("merge-base --is-ancestor {} {}", w.first, w.second),
+        format!("cat-file -e {}^{{commit}}", w.second),
+    ])
+}
+
+/// Every file a kept answer is held to, moved one at a time between two askings of the
+/// same reads — on every host this suite runs on, Windows included, which no journey
+/// over `tests/e2e/world.rs` reaches. Each move is followed by the reads git's answer
+/// moved with it, held to git's answer by `agree`, and then by the same reads kept again.
+#[test]
+fn every_file_a_kept_answer_is_held_to_moves_it_when_it_moves() {
+    let w = world();
+    let reads = kept_reads(&w);
+    // The layout reads go to git and are kept; the two named by ids are answered in
+    // process until a graft hands them to git, which is where they are kept too.
+    let layout = [1, 1, 1, 1, 0, 0];
+    let kept = [0; 6];
+    let asked = |what: &str, expected: [usize; 6]| {
+        assert_eq!(w.lab.agree(&w.clone, &reads, &[]), expected, "{what}");
+    };
+    asked("asked of git the first time", layout);
+    asked("kept while nothing moved", kept);
+
+    // As `git config` writes: a lock file renamed over the configuration.
+    w.lab
+        .git(&w.clone, &["config", "core.hooksPath", "hooks-a"]);
+    asked("the configuration replaced", layout);
+    asked("kept once more", kept);
+
+    // Written in place at the same length, as an editor might.
+    let config = w.clone.join(".git").join("config");
+    let text = std::fs::read_to_string(&config).expect("the configuration");
+    std::fs::write(&config, text.replace("hooks-a", "hooks-b")).expect("written in place");
+    asked("the configuration written in place", layout);
+    asked("kept once more", kept);
+
+    // The global file this process names.
+    let global = std::env::var_os("GIT_CONFIG_GLOBAL").expect("the lab names a global file");
+    let mut text = std::fs::read_to_string(&global).expect("the global configuration");
+    text.push_str("[remote \"origin\"]\n\tpushurl = elsewhere\n");
+    std::fs::write(&global, text).expect("the global configuration edited");
+    asked("the global configuration edited", layout);
+    asked("kept once more", kept);
+
+    w.lab
+        .git(&w.clone, &["remote", "set-url", "origin", "elsewhere"]);
+    asked("the remote moved", layout);
+    asked("kept once more", kept);
+
+    let grafts = w.clone.join(".git/info/grafts");
+    std::fs::write(&grafts, format!("{}\n", w.second)).expect("a graft cutting a parent");
+    asked(
+        "history grafted: the id reads are git's",
+        [0, 0, 0, 0, 1, 1],
+    );
+    asked("kept while the graft stands", kept);
+    std::fs::write(&grafts, format!("{} {}\n", w.second, w.first))
+        .expect("the graft rewritten to give the parent back");
+    asked(
+        "the graft rewritten: the kept id reads asked again",
+        [0, 0, 0, 0, 1, 1],
+    );
+    asked("kept once more", kept);
+}
+
+/// With no `HOME`, Git for Windows reads its global configuration from `HOMEDRIVE` and
+/// `HOMEPATH`, so a kept answer is held to that file too: a write there moves it.
+#[cfg(windows)]
+#[test]
+fn a_kept_answer_moves_with_the_home_git_for_windows_finds_without_home() {
+    let lab = Lab::new();
+    let repo = lab.path().join("repo");
+    lab.git(lab.path(), &["init", "-q", &path_arg(&repo)]);
+    let home = lab.path().join("home");
+    std::fs::create_dir(&home).expect("a home");
+    let spelled = path_arg(&home);
+    let (drive, rest) = spelled.split_at(2);
+    assert!(drive.ends_with(':'), "a scratch home on a drive: {spelled}");
+    std::env::remove_var("HOME");
+    std::env::remove_var("GIT_CONFIG_GLOBAL");
+    std::env::set_var("HOMEDRIVE", drive);
+    std::env::set_var("HOMEPATH", rest);
+    let global = home.join(".gitconfig");
+    let read = queries(&["rev-parse --git-path hooks".into()]);
+
+    std::fs::write(&global, "[core]\n\thooksPath = hooks-a\n").expect("a global file");
+    assert_eq!(
+        lab.agree(&repo, &read, &[]),
+        [1],
+        "asked of git the first time"
+    );
+    assert_eq!(
+        lab.agree(&repo, &read, &[]),
+        [0],
+        "kept while the home stands"
+    );
+    std::fs::write(&global, "[core]\n\thooksPath = hooks-bb\n").expect("the file rewritten");
+    assert_eq!(
+        lab.agree(&repo, &read, &[]),
+        [1],
+        "the home's configuration moved: git's to answer, and git answered `hooks-bb`"
+    );
+}
+
+#[test]
+fn a_commit_held_in_a_borrowed_store_until_it_is_pruned_there_is_answered_absent_once_it_is_gone() {
+    let lab = Lab::new();
+    // A repository asked about a commit only the store it borrows holds — the way a
+    // landing read asks a clone about a base its lender fetched — which is the read the
+    // in-process reader leaves to git and the process keeps.
+    let lender = lab.path().join("lender");
+    let borrower = lab.path().join("borrower");
+    for repo in [&lender, &borrower] {
+        lab.git(lab.path(), &["init", "-q", &path_arg(repo)]);
+        lab.git(repo, &["commit", "-q", "--allow-empty", "-m", "its own"]);
+    }
+    let store = path_arg(&lender.join(".git/objects"));
+    let env = [("GIT_ALTERNATE_OBJECT_DIRECTORIES".to_owned(), store)];
+    let tree = lab.git(&lender, &["rev-parse", "HEAD^{tree}"]);
+    let held = |commit: &str| queries(&[format!("cat-file -e {commit}^{{commit}}")]);
+    // Kept on Unix and on Windows alike, so a repeat asks nothing of git.
+    let kept = 0;
+
+    // Loose in the lender, and reached by nothing: kept, then pruned away there.
+    let loose = lab.git(&lender, &["commit-tree", &tree, "-m", "unreached"]);
+    assert_eq!(
+        lab.agree(&borrower, &held(&loose), &env),
+        [1],
+        "asked of git the first time"
+    );
+    assert_eq!(
+        lab.agree(&borrower, &held(&loose), &env),
+        [kept],
+        "kept while it is held"
+    );
+    lab.git(&lender, &["prune", "--expire=now"]);
+    assert_eq!(
+        lab.agree(&borrower, &held(&loose), &env),
+        [1],
+        "pruned: asked of git again, which answers it absent"
+    );
+
+    // Packed in the lender, then its last ref deleted and the pack rewritten without it.
+    let packed = lab.git(&lender, &["commit-tree", &tree, "-m", "packed"]);
+    lab.git(&lender, &["tag", "holding", &packed]);
+    lab.git(&lender, &["repack", "-a", "-d", "-q"]);
+    assert_eq!(lab.agree(&borrower, &held(&packed), &env), [1]);
+    assert_eq!(
+        lab.agree(&borrower, &held(&packed), &env),
+        [kept],
+        "kept while it is held"
+    );
+    lab.git(&lender, &["tag", "-d", "holding"]);
+    lab.git(&lender, &["reflog", "expire", "--expire=now", "--all"]);
+    lab.git(&lender, &["gc", "-q", "--prune=now"]);
+    assert_eq!(
+        lab.agree(&borrower, &held(&packed), &env),
+        [1],
+        "repacked without it: asked of git again, which answers it absent"
+    );
+}
+
+#[test]
+fn a_fetch_answered_in_process_names_its_remote_in_fetch_head_as_git_does_and_moves_the_memo() {
+    let lab = Lab::new();
+    // A work tree whose directory ends in `.git`, which is how git's naming of the
+    // remote drops a suffix it does not drop from the path.
+    let source = lab.path().join("source.git");
+    lab.git(
+        lab.path(),
+        &["init", "-q", "-b", "main", &path_arg(&source)],
+    );
+    lab.git(&source, &["commit", "-q", "--allow-empty", "-m", "main"]);
+    lab.git(&source, &["checkout", "-q", "-b", "other"]);
+    lab.git(&source, &["commit", "-q", "--allow-empty", "-m", "other"]);
+    lab.git(&source, &["checkout", "-q", "main"]);
+    let main = lab.git(&source, &["rev-parse", "main"]);
+    let other = lab.git(&source, &["rev-parse", "other"]);
+    let dest = lab.path().join("dest");
+    lab.git(lab.path(), &["init", "-q", &path_arg(&dest)]);
+    // Automatic maintenance off, as every e2e world has it: from 2.54 git's unconfigured
+    // maintenance is the geometric strategy, whose writes after a fetch are git's to make,
+    // so on such a git an unconfigured destination's fetch is git's whatever it moves —
+    // `kept_reads::a_fetch_is_answered_here_only_on_a_git_whose_…` drives that half.
+    // And on an older git, telling which it is asks `git --version`, a start of its own.
+    // Off, the fetch below is answered here on every git, and starts nothing.
+    lab.git(&dest, &["config", "maintenance.auto", "false"]);
+    let fetch_head = dest.join(".git").join("FETCH_HEAD");
+    let read = ["rev-parse", "--verify", "--quiet", "FETCH_HEAD"];
+    let spelled = path_arg(&source);
+    for spelling in [
+        spelled.clone(),
+        format!("{spelled}/"),
+        format!("{spelled}//"),
+    ] {
+        let fetch = [
+            "fetch",
+            "--no-tags",
+            spelling.as_str(),
+            "+refs/heads/*:refs/remotes/source/*",
+        ];
+        // Brought up to date by git, or already so; either way the next one is not.
+        crate::git::run_with_env(&fetch, Some(&dest), &[]).expect("the fetch runs");
+        std::fs::write(
+            &fetch_head,
+            format!("{other}\t\tbranch 'other' of elsewhere\n"),
+        )
+        .expect("a FETCH_HEAD naming the other branch first");
+
+        let (seen, fetched, after) = crate::git::memoized(|| {
+            let seen = crate::git::run_with_env(&read, Some(&dest), &[]).expect("a read");
+            let before = lab.starts();
+            let fetched = crate::git::run_with_env(&fetch, Some(&dest), &[]).expect("the fetch");
+            let started = lab.starts() - before;
+            let after = crate::git::run_with_env(&read, Some(&dest), &[]).expect("a read");
+            ((seen, started), fetched, after)
+        });
+        assert_eq!(
+            seen.0.trimmed(),
+            other,
+            "{spelling}: the seeded FETCH_HEAD, read"
+        );
+        assert_eq!(
+            seen.1, 0,
+            "{spelling}: the fetch moved nothing, so started no git"
+        );
+        assert!(fetched.ok() && fetched.stdout.is_empty() && fetched.stderr.is_empty());
+        assert_eq!(
+            after.trimmed(),
+            main,
+            "{spelling}: the read after the fetch is of the FETCH_HEAD it wrote, not the memo's"
+        );
+
+        let ours = std::fs::read_to_string(&fetch_head).expect("FETCH_HEAD");
+        let git = lab.truth(&dest, &fetch, &[]);
+        assert_eq!(
+            git,
+            (0, String::new(), String::new()),
+            "{spelling}: git's answer is ours"
+        );
+        assert_eq!(
+            ours,
+            std::fs::read_to_string(&fetch_head).expect("git's FETCH_HEAD"),
+            "{spelling}: the FETCH_HEAD git writes for the same fetch"
+        );
+    }
 }

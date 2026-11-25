@@ -2641,12 +2641,24 @@ fn taken_names(
 ) -> Result<std::collections::BTreeSet<String>> {
     let mut taken = std::collections::BTreeSet::new();
     let _reads = crate::checkout_reads::identity(&resolution.key)?;
+    let mut beside = None;
     for repo in checkouts_of(registry, resolution)? {
-        if git::is_repo(&repo) {
+        if !git::is_repo(&repo) {
+            continue;
+        }
+        if repo == execution && beside.is_none() {
+            let (local, tracked) = git::branches_beside_remote(&repo, "origin");
+            taken.extend(local.unwrap_or_default());
+            beside = Some(tracked);
+        } else {
             taken.extend(git::branches(&repo).unwrap_or_default());
         }
     }
-    taken.extend(git::remote_branches(execution, "origin")?);
+    let tracked = match beside {
+        Some(tracked) => tracked,
+        None => git::remote_branches(execution, "origin"),
+    };
+    taken.extend(tracked?);
     Ok(taken)
 }
 
@@ -3295,14 +3307,21 @@ fn stray_work(record: &Record) -> Result<Vec<Stray>> {
             .collect(),
         None => Vec::new(),
     };
-    for branch in git::branches(&record.clone)? {
-        let branch = Ref::from_git(branch);
-        if *branch == *record.branch
-            || found.iter().any(|(held, _)| **held == *branch)
-            || retained_by_others.iter().any(|held| **held == *branch)
-        {
-            continue;
-        }
+    let candidates: Vec<Ref> = git::branches(&record.clone)?
+        .into_iter()
+        .map(Ref::from_git)
+        .filter(|branch| {
+            **branch != *record.branch
+                && !found.iter().any(|(held, _)| **held == **branch)
+                && !retained_by_others.iter().any(|held| **held == **branch)
+        })
+        .collect();
+    // Several branches are counted at once, and asked one by one only where that count
+    // finds something: a clone nearly always holds nothing origin lacks.
+    let names: Vec<&str> = candidates.iter().map(|branch| &**branch).collect();
+    let none_ahead = names.len() > 1
+        && git::unpublished_ahead_of_any(&record.clone, &names, &[&*record.branch]) == Some(false);
+    for branch in candidates.into_iter().filter(|_| !none_ahead) {
         if let Some(commits) = stranded(record, &branch)? {
             found.push((branch, commits));
         }
