@@ -1662,6 +1662,45 @@ fn a_repository_replaced_at_its_path_is_never_answered_from_what_the_one_before_
     );
 }
 
+/// With no `HOME`, Git for Windows reads its global configuration from `HOMEDRIVE` and
+/// `HOMEPATH`, so a kept answer is held to that file too: a write there moves it.
+#[cfg(windows)]
+#[test]
+fn a_kept_answer_moves_with_the_home_git_for_windows_finds_without_home() {
+    let lab = Lab::new();
+    let repo = lab.path().join("repo");
+    lab.git(lab.path(), &["init", "-q", &path_arg(&repo)]);
+    let home = lab.path().join("home");
+    std::fs::create_dir(&home).expect("a home");
+    let spelled = path_arg(&home);
+    let (drive, rest) = spelled.split_at(2);
+    assert!(drive.ends_with(':'), "a scratch home on a drive: {spelled}");
+    std::env::remove_var("HOME");
+    std::env::remove_var("GIT_CONFIG_GLOBAL");
+    std::env::set_var("HOMEDRIVE", drive);
+    std::env::set_var("HOMEPATH", rest);
+    let global = home.join(".gitconfig");
+    let read = queries(&["rev-parse --git-path hooks".into()]);
+
+    std::fs::write(&global, "[core]\n\thooksPath = hooks-a\n").expect("a global file");
+    assert_eq!(
+        lab.agree(&repo, &read, &[]),
+        [1],
+        "asked of git the first time"
+    );
+    assert_eq!(
+        lab.agree(&repo, &read, &[]),
+        [0],
+        "kept while the home stands"
+    );
+    std::fs::write(&global, "[core]\n\thooksPath = hooks-bb\n").expect("the file rewritten");
+    assert_eq!(
+        lab.agree(&repo, &read, &[]),
+        [1],
+        "the home's configuration moved: git's to answer, and git answered `hooks-bb`"
+    );
+}
+
 #[test]
 fn a_commit_held_in_a_borrowed_store_until_it_is_pruned_there_is_answered_absent_once_it_is_gone() {
     let lab = Lab::new();
@@ -1678,8 +1717,8 @@ fn a_commit_held_in_a_borrowed_store_until_it_is_pruned_there_is_answered_absent
     let env = [("GIT_ALTERNATE_OBJECT_DIRECTORIES".to_owned(), store)];
     let tree = lab.git(&lender, &["rev-parse", "HEAD^{tree}"]);
     let held = |commit: &str| queries(&[format!("cat-file -e {commit}^{{commit}}")]);
-    // Off Unix the process keeps nothing, so a repeat is asked of git too.
-    let kept = if cfg!(unix) { 0 } else { 1 };
+    // Kept on Unix and on Windows alike, so a repeat asks nothing of git.
+    let kept = 0;
 
     // Loose in the lender, and reached by nothing: kept, then pruned away there.
     let loose = lab.git(&lender, &["commit-tree", &tree, "-m", "unreached"]);
