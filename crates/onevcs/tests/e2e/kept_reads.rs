@@ -1352,3 +1352,256 @@ fn a_fetch_head_this_cannot_write_as_git_would_is_left_to_git() {
     closed(&session.expect("the session opened"));
     world.git(&clone, &["config", "--unset", "fetch.pruneTags"]);
 }
+
+/// Open one session into the pool's warm slot, with `prepare` done to its clone first,
+/// and say how many fetches from a path the open started.
+fn carried(counting: &Counting, branch: &str, prepare: impl FnOnce()) -> usize {
+    prepare();
+    let mut session = None;
+    let calls = started(counting, || session = Some(opened(branch)));
+    closed(&session.expect("the session opened"));
+    fetches_from_a_path(&calls).len()
+}
+
+/// Whether `repo` carries a commit graph, whole or split.
+fn graphed(repo: &Path) -> bool {
+    let info = repo.join(".git/objects/info");
+    info.join("commit-graph").exists() || info.join("commit-graphs/commit-graph-chain").exists()
+}
+
+fn ungraphed(repo: &Path) {
+    let info = repo.join(".git/objects/info");
+    let _ = std::fs::remove_file(info.join("commit-graph"));
+    let _ = std::fs::remove_dir_all(info.join("commit-graphs"));
+    assert!(!graphed(repo));
+}
+
+/// `count` loose blobs written into `repo` whose ids begin `17`, the fan-out directory
+/// `gc --auto` estimates its loose objects from.
+fn loose_in_17(repo: &Path, count: usize) -> Vec<PathBuf> {
+    let store = git2::Repository::open(repo).expect("the clone opens");
+    let mut written = Vec::new();
+    for n in 0.. {
+        if written.len() == count {
+            break;
+        }
+        let content = format!("loose {n}\n");
+        let id = git2::Oid::hash_object(git2::ObjectType::Blob, content.as_bytes())
+            .expect("an id")
+            .to_string();
+        if let Some(rest) = id.strip_prefix("17") {
+            assert_eq!(
+                store.blob(content.as_bytes()).expect("written").to_string(),
+                id
+            );
+            written.push(repo.join(".git/objects/17").join(rest));
+        }
+    }
+    written
+}
+
+#[test]
+fn a_fetch_git_would_end_with_a_commit_graph_or_maintenance_is_git_s_to_make() {
+    let fixture = crate::pool::pooled("version: 1\ndefault: {pool: 1}\n");
+    let world = &fixture.world;
+    let counting = Counting::installed(world);
+    inhabit(world);
+    counting.inhabit();
+    let first = opened("feature/first");
+    let clone = clone_of(world, &first.token);
+    closed(&first);
+    assert_eq!(
+        carried(&counting, "feature/warm", || {}),
+        0,
+        "the warm carry"
+    );
+
+    // Asked to write a commit graph on every fetch: git writes one, moving no ref.
+    let graph = carried(&counting, "feature/graph", || {
+        world.git(&clone, &["config", "fetch.writeCommitGraph", "true"]);
+        ungraphed(&clone);
+    });
+    assert_eq!(graph, 1, "fetch.writeCommitGraph");
+    assert!(graphed(&clone), "git's fetch wrote the commit graph");
+    world.git(&clone, &["config", "--unset", "fetch.writeCommitGraph"]);
+
+    // The world turns automatic maintenance off, as git reads `maintenance.auto`; turned
+    // back on, a git whose unconfigured maintenance is `gc --auto` alone, with nothing
+    // due, writes nothing after the fetch either.
+    world.git(&clone, &["config", "maintenance.auto", "true"]);
+    assert_eq!(
+        carried(&counting, "feature/on", || {}),
+        0,
+        "maintenance on, nothing due"
+    );
+
+    // A maintenance task enabled with a threshold the clone is past: git's automatic
+    // maintenance after the fetch writes the graph.
+    let maintained = carried(&counting, "feature/maintained", || {
+        world.git(
+            &clone,
+            &["config", "maintenance.commit-graph.enabled", "true"],
+        );
+        world.git(&clone, &["config", "maintenance.commit-graph.auto", "1"]);
+        ungraphed(&clone);
+    });
+    assert_eq!(maintained, 1, "maintenance.commit-graph");
+    assert!(
+        graphed(&clone),
+        "git's automatic maintenance wrote the commit graph"
+    );
+    world.git(
+        &clone,
+        &["config", "--remove-section", "maintenance.commit-graph"],
+    );
+    ungraphed(&clone);
+
+    // `gc --auto`, observed through the hook git asks before an automatic gc: it writes
+    // that it was asked, and refuses, so nothing is collected under the journey.
+    let asked = world.path("pre-auto-gc.asked");
+    world.install_hook(
+        &clone,
+        "pre-auto-gc",
+        &format!("echo asked >> '{}'\nexit 1", asked.display()),
+    );
+    let gc_asked = || {
+        let was = asked.exists();
+        let _ = std::fs::remove_file(&asked);
+        was
+    };
+    let lender = fixture.checkout.to_string_lossy().into_owned();
+    let carry = [
+        "fetch",
+        "--no-tags",
+        lender.as_str(),
+        "+refs/remotes/origin/*:refs/remotes/origin/*",
+    ];
+
+    // One loose object short of the default threshold: no gc is due, so the carry is
+    // answered here — and git's own fetch would not have asked for one either.
+    let mut loose = loose_in_17(&clone, 27);
+    assert_eq!(
+        carried(&counting, "feature/short", || {}),
+        0,
+        "27 loose objects"
+    );
+    assert!(!gc_asked(), "nothing asked for a gc");
+    let git = world.git_raw_env(&clone, &[], &carry);
+    assert!(git.status.success(), "{git:?}");
+    assert!(!gc_asked(), "git's fetch asks for no gc at 27 either");
+
+    // Past the threshold, git's fetch asks for a gc.
+    loose.extend(
+        loose_in_17(&clone, 28)
+            .into_iter()
+            .filter(|path| !loose.contains(path))
+            .collect::<Vec<_>>(),
+    );
+    assert_eq!(
+        carried(&counting, "feature/due", || {}),
+        1,
+        "28 loose objects"
+    );
+    assert!(gc_asked(), "git's fetch asked for a gc");
+    for path in loose.split_off(2) {
+        std::fs::remove_file(path).expect("a loose object goes");
+    }
+
+    // A threshold configured lower than the store already is.
+    let lowered = carried(&counting, "feature/lowered", || {
+        world.git(&clone, &["config", "gc.auto", "1"]);
+    });
+    assert_eq!(lowered, 1, "gc.auto");
+    assert!(gc_asked(), "git's fetch asked for a gc under gc.auto");
+    world.git(&clone, &["config", "--unset", "gc.auto"]);
+
+    // `gc.auto` at 0, as this crate pins every lender: no gc is ever due, however many
+    // loose objects there are, and git's own fetch asks for none either.
+    let pinned = loose_in_17(&clone, 28);
+    let unpinned = carried(&counting, "feature/pinned", || {
+        world.git(&clone, &["config", "gc.auto", "0"]);
+    });
+    assert_eq!(unpinned, 0, "gc.auto 0, 28 loose objects");
+    let git = world.git_raw_env(&clone, &[], &carry);
+    assert!(git.status.success(), "{git:?}");
+    assert!(!gc_asked(), "git's fetch asks for no gc under gc.auto 0");
+    world.git(&clone, &["config", "--unset", "gc.auto"]);
+    for path in pinned.into_iter().skip(2) {
+        std::fs::remove_file(path).expect("a loose object goes");
+    }
+
+    // More packs than `gc.autoPackLimit`'s default: copies of one pack, under names of
+    // their own. The two loose objects left are far short of the loose threshold.
+    assert_eq!(
+        carried(&counting, "feature/few", || {}),
+        0,
+        "two loose objects"
+    );
+    assert!(!gc_asked(), "nothing asked for a gc");
+    let packs = clone.join(".git/objects/pack");
+    let store = git2::Repository::open(&clone).expect("the clone opens");
+    let mut builder = store.packbuilder().expect("a pack builder");
+    builder
+        .insert_object(
+            git2::Oid::from_str(&at(world, &clone, "HEAD")).expect("an id"),
+            None,
+        )
+        .expect("a commit packed");
+    let mut pack = git2::Buf::new();
+    builder.write_buf(&mut pack).expect("the pack");
+    let one = world.path("one.pack");
+    std::fs::write(&one, &*pack).expect("the pack is written");
+    let indexed = world.git_raw_env(&clone, &[], &["index-pack", &one.to_string_lossy()]);
+    assert!(indexed.status.success(), "{indexed:?}");
+    let existing = std::fs::read_dir(&packs)
+        .map(|listing| {
+            listing
+                .flatten()
+                .filter(|entry| entry.file_name().to_string_lossy().ends_with(".pack"))
+                .count()
+        })
+        .unwrap_or(0);
+    std::fs::create_dir_all(&packs).expect("a pack directory");
+    let copies: Vec<PathBuf> = (existing..=50)
+        .flat_map(|n| {
+            let name = format!("pack-{n:040x}");
+            std::fs::copy(&one, packs.join(format!("{name}.pack"))).expect("a pack copied");
+            std::fs::copy(world.path("one.idx"), packs.join(format!("{name}.idx")))
+                .expect("its index copied");
+            [
+                packs.join(format!("{name}.pack")),
+                packs.join(format!("{name}.idx")),
+            ]
+        })
+        .collect();
+    assert_eq!(carried(&counting, "feature/packed", || {}), 1, "51 packs");
+    assert!(gc_asked(), "git's fetch asked for a gc over 51 packs");
+    for copy in copies {
+        std::fs::remove_file(copy).expect("a copy goes");
+    }
+    assert_eq!(
+        carried(&counting, "feature/again", || {}),
+        0,
+        "nothing due again"
+    );
+    assert!(!gc_asked(), "nothing asked for a gc");
+
+    // With maintenance off, a git older than `maintenance.auto` still runs `gc --auto`
+    // after a fetch, so a store past its threshold is git's whatever that key says.
+    world.git(&clone, &["config", "--unset", "maintenance.auto"]);
+    let due = loose_in_17(&clone, 28);
+    assert_eq!(
+        carried(&counting, "feature/off-due", || {}),
+        1,
+        "off, 28 loose objects"
+    );
+    assert!(!gc_asked(), "this git runs no maintenance with it off");
+    for path in due.into_iter().skip(2) {
+        std::fs::remove_file(path).expect("a loose object goes");
+    }
+    assert_eq!(
+        carried(&counting, "feature/off", || {}),
+        0,
+        "off, nothing due"
+    );
+}

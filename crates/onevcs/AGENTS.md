@@ -974,7 +974,10 @@ driven into writing one. Healing a torn record sits beside it on the same call, 
 process group (`git.rs`'s `reaping`) is one more: macOS answers `EPERM` for a killed
 group whose members are not yet reaped, and Linux has no spelling of that answer, so
 the test answers for a real unreaped group as macOS does; the unreaped-member journey
-in `publication_watch.rs` drives the bound through a publication on either. The
+in `publication_watch.rs` drives the bound through a publication on either. Reading
+git's version (`git/local_fetch.rs`) is one more: whether a fetch from a path may be
+answered in process turns on whether this host's git predates the geometric maintenance
+strategy, and a journey runs on the one git its host has. The
 collector's is the one that looks like a journey and cannot be: what it holds is
 an *interleaving* — a reader taking a read that finds the pipe empty, and finding
 its command already collected when it next looks — and on an idle host that window

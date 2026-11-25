@@ -15,6 +15,15 @@
 //! name and that one file — anything that could also prune, follow a tag, deepen a
 //! history, or write `FETCH_HEAD` some other way, and any repository whose refs this
 //! cannot read the way git would, is left to git.
+//!
+//! Git ends every fetch, even one that moved nothing, with the writes its configuration
+//! asks of the destination: a commit graph under `fetch.writeCommitGraph`, and
+//! `git maintenance run --auto`, which repacks or writes whatever its tasks find due.
+//! Neither is made here, so a fetch is answered only where git's would make neither: no
+//! commit graph is asked for, no `gc --auto` is due — which a git older than
+//! `maintenance.auto` runs after every fetch whatever that key says — and either
+//! `maintenance.auto` is off or nothing else configures maintenance and the git on this
+//! host is one whose unconfigured maintenance is `gc --auto` alone.
 
 use std::path::{Path, PathBuf};
 
@@ -130,6 +139,7 @@ pub(super) fn answer(
     if !from.serves_every_ref() || !into.takes_updates_without_pruning() {
         return None;
     }
+    let maintenance = into.maintenance()?;
     let advertised = from.refs()?;
     let held = into.refs()?;
     // What git fetched, in the order it writes it down: refspec by refspec, and within
@@ -179,7 +189,9 @@ pub(super) fn answer(
             }
         }
     }
-    if fetched.is_empty() {
+    // Last, because the first asking starts git: only a fetch every other check would
+    // answer pays for it, once per process.
+    if fetched.is_empty() || (maintenance == Maintenance::GcAuto && !maintenance_is_gc_alone()) {
         return None;
     }
     // Written where git writes it, the destination's own git directory, and only as
@@ -192,6 +204,65 @@ pub(super) fn answer(
     )
     .ok()?;
     Some(up_to_date())
+}
+
+/// What git's fetch into a repository ends by running, where it writes nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Maintenance {
+    /// Nothing: `maintenance.auto` is off.
+    Off,
+    /// `maintenance run --auto` as an unconfigured git runs it, which writes nothing
+    /// only on a git whose maintenance is `gc --auto` alone.
+    GcAuto,
+}
+
+/// The newest git whose `maintenance run --auto` runs nothing but `gc --auto` where no
+/// `maintenance.*` key says otherwise: 2.54 made the geometric strategy the default, whose
+/// commit-graph, repack and loose-object tasks each judge a threshold of their own.
+const LAST_GC_ALONE: (u32, u32) = (2, 53);
+
+/// Whether this host's git is one whose unconfigured maintenance is `gc --auto` alone,
+/// asked of git once per process. A version this cannot read is not one.
+fn maintenance_is_gc_alone() -> bool {
+    static GC_ALONE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *GC_ALONE.get_or_init(|| {
+        super::run(&["--version"], None)
+            .ok()
+            .filter(Output::ok)
+            .and_then(|output| version(&output.stdout))
+            .is_some_and(|found| found <= LAST_GC_ALONE)
+    })
+}
+
+/// The major and minor version `git --version` names: `git version 2.43.0`, or a
+/// vendor's `git version 2.45.1.windows.1`.
+fn version(answer: &str) -> Option<(u32, u32)> {
+    let named = answer.trim().strip_prefix("git version ")?;
+    let mut parts = named.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    Some((major, minor))
+}
+
+/// `gc --auto`'s defaults: collect past 6700 loose objects, or past 50 packs.
+const GC_AUTO: i32 = 6700;
+const GC_AUTO_PACK_LIMIT: i32 = 50;
+
+/// How many entries of `directory` `counted` takes, `None` where it could not be read
+/// whole — a missing directory holds none.
+fn entries(directory: &Path, counted: impl Fn(&str) -> bool) -> Option<usize> {
+    let listing = match std::fs::read_dir(directory) {
+        Ok(listing) => listing,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Some(0),
+        Err(_) => return None,
+    };
+    let mut count = 0;
+    for entry in listing {
+        if counted(&entry.ok()?.file_name().to_string_lossy()) {
+            count += 1;
+        }
+    }
+    Some(count)
 }
 
 /// A repository opened only to read its refs and configuration, the way git reads
@@ -231,6 +302,12 @@ impl Repository {
     /// `None` where the configuration could not be read whole — which is not a key
     /// left unset, so the fetch is git's.
     fn sets_any(&self, keys: &[&str]) -> Option<bool> {
+        self.sets(|name| keys.contains(&name))
+    }
+
+    /// Whether any key `named` takes, by its lowercased whole name, is set for this
+    /// repository; `None` as for [`sets_any`](Self::sets_any).
+    fn sets(&self, named: impl Fn(&str) -> bool) -> Option<bool> {
         let config = self.handle.config().ok()?.snapshot().ok()?;
         // Every entry, matched by its whole name: libgit2 reads a name it is handed as a
         // pattern, under which `fetch.prune` would also name `fetch.prunetags`.
@@ -238,7 +315,7 @@ impl Repository {
         while let Some(entry) = entries.next() {
             let entry = entry.ok()?;
             let name = entry.name().ok()?.to_ascii_lowercase();
-            if keys.iter().any(|key| *key == name) {
+            if named(&name) {
                 return Some(true);
             }
         }
@@ -267,6 +344,59 @@ impl Repository {
             "fetch.writefetchhead",
             "extensions.refstorage",
         ]) == Some(false)
+    }
+
+    /// What git's fetch into this repository ends by running, where that writes
+    /// nothing; `None` where it could write something, or this cannot tell. A commit
+    /// graph asked of a fetch (`feature.experimental` once asked for one) is a write; so
+    /// is a `gc --auto` that is due, since a git older than `maintenance.auto` runs one
+    /// whatever that key says; and so is any `maintenance.*` key but `auto` itself where
+    /// maintenance is on.
+    fn maintenance(&self) -> Option<Maintenance> {
+        if self.sets_any(&["fetch.writecommitgraph", "feature.experimental"])? || self.gc_due()? {
+            return None;
+        }
+        let config = self.handle.config().ok()?.snapshot().ok()?;
+        match config.get_bool("maintenance.auto") {
+            Ok(false) => return Some(Maintenance::Off),
+            Ok(true) => {}
+            // Unset is on; a value git would refuse to read as a boolean is git's.
+            Err(error) if error.code() == git2::ErrorCode::NotFound => {}
+            Err(_) => return None,
+        }
+        let tasked =
+            self.sets(|name| name.starts_with("maintenance.") && name != "maintenance.auto")?;
+        (!tasked).then_some(Maintenance::GcAuto)
+    }
+
+    /// Whether `gc --auto` would collect here, judged as git judges it: never where
+    /// `gc.auto` is not positive — which is how this crate pins every lender — and
+    /// otherwise where there are more packs than `gc.autoPackLimit` or more loose objects
+    /// than `gc.auto` estimates from the one fan-out directory `17`. Over-counting only
+    /// sends a fetch to git, so every `.pack` counts, kept or not, and a loose name of
+    /// either hash's length. `None` where a threshold or a directory cannot be read.
+    fn gc_due(&self) -> Option<bool> {
+        let config = self.handle.config().ok()?.snapshot().ok()?;
+        // An `int`, as git reads these two: a value past its range is git's refusal.
+        let int = |name: &str, default: i32| match config.get_i32(name) {
+            Ok(value) => Some(value),
+            Err(error) if error.code() == git2::ErrorCode::NotFound => Some(default),
+            Err(_) => None,
+        };
+        let auto = int("gc.auto", GC_AUTO)?;
+        let pack_limit = int("gc.autoPackLimit", GC_AUTO_PACK_LIMIT)?;
+        if auto <= 0 {
+            return Some(false);
+        }
+        let objects = self.common.join("objects");
+        let packs = entries(&objects.join("pack"), |name| name.ends_with(".pack"))?;
+        if pack_limit > 0 && packs > usize::try_from(pack_limit).ok()? {
+            return Some(true);
+        }
+        let loose = entries(&objects.join("17"), |name| {
+            matches!(name.len(), 38 | 62) && name.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })?;
+        Some(loose > usize::try_from(auto.saturating_add(255) / 256).ok()?)
     }
 
     /// Every ref, by full name and in name order, at the object it resolves to — a
@@ -302,5 +432,31 @@ impl Repository {
                     .into_iter()
                     .any(|state| dir.join(state).exists())
         })
+    }
+}
+
+// Which git this is decides whether a fetch may be answered here at all, and a journey
+// runs on the one git its host has: no journey can be handed a git whose unconfigured
+// maintenance is the geometric strategy without substituting git's own answer. So the
+// reading of each spelling of a version is held here, against the answers git gives.
+#[cfg(test)]
+mod tests {
+    use super::{version, LAST_GC_ALONE};
+
+    #[test]
+    fn a_version_is_read_from_every_spelling_git_gives_and_only_from_those() {
+        assert_eq!(version("git version 2.43.0\n"), Some((2, 43)));
+        assert_eq!(version("git version 2.45.1.windows.1\n"), Some((2, 45)));
+        assert_eq!(
+            version("git version 2.39.5 (Apple Git-154)\n"),
+            Some((2, 39))
+        );
+        assert_eq!(version("git version 2.53.0.rc1\n"), Some((2, 53)));
+        assert_eq!(version("git version 2.54.0\n"), Some((2, 54)));
+        assert_eq!(version("git version 3.0.0\n"), Some((3, 0)));
+        assert_eq!(version("hub version 2.14.2\n"), None);
+        assert_eq!(version("git version two\n"), None);
+        assert!((2, 53) <= LAST_GC_ALONE);
+        assert!((2, 54) > LAST_GC_ALONE);
     }
 }
