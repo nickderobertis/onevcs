@@ -1422,6 +1422,7 @@ fn loose_in_17(repo: &Path, count: usize) -> Vec<PathBuf> {
     written
 }
 
+// llmlint: ignore[expensive_tests_stay_behind_their_own_edge] what this journey counts is the fetches a pooled session's open and close start, which every source file of the crate can move, so an edge narrower than the crate's own would let a change that starts more git skip it; it runs in under two seconds, on the edge `git_starts` and `engine_step_reads` share.
 #[test]
 fn a_fetch_git_would_end_with_a_commit_graph_or_maintenance_is_git_s_to_make() {
     let fixture = crate::pool::pooled("version: 1\ndefault: {pool: 1}\n");
