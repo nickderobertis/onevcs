@@ -90,9 +90,14 @@ const LOCATING: [&str; 9] = [
 struct Meta {
     len: u64,
     modified: Option<std::time::SystemTime>,
-    identity: (u64, u64, i64, i64),
+    identity: Identity,
     content: Option<Vec<u8>>,
 }
+
+/// Which file a path names: its volume (a Unix device), its file id (an inode, or
+/// Windows' whole 128-bit `FILE_ID_INFO` identifier), and its change time in seconds and
+/// nanoseconds — Windows' in 100 ns ticks in the first, with nothing in the second.
+type Identity = (u64, u128, i64, i64);
 
 /// How much of one path a stamp holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,7 +135,12 @@ fn meta(
     #[cfg(unix)]
     let (device, inode, changed, changed_nanos) = {
         use std::os::unix::fs::MetadataExt;
-        (found.dev(), found.ino(), found.ctime(), found.ctime_nsec())
+        (
+            found.dev(),
+            u128::from(found.ino()),
+            found.ctime(),
+            found.ctime_nsec(),
+        )
     };
     #[cfg(windows)]
     let (device, inode, changed, changed_nanos) =
@@ -159,59 +169,29 @@ fn meta(
 }
 
 /// Which file `path` names on Windows, as the four fields a Unix stamp reads there: the
-/// volume's serial number, the file's id, and NTFS's change time, which every write of
+/// volume's serial number, the file's whole 16-byte id, and the change time, which every write of
 /// the file's data or metadata moves and no ordinary write can set back — git, which
 /// writes every file a stamp covers through a lock file renamed over it, never sets it
 /// at all. Read through a handle opened to read no data and to block nobody's write,
 /// rename or delete, the way the standard library opens one for `metadata`.
 ///
-/// Only NTFS and ReFS keep an id for the life of a file and a change time beside it,
-/// and only an id that fits in 64 bits is held whole here. Anywhere else, or where any
-/// of that cannot be read, the answer is an identity no other stamp can equal, so a
-/// read through that path is never answered from what was kept: it asks git.
+/// Only NTFS and ReFS keep an id for the life of a file and a change time beside it.
+/// ReFS's ids take all 128 bits (a Dev Drive's high half is never zero), so the id is
+/// held whole rather than as the 64 bits NTFS fills. Anywhere else, or where any of that
+/// cannot be read, the answer is an identity no other stamp can equal, so a read through
+/// that path is never answered from what was kept: it asks git.
 #[cfg(windows)]
-fn windows_identity(path: &Path, link: bool) -> (u64, u64, i64, i64) {
-    use std::os::windows::fs::OpenOptionsExt;
+fn windows_identity(path: &Path, link: bool) -> Identity {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{
-        FileBasicInfo, FileIdInfo, GetFileInformationByHandleEx, GetVolumeInformationByHandleW,
-        FILE_BASIC_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO,
-        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        FileBasicInfo, FileIdInfo, GetFileInformationByHandleEx, FILE_BASIC_INFO, FILE_ID_INFO,
     };
-    let read = || -> Option<(u64, u64, i64, i64)> {
-        let flags = FILE_FLAG_BACKUP_SEMANTICS
-            | if link {
-                FILE_FLAG_OPEN_REPARSE_POINT
-            } else {
-                0
-            };
-        let file = std::fs::OpenOptions::new()
-            .access_mode(0)
-            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-            .custom_flags(flags)
-            .open(path)
-            .ok()?;
-        let handle = file.as_raw_handle();
-        let mut system = [0u16; 16];
-        // SAFETY: `handle` is the live handle `file` owns; the one buffer passed is
-        // `system`, with its length in characters, and every other out-pointer is null.
-        let named = unsafe {
-            GetVolumeInformationByHandleW(
-                handle,
-                std::ptr::null_mut(),
-                0,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                system.as_mut_ptr(),
-                system.len() as u32,
-            )
-        };
-        let end = system.iter().position(|c| *c == 0).unwrap_or(system.len());
-        let system = String::from_utf16_lossy(&system[..end]);
-        if named == 0 || !matches!(system.as_str(), "NTFS" | "ReFS") {
+    let read = || -> Option<Identity> {
+        let file = attributes_handle(path, link)?;
+        if !matches!(file_system(&file)?.as_str(), "NTFS" | "ReFS") {
             return None;
         }
+        let handle = file.as_raw_handle();
         // SAFETY: both are plain-old-data structs of integers, for which all zeroes is a
         // value.
         let (mut id, mut basic): (FILE_ID_INFO, FILE_BASIC_INFO) =
@@ -235,15 +215,68 @@ fn windows_identity(path: &Path, link: bool) -> (u64, u64, i64, i64) {
                 std::mem::size_of::<FILE_BASIC_INFO>() as u32,
             )
         };
-        let (low, high) = id.FileId.Identifier.split_at(8);
-        if read_id == 0 || read_basic == 0 || high.iter().any(|b| *b != 0) || basic.ChangeTime == 0
-        {
+        if read_id == 0 || read_basic == 0 || basic.ChangeTime == 0 {
             return None;
         }
-        let low = u64::from_le_bytes(low.try_into().ok()?);
-        Some((id.VolumeSerialNumber, low, basic.ChangeTime, 0))
+        Some((
+            id.VolumeSerialNumber,
+            u128::from_le_bytes(id.FileId.Identifier),
+            basic.ChangeTime,
+            0,
+        ))
     };
     read().unwrap_or_else(unequal)
+}
+
+/// `path` opened to read no data and to block nobody's write, rename or delete, the way
+/// the standard library opens one for `metadata`; `link` opens a symbolic link itself.
+#[cfg(windows)]
+fn attributes_handle(path: &Path, link: bool) -> Option<std::fs::File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+    let flags = FILE_FLAG_BACKUP_SEMANTICS
+        | if link {
+            FILE_FLAG_OPEN_REPARSE_POINT
+        } else {
+            0
+        };
+    std::fs::OpenOptions::new()
+        .access_mode(0)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(flags)
+        .open(path)
+        .ok()
+}
+
+/// The name of the filesystem holding `file`'s volume, as Windows spells it (`NTFS`,
+/// `ReFS`, `FAT32`, …), or `None` where it cannot be read.
+#[cfg(windows)]
+fn file_system(file: &std::fs::File) -> Option<String> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::GetVolumeInformationByHandleW;
+    let mut system = [0u16; 16];
+    // SAFETY: the handle is the live one `file` owns; the one buffer passed is `system`,
+    // with its length in characters, and every other out-pointer is null.
+    let named = unsafe {
+        GetVolumeInformationByHandleW(
+            file.as_raw_handle(),
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            system.as_mut_ptr(),
+            system.len() as u32,
+        )
+    };
+    if named == 0 {
+        return None;
+    }
+    let end = system.iter().position(|c| *c == 0).unwrap_or(system.len());
+    Some(String::from_utf16_lossy(&system[..end]))
 }
 
 /// An identity equal to no other: no real volume's serial, and a count this process
@@ -254,10 +287,15 @@ fn windows_identity(path: &Path, link: bool) -> (u64, u64, i64, i64) {
 // administrator rights; `an_unreadable_identity_equals_no_other` in this file's tests
 // holds the value it answers instead, on the runner that compiles it.
 #[cfg(windows)]
-fn unequal() -> (u64, u64, i64, i64) {
+fn unequal() -> Identity {
     use std::sync::atomic::{AtomicU64, Ordering};
     static UNEQUAL: AtomicU64 = AtomicU64::new(0);
-    (u64::MAX, UNEQUAL.fetch_add(1, Ordering::Relaxed), -1, -1)
+    (
+        u64::MAX,
+        u128::from(UNEQUAL.fetch_add(1, Ordering::Relaxed)),
+        -1,
+        -1,
+    )
 }
 
 /// Which process environment leaves git reading only the repository and the
@@ -508,8 +546,8 @@ const MOVING_WORDS: [&str; 6] = [
 /// The stamp an answer to `args` in `cwd` is held to, where it may be kept at all.
 fn stamp(args: &[&str], cwd: &Path, env: &[(String, String)]) -> Option<Stamp> {
     // A stamp needs to know which file a path names and a change time no ordinary write
-    // sets back: a Unix filesystem's device, inode and ctime, NTFS's volume, file id and
-    // change time (`windows_identity`). Elsewhere a stamp would be a size and a
+    // sets back: a Unix filesystem's device, inode and ctime, NTFS's or ReFS's volume,
+    // file id and change time (`windows_identity`). Elsewhere a stamp would be a size and a
     // modification time, which a repository replaced at the same path can match exactly,
     // so nothing is kept there and every read asks git.
     if !cfg!(any(unix, windows)) {
@@ -712,22 +750,39 @@ pub(super) fn keep(
 /// Which file a path names on Windows, read through the handle a stamp opens. The
 /// journeys that count kept reads run on Unix alone (`tests/e2e/world.rs`), and the
 /// read mix in `native_reads` counts what this identity lets Windows keep; what that
-/// count cannot show is a file replaced at its path, which is what these hold.
+/// count cannot show is a file replaced at its path, which is what these hold — on both
+/// filesystems an identity is read from, because ReFS's ids are 128 bits and NTFS's 64.
 #[cfg(all(test, windows))]
 mod tests {
-    use super::{unequal, windows_identity};
+    use super::{attributes_handle, file_system, unequal, windows_identity};
+    use std::path::Path;
 
-    #[test]
-    fn a_file_keeps_its_identity_until_it_is_replaced_or_written() {
-        let dir = tempfile::tempdir().expect("a scratch directory");
-        let file = dir.path().join("config");
+    /// An NTFS directory the test may write scratch files under. The scratch root
+    /// `tempfile` takes is ReFS where `TEMP` is on a Dev Drive, as CI's Windows job puts
+    /// it, and the runner's `RUNNER_TEMP` stays on NTFS, which that job names here.
+    const NTFS_SCRATCH: &str = "ONEVCS_TEST_NTFS_SCRATCH";
+
+    /// The identity of a file, as a stamp reads it, through every way git or an editor
+    /// moves one — on a scratch directory that must be on `system`.
+    fn held_through_every_move(dir: &Path, system: &str) {
+        let opened = attributes_handle(dir, false).expect("the scratch directory opens");
+        assert_eq!(
+            file_system(&opened).as_deref(),
+            Some(system),
+            "the scratch directory {} is on {system}",
+            dir.display()
+        );
+        let file = dir.join("config");
         std::fs::write(&file, "[core]\n").expect("a file");
         let first = windows_identity(&file, false);
-        assert_ne!(
-            first.0,
-            u64::MAX,
-            "the scratch volume is NTFS, so its identity is read"
-        );
+        assert_ne!(first.0, u64::MAX, "on {system} a file's identity is read");
+        if system == "ReFS" {
+            assert_ne!(
+                first.1 >> 64,
+                0,
+                "a ReFS file id fills its high half, which is what this volume is here to prove"
+            );
+        }
         assert_eq!(
             windows_identity(&file, false),
             first,
@@ -735,10 +790,11 @@ mod tests {
         );
 
         // As git writes a configuration file: a lock file, renamed over it.
-        let lock = dir.path().join("config.lock");
+        let lock = dir.join("config.lock");
         std::fs::write(&lock, "[core]\n").expect("a lock file");
         std::fs::rename(&lock, &file).expect("the lock renamed over the file");
         let replaced = windows_identity(&file, false);
+        assert_ne!(replaced.0, u64::MAX, "the replacement's identity is read");
         assert_ne!(replaced.1, first.1, "replaced at its path: another file");
 
         // Written in place, the length kept: the change time moves.
@@ -751,8 +807,23 @@ mod tests {
             "written in place: its change time moved"
         );
 
-        let directory = windows_identity(dir.path(), false);
+        let directory = windows_identity(dir, false);
         assert_ne!(directory.0, u64::MAX, "a directory's identity is read too");
+    }
+
+    #[test]
+    fn a_file_keeps_its_identity_until_it_is_replaced_or_written() {
+        let refs = tempfile::tempdir().expect("a scratch directory");
+        held_through_every_move(refs.path(), "ReFS");
+
+        let ntfs = std::env::var_os(NTFS_SCRATCH)
+            .map(std::path::PathBuf::from)
+            .filter(|root| root.is_absolute() && root.is_dir())
+            .unwrap_or_else(|| {
+                panic!("{NTFS_SCRATCH} must name an existing absolute directory on NTFS")
+            });
+        let ntfs = tempfile::tempdir_in(ntfs).expect("a scratch directory on NTFS");
+        held_through_every_move(ntfs.path(), "NTFS");
     }
 
     #[test]
