@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.69.2](https://github.com/nickderobertis/onevcs/compare/v0.69.1...v0.69.2) - 2026-11-27
+
+### Performance
+
+- *(git)* keep git answers on ReFS volumes, whose file ids take 128 bits ([#718](https://github.com/nickderobertis/onevcs/pull/718))
+
 ## [0.69.1](https://github.com/nickderobertis/onevcs/compare/v0.69.0...v0.69.1) - 2026-11-25
 
 ### Performance
