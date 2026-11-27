@@ -22,12 +22,14 @@
     },
     "test": {
       "command": "just _unit-test",
+      "inputs": ["crateSource", { "env": "ONEVCS_TEST_NTFS_SCRATCH" }],
       "outputs": [
         "{workspaceRoot}/target/coverage/onevcs.profdata"
       ]
     },
     "test-quick": {
-      "command": "just _unit-test-quick"
+      "command": "just _unit-test-quick",
+      "inputs": ["crateSource", { "env": "ONEVCS_TEST_NTFS_SCRATCH" }]
     },
     "doc": {
       "command": "just _crate-doc"
