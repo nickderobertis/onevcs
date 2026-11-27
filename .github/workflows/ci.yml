@@ -117,6 +117,11 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v4
+      # Hosted runners' hardware differs from job to job, so a job's minutes are only
+      # comparable beside the processor that ran them.
+      - name: Name the runner's processor
+        shell: pwsh
+        run: Get-CimInstance Win32_Processor | Format-List Name, NumberOfCores, NumberOfLogicalProcessors
       # A ReFS Dev Drive, as Windows offers one for source code, holds the checkout and
       # `TEMP`, where every test's scratch repository goes: a kept git read is held to
       # ReFS's 128-bit file ids there (`src/git/kept.rs`). Trusted, so the Defender
