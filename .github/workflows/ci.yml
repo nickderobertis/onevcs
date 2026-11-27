@@ -117,36 +117,13 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v4
-      # Hosted runners' hardware differs from job to job, so a job's minutes are only
-      # comparable beside the processor that ran them.
       - name: Name the runner's processor
         shell: pwsh
         run: Get-CimInstance Win32_Processor | Format-List Name, NumberOfCores, NumberOfLogicalProcessors
-      # A ReFS Dev Drive, as Windows offers one for source code, holds the checkout and
-      # `TEMP`, where every test's scratch repository goes: a kept git read is held to
-      # ReFS's 128-bit file ids there (`src/git/kept.rs`). Trusted, so the Defender
-      # filter does not scan it. Dynamic, so the size is only a ceiling over the build.
-      - uses: samypr100/setup-dev-drive@v3
-        with:
-          drive-size: 40GB
-          drive-format: ReFS
-          drive-type: Dynamic
-          trusted-dev-drive: true
-          workspace-copy: true
-          env-mapping: |
-            TEMP,{{ DEV_DRIVE }}/tmp
-            TMP,{{ DEV_DRIVE }}/tmp
-      - name: Keep Defender's real-time scan off the build and the suite
-        shell: pwsh
-        run: |
-          Add-MpPreference -ExclusionPath $env:DEV_DRIVE, "$env:USERPROFILE\.cargo", "$env:USERPROFILE\.rustup", $env:RUNNER_TEMP
-          New-Item -ItemType Directory -Force -Path $env:TEMP | Out-Null
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: ${{ env.DEV_DRIVE_WORKSPACE }} -> target
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -155,14 +132,8 @@ jobs:
           tool: nextest
       - uses: ./.github/actions/setup-just
       - name: Bootstrap
-        working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
         run: just bootstrap
       - name: Quality gate (format, lint, every offline tier)
-        working-directory: ${{ env.DEV_DRIVE_WORKSPACE }}
-        env:
-          # `RUNNER_TEMP` stays on the runner's NTFS volume, so the identity test in
-          # `src/git/kept.rs` proves NTFS there beside ReFS in `TEMP`.
-          ONEVCS_TEST_NTFS_SCRATCH: ${{ runner.temp }}
         run: just check-quick
     name: cross (windows-latest)
 
