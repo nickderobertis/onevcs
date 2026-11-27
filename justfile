@@ -264,7 +264,7 @@ _cover tier filter:
 # legs run each tier through this (its `test-quick` target) instead of `test`.
 # One tier's tests without coverage instrumentation.
 _quick filter:
-    @cargo nextest run --workspace --locked --status-level fail -E {{quote(filter)}}
+    @cargo nextest run --workspace --locked --no-fail-fast --status-level fail -E {{quote(filter)}}
 
 _unit-test: (_cover "onevcs" unit-tier)
 _unit-test-quick: (_quick unit-tier)
